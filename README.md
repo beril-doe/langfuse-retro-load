@@ -103,23 +103,23 @@ curl -s "$LANGFUSE_HOST/api/public/observations?tag=<your-batch-tag>&limit=1" \
 
 ## Known gaps (tracked as issues, not fixed here)
 
-- [#391](https://github.com/kbaseincubator/BERIL-research-observatory/issues/391):
+- [#1](https://github.com/beril-doe/langfuse-retro-load/issues/1):
   which LLM backend (direct Anthropic / CBORG / Vertex) served a given
   trace isn't recoverable from the transcript itself.
-- [#393](https://github.com/kbaseincubator/BERIL-research-observatory/issues/393):
+- [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2):
   loading someone's traces only covers what's in `people.json`; the other
   ~80 hackathon participants have directories in the corpus with no
   consent checked. Don't read "we loaded the corpus" as "we loaded
   everyone."
-- [#400](https://github.com/kbaseincubator/BERIL-research-observatory/issues/400):
+- [#4](https://github.com/beril-doe/langfuse-retro-load/issues/4):
   a live `.credentials.json` was found swept into the shared frozen corpus
   for every participant during this work. Not this tool's problem to fix,
   but tracked so it isn't lost.
-- [#397](https://github.com/kbaseincubator/BERIL-research-observatory/issues/397):
-  the real load run before this fix may have written a real filesystem
-  path (not just the pseudonymous parts of it) into already-loaded traces'
-  metadata. Fixed going forward; the historical data hasn't been checked
-  or corrected.
+- [#3](https://github.com/beril-doe/langfuse-retro-load/issues/3):
+  the real load run before this fix wrote a real filesystem path (not
+  just the pseudonymous parts of it) into already-loaded traces'
+  metadata, confirmed directly against the live Langfuse API. Fixed
+  going forward; the historical data hasn't been corrected.
 
 A full session-by-session working log exists outside this repo (not
 committed here, since it's a working log rather than documentation). Ask a
