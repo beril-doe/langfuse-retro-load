@@ -43,6 +43,7 @@ Usage:
     python3 scan_transcript.py --ignore orcid,email_institutional *.jsonl
 """
 import argparse
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -159,7 +160,10 @@ def main() -> int:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            print(f"{path.name}: UNREADABLE ({exc.strerror})")
+            # stderr, and never suppressed by --quiet. stdout is the machine-readable
+            # summary, and a file that could not be read is precisely the case where
+            # silence would be read as "nothing in it".
+            print(f"{path.name}: UNREADABLE ({exc.strerror})", file=sys.stderr)
             unreadable.append(path)
             continue
         counts, values, context = scan_text(text, ignore)
@@ -181,7 +185,14 @@ def main() -> int:
             detail_rows.append((path, counts, values, context))
 
     if args.detail:
-        with args.detail.open("w", encoding="utf-8") as handle:
+        # 0o600 at creation, not after. os.open applies the mode atomically, and the
+        # umask can only clear bits, never add them.
+        try:
+            fd = os.open(args.detail, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        except OSError as exc:
+            print(f"cannot write {args.detail}: {exc.strerror}", file=sys.stderr)
+            return 2
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write("Scan detail. Contains the material being checked for. Do not commit.\n\n")
             for path, counts, values, context in detail_rows:
                 handle.write(f"=== {path} ===\n")
@@ -192,7 +203,6 @@ def main() -> int:
                     for line in context[name]:
                         handle.write(f"      context: {line[:240]}\n")
                 handle.write("\n")
-        args.detail.chmod(0o600)
 
     print()
     print(f"summary: {len(args.paths)} file(s), {len(blocking_files)} with findings, "

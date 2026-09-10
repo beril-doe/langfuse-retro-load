@@ -82,7 +82,7 @@ def main() -> int:
                           "(default matches the 2026-08-20 full load; override for any later run)")
     args = ap.parse_args()
 
-    manifest = json.loads(Path(args.manifest).read_text())
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     if args.session:
         wanted = set(args.session)
         known = {e["session_id"] for e in manifest}
