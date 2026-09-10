@@ -15,6 +15,12 @@ Usage (run on the pod, next to retro_load.py / langfuse_hook_official.py):
     python3 run_manifest.py --dry-run          # prints planned tags, no Langfuse calls
     python3 run_manifest.py                    # real run, all entries
     python3 run_manifest.py --limit 5          # real run, first 5 only (smoke test)
+    python3 run_manifest.py --session <id> --session <id> --force   # named entries only
+
+--session exists because --limit only ever takes a prefix of the manifest. Re-running
+a specific set (a load that went to the wrong project, a handful that failed) needs
+naming them, and hand-editing a copy of manifest.json to do it is how the wrong file
+gets loaded.
 """
 import argparse
 import json
@@ -67,6 +73,9 @@ def main() -> int:
     ap.add_argument("--manifest", default="manifest.json")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--session", action="append", default=[], metavar="SESSION_ID",
+                     help="only run this manifest entry (repeatable). Unknown ids are a hard "
+                          "error, not a silent no-op: a typo would otherwise look like success.")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--batch-tag", default="full-load-2026-08-20",
                      help="tag identifying this run as a batch, so it's filterable/auditable later "
@@ -74,6 +83,13 @@ def main() -> int:
     args = ap.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text())
+    if args.session:
+        known = {e["session_id"] for e in manifest}
+        missing = sorted(set(args.session) - known)
+        if missing:
+            print(f"not in {args.manifest}: {', '.join(missing)}", file=sys.stderr)
+            return 1
+        manifest = [e for e in manifest if e["session_id"] in set(args.session)]
     if args.limit is not None:
         manifest = manifest[: args.limit]
 

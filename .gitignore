@@ -1,0 +1,8 @@
+# Scan detail output. Holds the exact material scan_transcript.py exists to find:
+# credentials and personal data pulled out of transcripts. Never commit it.
+scan-detail*.txt
+*-scan-detail.txt
+
+# Local run logs from run_manifest.py.
+full_load_run.txt
+_*.txt

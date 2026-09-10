@@ -14,7 +14,7 @@ directly from wherever it runs; it never needs to move a transcript
 anywhere. Push these files to the pod (`labctl pod put`, or however you
 transfer files there) and run everything from a pod terminal.
 
-## The four pieces
+## The pieces
 
 - **`langfuse_hook_official.py`**: Langfuse's own official Claude Code
   integration hook, vendored unmodified from
@@ -33,6 +33,17 @@ transfer files there) and run everything from a pod terminal.
   it in Langfuse.
 - **`people.json`**: the only file you edit to add a new person or source.
   See below.
+- **`scan_transcript.py`**: reads transcripts and reports what should not be
+  uploaded. Two pattern families. The secret shapes are the same ones
+  `evalome/collecting.py` refuses on in coscientist-bench, duplicated here rather
+  than imported because this has to run on the pod and dragging a benchmark
+  package there for a handful of regexes is the wrong trade; change one table and
+  change the other. The person shapes are new: email addresses, the
+  name-beside-address pattern an API dump of a membership list produces, and phone
+  numbers. Prints counts only, so it is safe to run against anyone's transcript.
+  `--detail` writes matched context to a file for a human to read, and that file is
+  gitignored because its whole purpose is to hold what we are trying not to publish.
+  Exits 0 clean, 1 findings, 2 unreadable, so a load can depend on it.
 - **`build_manifest.py`** / **`run_manifest.py`**: `build_manifest.py`
   reads `people.json`, discovers every session under each source's
   `find_root`, and runs `retro_load.py --dry-run` on each to work out turn
@@ -81,25 +92,46 @@ tracked pseudonymously. Don't change that without a real reason.
 # 1. Regenerate the manifest from current state (content-safe, no Langfuse calls)
 python3 build_manifest.py
 
-# 2. Sanity check before spending anything for real
+# 2. Check what is in the transcripts before sending any of it
+python3 scan_transcript.py ~/.claude/projects/*/*.jsonl
+python3 scan_transcript.py --detail scan-detail.txt <one-file>   # then read that file
+
+# 3. Sanity check before spending anything for real
 python3 run_manifest.py --dry-run
 
-# 3. Credentials -- .env next to these scripts, LANGFUSE_PUBLIC_KEY /
+# 4. Credentials -- .env next to these scripts, LANGFUSE_PUBLIC_KEY /
 #    LANGFUSE_SECRET_KEY / LANGFUSE_HOST, for whichever Langfuse project
 #    should receive this load. Never paste real key values through a chat
 #    session -- set this up directly in a pod terminal.
 
-# 4. The real thing. Backgrounded, since a browser/terminal hiccup shouldn't
+# 5. The real thing. Backgrounded, since a browser/terminal hiccup shouldn't
 #    kill a run partway through -- it's resumable via the markers either way.
 nohup python3 run_manifest.py > full_load_run.txt 2>&1 &
 
-# 5. Verify independently against Langfuse's own API, not just this
+# 6. Verify independently against Langfuse's own API, not just this
 #    script's own "OK" output. Compare the run's own emitted-file count against
 #    Langfuse directly, e.g. for one tag:
 curl -s "$LANGFUSE_HOST/api/public/observations?tag=<your-batch-tag>&limit=1" \
   -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" | python3 -c \
   "import json,sys; print(json.load(sys.stdin)['meta']['totalItems'])"
 ```
+
+## The transcript path had no filter, and that is how this went wrong
+
+The artifact side of this project redacts and refuses. The transcript side does
+not: `retro_load.py` takes turn content verbatim, truncates it at 20,000
+characters, and sends it. Nothing looked at what was in it.
+
+Scanning the already-loaded corpus on 2026-09-10 found live credentials in three
+sessions, from pod environment dumps that Claude had printed: two
+`JUPYTERHUB_API_TOKEN` values and a `KBASE_AUTH_TOKEN`. A fourth session holds a
+BERDL tenant membership dump with names, email addresses and access levels for 24
+people. Langfuse observations can't be edited or deleted individually, and the
+only delete removes an entire trace including the research in it, so none of that
+can be cleaned up in place.
+
+That is what `scan_transcript.py` is for, and why it has to run before a load
+rather than after one.
 
 ## Known gaps (tracked as issues, not fixed here)
 
