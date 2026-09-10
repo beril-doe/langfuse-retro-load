@@ -84,12 +84,13 @@ def main() -> int:
 
     manifest = json.loads(Path(args.manifest).read_text())
     if args.session:
+        wanted = set(args.session)
         known = {e["session_id"] for e in manifest}
-        missing = sorted(set(args.session) - known)
+        missing = sorted(wanted - known)
         if missing:
             print(f"not in {args.manifest}: {', '.join(missing)}", file=sys.stderr)
             return 1
-        manifest = [e for e in manifest if e["session_id"] in set(args.session)]
+        manifest = [e for e in manifest if e["session_id"] in wanted]
     if args.limit is not None:
         manifest = manifest[: args.limit]
 

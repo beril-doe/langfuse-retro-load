@@ -26,7 +26,7 @@ Two pattern families, and the distinction matters:
               these. Its redaction is about credentials, not persons, so a file
               listing colleagues passes it untouched.
 
-ORCIDs are counted and never gate. They are public identifiers by design.
+ORCIDs are counted but never block a load. They are public identifiers by design.
 
 Output is counts by default and nothing else, so this is safe to run against
 anyone's transcript, including the frozen workshop corpus. `--detail` writes
@@ -34,7 +34,8 @@ matched context to a file for a human to read; that file is gitignored and must
 never be committed, because its whole purpose is to hold the material we are
 trying not to publish.
 
-Exit status is the point: 0 clean, 1 findings, 2 could not read. Gate a load on it.
+Exit status is the point: 0 clean, 1 findings, 2 could not read. Make a load
+depend on it.
 
 Usage:
     python3 scan_transcript.py ~/.claude/projects/*/*.jsonl
@@ -42,7 +43,6 @@ Usage:
     python3 scan_transcript.py --ignore orcid,email_institutional *.jsonl
 """
 import argparse
-import json
 import re
 import sys
 from collections import Counter, defaultdict
@@ -55,7 +55,7 @@ SECRET_RES = {
     "bearer_header": re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{8,}"),
     "openai_style": re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}"),
     "github_pat": re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}"),
-    "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
     "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_-]{20,}"),
     "google_api_key": re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
     "private_key_block": re.compile(r"BEGIN [A-Z ]*PRIVATE KEY"),
@@ -101,7 +101,7 @@ ADVISORY = set(NOTE_RES)
 #: A value that is already masked is not a secret. `gh auth status` prints
 #: "Token: gho_************", and a transcript full of tool output contains a lot of
 #: that. Counting it buries the one real finding under seventy harmless ones, which
-#: is how a gate gets ignored. Only applied to secret patterns: a masked email is
+#: is how a check stops being read. Only applied to secret patterns: a masked email is
 #: still worth a look, since the mask may not cover the whole address.
 MASKED_RE = re.compile(r"\*{4,}|x{8,}|•{4,}|\[REDACTED\]|<REDACTED>", re.IGNORECASE)
 
@@ -139,7 +139,8 @@ def main() -> int:
                           "material being checked for: never commit it, never paste it.")
     ap.add_argument("--ignore", default="",
                      help="comma-separated pattern names to skip entirely")
-    ap.add_argument("--quiet", action="store_true", help="print only the summary line")
+    ap.add_argument("--quiet", action="store_true",
+                     help="suppress the per-file lines, leaving only the closing summary")
     args = ap.parse_args()
 
     ignore = {name.strip() for name in args.ignore.split(",") if name.strip()}
@@ -156,7 +157,7 @@ def main() -> int:
 
     for path in args.paths:
         try:
-            text = path.read_text(errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             print(f"{path.name}: UNREADABLE ({exc.strerror})")
             unreadable.append(path)
