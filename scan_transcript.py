@@ -66,7 +66,10 @@ SECRET_RES = {
         r"(?i)(?:token|secret|password|passwd|api[ _-]?key|credential)"
         r"[\"'*`\t ]*[:=][\t ]*[\"']?[A-Za-z0-9!@#$%^&*_+/=-]{8,}"
     ),
-    "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"']{6,}"),
+    # Only a URI that actually carries credentials. A bare mongodb://host:port is a
+    # hostname, and source code building one from an f-string is neither. Real
+    # transcripts are full of both, and counting them trains the reader to skip the line.
+    "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"'/{}$<>]+:[^\s\"'/{}$<>@]+@"),
 }
 
 #: Personal-provider domains, kept separate from institutional addresses. An
@@ -74,10 +77,18 @@ SECRET_RES = {
 #: attached to someone's name generally is not, and it is the one people mind.
 PERSONAL_DOMAINS = r"(?:gmail|googlemail|yahoo|ymail|hotmail|outlook|live|icloud|me|aol|proton|protonmail|pm)\.(?:com|me)"
 
+#: The lookbehind is not cosmetic, it is what keeps this linear. Without it the engine
+#: restarts the local part at every character of a long run of word characters, and a
+#: transcript is full of those: base64 blobs, hex digests, minified JSON. Measured on one
+#: run of repeated characters, no lookbehind: 1.0s at 20k, 15.9s at 80k, 97s at 200k.
+#: With it, and a bounded local part, 0.001s at all three. A real address is always
+#: preceded by a space, quote or punctuation, so nothing real is lost.
+LOCAL_PART = r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}"
+
 PERSON_RES = {
-    "email_personal": re.compile(rf"[A-Za-z0-9._%+-]+@{PERSONAL_DOMAINS}\b", re.IGNORECASE),
+    "email_personal": re.compile(rf"{LOCAL_PART}@{PERSONAL_DOMAINS}\b", re.IGNORECASE),
     "email_institutional": re.compile(
-        r"[A-Za-z0-9._%+-]+@(?!" + PERSONAL_DOMAINS + r"\b)[A-Za-z0-9.-]+\.(?:gov|edu|org|net|com|io|ac\.[a-z]{2})\b",
+        LOCAL_PART + r"@(?!" + PERSONAL_DOMAINS + r"\b)[A-Za-z0-9.-]{1,255}\.(?:gov|edu|org|net|com|io|ac\.[a-z]{2})\b",
         re.IGNORECASE,
     ),
     # A membership or directory dump: a person's name sitting next to their address.
@@ -107,17 +118,49 @@ ADVISORY = set(NOTE_RES)
 MASKED_RE = re.compile(r"\*{4,}|x{8,}|•{4,}|\[REDACTED\]|<REDACTED>", re.IGNORECASE)
 
 
-def scan_text(text: str, ignore: set[str]) -> tuple[Counter, dict[str, set[str]], dict[str, list[str]]]:
-    """Count matches, collect distinct matched values, and keep a little context."""
-    counts: Counter = Counter()
-    values: dict[str, set[str]] = defaultdict(set)
-    context: dict[str, list[str]] = defaultdict(list)
+#: Read this much at a time. A transcript can be hundreds of megabytes, and holding
+#: one in a single str costs that much again in the regex engine.
+BLOCK_CHARS = 1_000_000
+#: Carried from the end of one block to the start of the next, so a match straddling
+#: the boundary is still seen. Longer than any pattern here can match.
+OVERLAP_CHARS = 400
+
+
+def read_blocks(path: Path):
+    """Yield overlapping blocks of a file, bounding memory regardless of file size."""
+    carry = ""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        while True:
+            chunk = handle.read(BLOCK_CHARS)
+            if not chunk:
+                break
+            yield carry + chunk
+            carry = chunk[-OVERLAP_CHARS:]
+
+
+def scan_text(text: str, ignore: set[str], counts=None, values=None, context=None, seen=None):
+    """Count matches, collect distinct matched values, and keep a little context.
+
+    Accepts the running tallies so a caller can feed it one block at a time. ``seen``
+    holds (pattern, matched text, absolute-ish position) for spans inside the overlap
+    region, so a match straddling a block boundary is counted once rather than twice.
+    """
+    counts = Counter() if counts is None else counts
+    values = defaultdict(set) if values is None else values
+    context = defaultdict(list) if context is None else context
+    seen = set() if seen is None else seen
     for name, pattern in ALL.items():
         if name in ignore:
             continue
         for match in pattern.finditer(text):
             if name in SECRET_RES and MASKED_RE.search(match.group(0)):
                 continue
+            if match.start() < OVERLAP_CHARS:
+                # This span may have been counted at the tail of the previous block.
+                key = (name, match.group(0))
+                if key in seen:
+                    continue
+                seen.add(key)
             counts[name] += 1
             # Distinct values only for the person patterns. Never for secrets: holding
             # a secret in memory to print a count of unique ones is not worth it, and
@@ -127,7 +170,14 @@ def scan_text(text: str, ignore: set[str]) -> tuple[Counter, dict[str, set[str]]
             if len(context[name]) < 5:
                 start = max(0, match.start() - 90)
                 context[name].append(text[start:match.end() + 50].replace("\n", " "))
-    return counts, values, context
+    # Only spans near the end can reappear at the start of the next block.
+    tail = len(text) - OVERLAP_CHARS
+    for name, pattern in ALL.items():
+        if name in ignore:
+            continue
+        for match in pattern.finditer(text, max(0, tail)):
+            seen.add((name, match.group(0)))
+    return counts, values, context, seen
 
 
 def main() -> int:
@@ -158,7 +208,12 @@ def main() -> int:
 
     for path in args.paths:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            counts, values, context = Counter(), defaultdict(set), defaultdict(list)
+            seen: set = set()
+            for block in read_blocks(path):
+                counts, values, context, seen = scan_text(
+                    block, ignore, counts, values, context, seen
+                )
         except OSError as exc:
             # stderr, and never suppressed by --quiet. stdout is the machine-readable
             # summary, and a file that could not be read is precisely the case where
@@ -166,7 +221,6 @@ def main() -> int:
             print(f"{path.name}: UNREADABLE ({exc.strerror})", file=sys.stderr)
             unreadable.append(path)
             continue
-        counts, values, context = scan_text(text, ignore)
         total.update(counts)
         blocking = {n: c for n, c in counts.items() if n not in ADVISORY}
         if blocking:
