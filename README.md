@@ -120,6 +120,10 @@ that reached the network fails the run instead of passing it. That is the point 
 those tests: the refusals in `langfuse_admin.py delete` have to happen before the
 tool authenticates, and testing only the exit code would not show it.
 
+The key resolver is tested separately, against a synthetic environment rather than a
+replaced function, because the guarantee there is that it never falls back to whichever
+key happens to be present. A test that replaced the resolver could not see that change.
+
 Both recipes need `uv`, which is not on the pod yet
 (https://github.com/beril-doe/langfuse-retro-load/issues/15). CI runs them on every
 push regardless.
