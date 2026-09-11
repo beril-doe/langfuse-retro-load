@@ -110,11 +110,11 @@ load FORCE="" TAG="":
 load-sessions FORCE="" TAG="" +IDS="":
     #!/usr/bin/env bash
     set -euo pipefail
-    grep -q '"--session"' run_manifest.py || { echo "run_manifest.py has no --session on this branch; it is in pull request #6" >&2; exit 2; }
     # IDS has an empty default so FORCE and TAG can be optional, and run_manifest.py
     # reads an absent --session as "the whole manifest". Without this check,
     # `just load-sessions` is a full production load wearing the name of a narrow one.
     [ -n "{{IDS}}" ] || { echo "refusing: no session ids given. This recipe loads named sessions; run_manifest.py with no --session loads everything. Use `just load` if that is what you want." >&2; exit 2; }
+    grep -q '"--session"' run_manifest.py || { echo "run_manifest.py has no --session on this branch; it is in pull request #6" >&2; exit 2; }
     # Without --force this silently does nothing for exactly the sessions you would
     # want it for: --session filters the manifest, it does not override a marker.
     [ -n "{{FORCE}}" ] || echo "note: no FORCE given, so any session with a marker will be skipped" >&2
