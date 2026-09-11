@@ -1,2 +1,9 @@
+# Credentials. The README tells you to put a .env beside these scripts and
+# langfuse_admin.py prefers it over ~/.env, so this repo actively asks you to
+# create the file it must never commit.
+.env
+.env.*
+!.env.example
+
 __pycache__/
 .venv/
