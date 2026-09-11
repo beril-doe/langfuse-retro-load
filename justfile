@@ -24,7 +24,11 @@ default:
 
 # Reproduce the environment. No-op where uv is unavailable.
 setup:
-    @command -v uv >/dev/null 2>&1 && uv sync || echo "uv not installed; using the ambient python3 (issue #15)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Not `uv sync || echo`: that turns a resolver or network failure into success.
+    if command -v uv >/dev/null 2>&1; then uv sync
+    else echo "uv not installed; using the ambient python3 (issue #15)"; fi
 
 # Reads the roots from people.json rather than a hardcoded path, because
 # build_manifest.py loads all of them and a partial scan reports clean.
@@ -38,10 +42,14 @@ scan:
     roots=()
     while IFS= read -r line; do roots+=("$line"); done < <({{PYBIN}} -c "import json,pathlib;[print(pathlib.Path(s['find_root']).expanduser()) for p in json.load(open('people.json')) for s in p['sources']]")
     files=()
+    # Abort on a missing root rather than skipping it. Scanning whichever roots
+    # happen to exist and exiting 0 is the partial scan this recipe exists to stop.
+    missing=0
     for r in "${roots[@]}"; do
-      [ -d "$r" ] || { echo "missing root, skipping: $r" >&2; continue; }
+      if [ ! -d "$r" ]; then echo "missing root: $r" >&2; missing=1; continue; fi
       while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$r" -maxdepth 2 -type f -name '*.jsonl' -print0)
     done
+    [ "$missing" -eq 0 ] || { echo "refusing: at least one find_root in people.json is not present here, so this scan would be partial" >&2; exit 2; }
     [ ${#files[@]} -gt 0 ] || { echo "no transcripts found under any find_root" >&2; exit 2; }
     [ -f scan_transcript.py ] || { echo "scan_transcript.py is not on this branch; it is in pull request #6" >&2; exit 2; }
     echo "scanning ${#files[@]} transcripts"
@@ -52,7 +60,7 @@ scan:
 # Scan one file and write matched context for review
 scan-detail FILE OUT="scan-detail.txt":
     @test -f scan_transcript.py || (echo "scan_transcript.py is not on this branch; it is in pull request #6" >&2; exit 2)
-    {{PY}} scan_transcript.py --detail {{OUT}} {{FILE}}
+    {{PY}} scan_transcript.py --detail {{quote(OUT)}} {{quote(FILE)}}
 
 # Overwrites the committed manifest.json from the find_roots on THIS machine.
 # Off the pod that means your own ~/.claude, which is not the corpus, so this
@@ -62,8 +70,10 @@ scan-detail FILE OUT="scan-detail.txt":
 manifest:
     #!/usr/bin/env bash
     set -euo pipefail
-    frozen=$({{PYBIN}} -c "import json,pathlib;print(next((pathlib.Path(s['find_root']).expanduser() for p in json.load(open('people.json')) for s in p['sources'] if s['type']=='workshop-frozen-corpus'), ''))")
-    if [ -z "$frozen" ] || [ ! -d "$frozen" ]; then
+    # Every frozen root, not just the first: people.json has two, and checking one
+    # lets build_manifest.py skip the other and write a partial manifest.
+    missing=$({{PYBIN}} -c "import json,pathlib;print(sum(1 for p in json.load(open('people.json')) for s in p['sources'] if s['type']=='workshop-frozen-corpus' and not pathlib.Path(s['find_root']).expanduser().is_dir()))")
+    if [ "$missing" != "0" ]; then
       echo "refusing: the frozen-corpus root is not present here, so this would rebuild" >&2
       echo "manifest.json from a partial set and commit the wrong thing. Run it on the pod." >&2
       exit 2
@@ -80,10 +90,13 @@ load-dry:
 
 # Load for real
 load FORCE="" TAG="":
-    {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + TAG } else { "" } }}
+    {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }}
 
-# Load only named sessions. Unknown ids are a hard error.
+# Needs --session on run_manifest.py, which is in pull request #6.
+
+# Load only named sessions. Unknown ids are a hard error
 load-sessions +IDS:
+    @grep -q '"--session"' run_manifest.py || (echo "run_manifest.py has no --session on this branch; it is in pull request #6" >&2; exit 2)
     {{PY}} run_manifest.py {{ prepend("--session ", IDS) }}
 
 # Needs langfuse_admin.py, which is not on main yet: see pull request #9.
@@ -93,23 +106,23 @@ load-sessions +IDS:
 # Real totals for every object type in a project
 count PROJECT:
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
-    {{PY}} langfuse_admin.py count --project {{PROJECT}}
+    {{PY}} langfuse_admin.py count --project {{quote(PROJECT)}}
 
 # A project key cannot see its siblings, so this needs an organization key.
 
 # List an organization's projects
 projects ORG:
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
-    {{PY}} langfuse_admin.py projects --org {{ORG}}
+    {{PY}} langfuse_admin.py projects --org {{quote(ORG)}}
 
 # Show what a deletion would remove.
 delete-dry PROJECT TYPE="trace" NAME="":
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
-    {{PY}} langfuse_admin.py delete --project {{PROJECT}} --type {{TYPE}} {{ if NAME != "" { "--name " + NAME } else { "--all" } }} --dry-run
+    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} {{ if NAME != "" { "--name " + quote(NAME) } else { "--all" } }} --dry-run
 
 # Writes a record of what is going before anything goes.
 
 # Delete for real
 delete PROJECT TYPE="trace" NAME="" RECORD="deletion-record.json":
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
-    {{PY}} langfuse_admin.py delete --project {{PROJECT}} --type {{TYPE}} {{ if NAME != "" { "--name " + NAME } else { "--all" } }} --record {{RECORD}} --yes
+    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} {{ if NAME != "" { "--name " + quote(NAME) } else { "--all" } }} --record {{quote(RECORD)}} --yes
