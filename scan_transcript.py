@@ -15,11 +15,18 @@ before the write.
 
 Two pattern families, and the distinction matters:
 
-  secrets  -- the same seven shapes evalome/collecting.py refuses on, in
-              coscientist-bench. Duplicated here deliberately rather than imported:
-              this script has to run on the pod next to retro_load.py, and dragging
-              a benchmark package there for seven regexes is the wrong trade. If you
-              change one table, change the other.
+  secrets  -- six shapes copied from evalome/collecting.py in coscientist-bench,
+              plus five added here (private key blocks, JWTs, Slack tokens, a generic
+              key=value rule, and credential-carrying Mongo URIs). Duplicated rather
+              than imported because this has to run on the pod next to retro_load.py.
+              If you change one table, change the other.
+
+              Prior art note, 2026-09-11: gitleaks 8.30.1 is installed on this
+              machine and already runs on every commit. Tested against the corpus
+              that held the real leak, it found the same JUPYTERHUB_API_TOKEN,
+              KBASE_AUTH_TOKEN and Spark-error token, with about 150 rules and
+              entropy filtering, against 11 rules here. The secret half of this file
+              is arguably redundant with it. See issue #10.
 
   people   -- email addresses, the name-beside-address shape that an API dump of a
               membership list produces, and phone numbers. evalome has none of
