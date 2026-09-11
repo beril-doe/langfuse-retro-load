@@ -1,0 +1,48 @@
+# Runs on every push and every pull request. Nothing here touches Langfuse.
+#
+# There are no credentials in this workflow and there must not be. Every test in
+# `tests/` runs offline: the deletion tests replace `api`, `auth_for_project` and
+# `confirm_project` with functions that raise, so a refusal that reached the network
+# would fail the run rather than pass it. Anything needing a live project belongs
+# behind an opt-in marker, not here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse a committed .env
+        # .gitignore already covers this. The point of repeating it here is that a
+        # .gitignore entry stops an accident and does nothing about a `git add -f`,
+        # and this repo's README tells every user to create the file in question.
+        run: |
+          tracked=$(git ls-files -- '.env' '.env.*' | grep -v '^\.env\.example$' || true)
+          if [ -n "$tracked" ]; then
+            echo "a .env file is tracked in git:" >&2
+            echo "$tracked" >&2
+            exit 1
+          fi
+          echo "no tracked .env"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the locked environment
+        # --locked, not --frozen: this fails if uv.lock disagrees with pyproject.toml
+        # instead of quietly resolving something else and testing an environment that
+        # does not match what anyone installing this repo would get.
+        run: uv sync --locked --all-extras
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest -q
