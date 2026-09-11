@@ -41,6 +41,7 @@ import argparse
 import base64
 import datetime
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -407,16 +408,22 @@ def cmd_delete(args) -> int:
         return 1
 
     if args.record:
-        # Exclusive create. write_text truncates, so reusing a filename destroyed the
-        # previous run's audit trail before this run had sent anything, and a mistyped
-        # path could overwrite something unrelated. The manifest is the only record
-        # these commands leave behind.
-        if Path(args.record).exists():
+        # Exclusive create, not exists() then write. Checking and then writing leaves a
+        # window in which another process creates the path, after which write_text
+        # opens it with truncation and destroys the previous run's audit trail. O_EXCL
+        # makes the check and the create one operation.
+        try:
+            fd = os.open(args.record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
             print(f"refusing: {args.record} already exists. Pick another path or delete "
                   "it deliberately; overwriting it would destroy the previous deletion's "
                   "record.", file=sys.stderr)
             return 2
-        Path(args.record).write_text(json.dumps({
+        except OSError as exc:
+            print(f"cannot create {args.record}: {exc.strerror}", file=sys.stderr)
+            return 2
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
             # Written before any DELETE, so it is a plan, not a record of what happened.
             # It used to say delete_requested_at_utc across every batch, which was false
             # for any batch that an earlier failure meant was never sent. The per-batch
@@ -428,7 +435,7 @@ def cmd_delete(args) -> int:
             "traces": [{"id": t["id"], "sessionId": t.get("sessionId"),
                         "userId": t.get("userId"), "name": t.get("name"),
                         "timestamp": t.get("timestamp")} for t in targets],
-        }, indent=2) + "\n")
+            }, indent=2) + "\n")
         print(f"recorded to {args.record}")
 
     # Langfuse rejects a bulk body carrying more than 1,000 traceIds. The two real
@@ -464,9 +471,15 @@ def cmd_delete(args) -> int:
             print("stopping: a batch was rejected, later batches not sent", file=sys.stderr)
             return finish(1)
         except OSError as exc:
-            outcomes.append({"batch": n, "count": len(batch), "outcome": type(exc).__name__})
-            print(f"  {label}: {type(exc).__name__}", file=sys.stderr)
-            print("stopping: a batch failed to send, later batches not sent", file=sys.stderr)
+            # Deliberately not "failed to send". A transport error can happen while
+            # reading the response, after Langfuse has accepted the request and begun
+            # deleting. Telling an operator it was not sent is the worst wrong belief
+            # available on a delete path, because the natural response is to retry.
+            outcomes.append({"batch": n, "count": len(batch),
+                             "outcome": f"unknown: {type(exc).__name__}"})
+            print(f"  {label}: {type(exc).__name__} before a response was read", file=sys.stderr)
+            print("stopping: this batch's outcome is UNKNOWN. It may already have been "
+                  "accepted and be deleting now. Re-run count before retrying.", file=sys.stderr)
             return finish(1)
         outcomes.append({"batch": n, "count": len(batch), "outcome": f"HTTP {status}",
                          "requested_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()})
