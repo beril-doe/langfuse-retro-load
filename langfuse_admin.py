@@ -205,6 +205,10 @@ def total(path: str, header: str, host: str) -> tuple[object, str | None]:
             _, body = api(f"{path}?limit=100&page={page}", header, host)
         except urllib.error.HTTPError as exc:
             return None, f"HTTP {exc.code} on page {page}"
+        except OSError as exc:
+            # A timeout on page 2 should mark this type uncountable and let the rest
+            # of the inventory finish, not abort the whole command.
+            return None, f"{type(exc).__name__} on page {page}"
         seen += len(body.get("data") or [])
         if page >= (body.get("meta") or {}).get("totalPages", 1):
             return seen, None
@@ -345,12 +349,21 @@ def cmd_delete(args) -> int:
     ids = [t["id"] for t in targets]
     batches = [ids[i:i + BULK_DELETE_LIMIT] for i in range(0, len(ids), BULK_DELETE_LIMIT)]
     for n, batch in enumerate(batches, 1):
-        status, body = api("/api/public/traces", header, host, {"traceIds": batch}, "DELETE")
         label = f"batch {n}/{len(batches)}" if len(batches) > 1 else "all"
-        print(f"  {label}: {len(batch)} traces, HTTP {status}: {json.dumps(body)[:120]}")
-        if status >= 300:
-            print("stopping: a batch failed, later batches not sent", file=sys.stderr)
+        # urlopen raises HTTPError for any 4xx or 5xx, so api() never returns a failing
+        # status and a `if status >= 300` branch here could never execute. A rejected
+        # batch used to end in a traceback instead of this message.
+        try:
+            status, body = api("/api/public/traces", header, host, {"traceIds": batch}, "DELETE")
+        except urllib.error.HTTPError as exc:
+            print(f"  {label}: {len(batch)} traces, HTTP {exc.code}", file=sys.stderr)
+            print("stopping: a batch was rejected, later batches not sent", file=sys.stderr)
             return 1
+        except OSError as exc:
+            print(f"  {label}: {type(exc).__name__}", file=sys.stderr)
+            print("stopping: a batch failed to send, later batches not sent", file=sys.stderr)
+            return 1
+        print(f"  {label}: {len(batch)} traces, HTTP {status}: {json.dumps(body)[:120]}")
     print("Deletion is asynchronous. Re-run count to confirm.")
     return 0
 
