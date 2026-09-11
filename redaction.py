@@ -62,8 +62,22 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
     "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_-]{20,}"),
     "google_api_key": re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
-    "private_key_block": re.compile(r"BEGIN [A-Z ]*PRIVATE KEY"),
-    "jwt": re.compile(r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\."),
+    # The whole block, not the marker. As a detector, matching "BEGIN RSA PRIVATE KEY"
+    # was enough to raise a finding. As a redactor it is worse than useless: it rewrites
+    # the marker and leaves the base64 body, so the key is still loadable and the record
+    # says the turn was redacted. The body class stops at the first "-", which is the
+    # start of the END marker, and at the first quote, which is where a JSON string ends,
+    # so an unterminated block stops at the end of its value rather than eating the file.
+    "private_key_block": re.compile(
+        r"(?:-----)?BEGIN [A-Z ]*PRIVATE KEY(?:-----)?"
+        r"(?:[A-Za-z0-9+/=\s]|\\[rn]){0,10000}"
+        r"(?:(?:-----)?END [A-Z ]*PRIVATE KEY(?:-----)?)?"
+    ),
+    # Three segments, not two. Stopping at the dot after the payload left the signature
+    # in the rewritten text, and the signature is the credential material: the header and
+    # payload are base64 of public JSON, and it is the signature that makes the token
+    # usable. The last segment is `*` rather than `+` because alg=none tokens end in a dot.
+    "jwt": re.compile(r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*"),
     "slack_token": re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}"),
     # The escaped-quote alternatives are load-bearing. A transcript is JSONL, so a tool
     # result containing JSON arrives as \"token\":\"...\", and a nested payload as
@@ -138,6 +152,31 @@ DEFAULT_REDACT = frozenset({SECRET, PERSON})
 #: still worth a look, because the mask may not cover the whole address.
 MASKED_RE = re.compile(r"\*{4,}|x{8,}|•{4,}|\[REDACTED[^\]]*\]", re.IGNORECASE)
 
+#: Leading key name and separator, so "token: " is not mistaken for secret material
+#: left over after the mask. The separator is required, not optional. Written with `*`
+#: it ate the first 32 characters of any value with no separator in it, so `sk-abcdef...`
+#: came back three characters long and every unmasked key read as masked. Four of the
+#: pattern tests caught that immediately, which is the only reason it is not in the
+#: commit above this one.
+_KEY_PREFIX_RE = re.compile(r"""(?i)^[a-z0-9_-]{0,32}["'\s:=]+""")
+
+#: Shortest run of characters that could be a real secret. Every pattern here requires
+#: at least eight, so anything shorter surviving a mask is a prefix, not a credential.
+_MIN_SECRET_CHARS = 8
+
+
+def is_masked(value: str) -> bool:
+    """True when what survives removing the mask is too short to be a credential.
+
+    Not `MASKED_RE.search(value)`, which was the first version and was wrong in the
+    dangerous direction. That suppressed a finding whenever the value contained a run of
+    eight x characters anywhere, so `token=xxxxxxxxREALSECRET123` was dropped from the
+    findings and left in the text. Removing the masked runs and measuring what is left
+    keeps `gho_************` suppressed and reports that one.
+    """
+    remainder = _KEY_PREFIX_RE.sub("", MASKED_RE.sub("", value))
+    return len(remainder) < _MIN_SECRET_CHARS
+
 #: What this module writes in place of a match, and how it recognises its own work on a
 #: second pass. The two must stay in step, which is what test_idempotent checks.
 PLACEHOLDER_RE = re.compile(r"\[REDACTED:[a-z_]+:[0-9a-f]{8}\]")
@@ -210,7 +249,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             if span[0] == span[1] or _inside(span, protected):
                 continue
             value = match.group(0)
-            if category is SECRET and MASKED_RE.search(value):
+            if category is SECRET and is_masked(value):
                 continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 

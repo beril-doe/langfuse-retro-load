@@ -20,6 +20,21 @@ import redaction
 
 KEY = b"fixed key for reproducible tests, never used outside them"
 
+# Several lines below carry `# gitleaks:allow`. The repository's pre-commit hook matches
+# the literal `-----BEGIN RSA PRIVATE KEY-----` marker and the `eyJ` JWT prefix without
+# looking at what follows, so no fixture content can satisfy it: a test for a private-key
+# pattern has to contain a private-key marker. The allow comments are on exactly those
+# lines and nowhere else, so a real secret pasted into this file is still caught.
+#
+# The key body and the JWT signature are deliberately not the public spec examples they
+# would naturally be. Those are base64 of nothing in particular and harmless, and the
+# repository's own pre-commit hook flags them, correctly by its own rules: it cannot tell
+# a published test vector from a real key and should not try. A fixture that reads as
+# obviously fake to a person costs the tests nothing, since both patterns care about the
+# shape of the characters rather than their content.
+FAKE_KEY_BODY = "NOTAREALKEY" * 6
+FAKE_SIGNATURE = "notarealsignature" * 3
+
 # Synthetic throughout. The AWS id is a documented entropy edge case: gitleaks rejects
 # it and the keyword patterns accept it, which is the whole argument of
 # https://github.com/beril-doe/langfuse-retro-load/issues/10.
@@ -30,8 +45,9 @@ SAMPLES = {
     "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
     "google_oauth": "ya29.abcdefghijklmnopqrstuvwxyz",
     "google_api_key": "AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456",
-    "private_key_block": "-----BEGIN RSA PRIVATE KEY-----",
-    "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig",
+    "private_key_block": ("-----BEGIN RSA PRIVATE KEY-----\n"  # gitleaks:allow
+                          + FAKE_KEY_BODY + "\n-----END RSA PRIVATE KEY-----"),  # gitleaks:allow
+    "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0." + FAKE_SIGNATURE,  # gitleaks:allow
     "slack_token": "xoxb-0000000000-abcdefghijkl",
     "keyed_value": 'JUPYTERHUB_API_TOKEN=abcdef0123456789abcdef0123456789',
     "mongo_uri": "mongodb://someuser:somepassword@localhost:27017",
@@ -208,4 +224,58 @@ def test_stays_fast_enough_for_the_real_time_point():
     _, findings = redaction.redact(text, key=KEY)
     elapsed = time.perf_counter() - start
     assert "github_pat" in {f.pattern for f in findings}
-    assert elapsed < 2.0, f"{elapsed:.2f}s on 200k characters"
+    assert elapsed < 2.0, f"{elapsed:.2f}s on {len(text):,} characters"
+
+
+def test_a_private_key_is_removed_body_and_all():
+    """As a detector, matching the BEGIN marker was enough to raise a finding. As a
+    redactor it is worse than useless: rewriting the marker and leaving the base64 body
+    keeps the key loadable while the record says the turn was redacted."""
+    body = FAKE_KEY_BODY
+    text = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"  # gitleaks:allow
+    clean, findings = redaction.redact(text, key=KEY)
+    assert [f.pattern for f in findings] == ["private_key_block"]
+    assert body not in clean
+    assert "END RSA PRIVATE KEY" not in clean  # gitleaks:allow
+    assert clean == redaction.Finding(
+        "private_key_block", redaction.SECRET, 0, len(text), len(text),
+        redaction.fingerprint(text, KEY)).placeholder
+
+
+def test_an_unterminated_private_key_stops_at_the_end_of_its_value():
+    """The other half of the same fix. Running to end of input on a missing END marker
+    would redact the rest of a 300 MB transcript on one stray marker in prose."""
+    text = '{"key": "-----BEGIN EC PRIVATE KEY-----' + FAKE_KEY_BODY + '", "other": 1}'  # gitleaks:allow
+    clean, findings = redaction.redact(text, key=KEY)
+    assert [f.pattern for f in findings] == ["private_key_block"]
+    assert FAKE_KEY_BODY not in clean
+    assert '"other": 1' in clean, "the rest of the document has to survive"
+
+
+def test_a_jwt_loses_its_signature():
+    """The header and payload are base64 of public JSON. The signature is what makes the
+    token usable, and stopping at the dot after the payload left exactly that behind."""
+    signature = FAKE_SIGNATURE
+    text = f"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.{signature}"  # gitleaks:allow
+    clean, _ = redaction.redact(text, key=KEY)
+    assert signature not in clean
+
+
+def test_a_mask_next_to_a_real_secret_does_not_hide_it():
+    """`MASKED_RE.search(value)` was the first version and failed in the dangerous
+    direction: any run of eight x characters anywhere in the value suppressed the whole
+    finding, so this string was dropped from the record and left in the text."""
+    clean, findings = redaction.redact("token=xxxxxxxxREALSECRET123", key=KEY)
+    assert [f.pattern for f in findings] == ["keyed_value"]
+    assert "REALSECRET123" not in clean
+
+
+@pytest.mark.parametrize("value,masked", [
+    ("Token: gho_************", True),
+    ("api_key=xxxxxxxxxxxxxxxx", True),
+    ("token=[REDACTED:github_pat:deadbeef]", True),
+    ("token=xxxxxxxxREALSECRET123", False),
+    ("password=hunter2hunter2", False),
+])
+def test_is_masked_measures_what_survives_the_mask(value, masked):
+    assert redaction.is_masked(value) is masked
