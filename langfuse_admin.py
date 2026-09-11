@@ -383,13 +383,17 @@ def cmd_delete(args) -> int:
     batches = [ids[i:i + BULK_DELETE_LIMIT] for i in range(0, len(ids), BULK_DELETE_LIMIT)]
     outcomes = []
 
+    def record_outcomes() -> None:
+        """Write what has actually happened so far, so an interrupted run stays auditable."""
+        if not args.record:
+            return
+        data = json.loads(Path(args.record).read_text())
+        data["batches"] = outcomes
+        data["unsent_batches"] = len(batches) - len(outcomes)
+        Path(args.record).write_text(json.dumps(data, indent=2) + "\n")
+
     def finish(code: int) -> int:
-        """Append what actually happened per batch, so the record is not a claim."""
-        if args.record:
-            data = json.loads(Path(args.record).read_text())
-            data["batches"] = outcomes
-            data["unsent_batches"] = len(batches) - len(outcomes)
-            Path(args.record).write_text(json.dumps(data, indent=2) + "\n")
+        record_outcomes()
         return code
 
     for n, batch in enumerate(batches, 1):
@@ -411,6 +415,11 @@ def cmd_delete(args) -> int:
             return finish(1)
         outcomes.append({"batch": n, "count": len(batch), "outcome": f"HTTP {status}",
                          "requested_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        # Checkpoint after every accepted batch, not only on failure. Holding successes
+        # in memory until the loop ends means an interrupted run leaves the manifest as
+        # the original plan, unable to show which destructive requests were actually
+        # sent. The failure paths already wrote it; the success path has to as well.
+        record_outcomes()
         print(f"  {label}: {len(batch)} traces, HTTP {status}: {json.dumps(body)[:120]}")
     print("Deletion is asynchronous. Re-run count to confirm.")
     return finish(0)
