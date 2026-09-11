@@ -50,7 +50,12 @@ scan:
     missing=0
     for r in "${roots[@]}"; do
       if [ ! -d "$r" ]; then echo "missing root: $r" >&2; missing=1; continue; fi
-      while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$r" -maxdepth 2 -type f -name '*.jsonl' -print0)
+      # find's exit status is lost inside process substitution, so an unreadable
+      # subtree yields a partial list and the recipe still exits 0. Capture first.
+      tmp=$(mktemp); if ! find "$r" -maxdepth 2 -type f -name '*.jsonl' -print0 > "$tmp"; then
+        rm -f "$tmp"; echo "find failed under $r; the scan would be partial" >&2; exit 2
+      fi
+      while IFS= read -r -d '' f; do files+=("$f"); done < "$tmp"; rm -f "$tmp"
     done
     [ "$missing" -eq 0 ] || { echo "refusing: at least one find_root in people.json is not present here, so this scan would be partial" >&2; exit 2; }
     [ ${#files[@]} -gt 0 ] || { echo "no transcripts found under any find_root" >&2; exit 2; }
@@ -91,16 +96,25 @@ load-dry:
 # silently skip anything already marked, including entries that went to a
 # different project. Pass FORCE=--force after a purge.
 
-# Load for real
+# Backgrounded with nohup, as README.md has always said: a terminal or browser
+# hiccup should not kill a load partway through. Watch full_load_run.txt.
+
+# Load for real, in the background
 load FORCE="" TAG="":
-    {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }}
+    nohup {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }} > full_load_run.txt 2>&1 &
+    @echo "started; follow with: tail -f full_load_run.txt"
 
 # Needs --session on run_manifest.py, which is in pull request #6.
 
 # Load only named sessions. Unknown ids are a hard error
-load-sessions +IDS:
-    @grep -q '"--session"' run_manifest.py || (echo "run_manifest.py has no --session on this branch; it is in pull request #6" >&2; exit 2)
-    {{PY}} run_manifest.py {{ prepend("--session ", IDS) }}
+load-sessions FORCE="" TAG="" +IDS="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    grep -q '"--session"' run_manifest.py || { echo "run_manifest.py has no --session on this branch; it is in pull request #6" >&2; exit 2; }
+    # Without --force this silently does nothing for exactly the sessions you would
+    # want it for: --session filters the manifest, it does not override a marker.
+    [ -n "{{FORCE}}" ] || echo "note: no FORCE given, so any session with a marker will be skipped" >&2
+    {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }} {{ prepend("--session ", IDS) }}
 
 # Needs langfuse_admin.py, which is not on main yet: see pull request #9.
 # The web interface defaults to a short time window and this corpus is
@@ -123,9 +137,23 @@ delete-dry PROJECT TYPE="trace" NAME="":
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
     {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} {{ if NAME != "" { "--name " + quote(NAME) } else { "--all" } }} --dry-run
 
-# Writes a record of what is going before anything goes.
+# NAME is required. An earlier version defaulted it to empty and therefore passed
+# --all --yes, so `just delete <project>` deleted every trace with no confirmation,
+# undoing the explicit selector langfuse_admin.py requires. Whole-project deletion
+# has its own recipe below.
 
-# Delete for real
-delete PROJECT TYPE="trace" NAME="" RECORD="deletion-record.json":
+# Delete traces with one exact name
+delete PROJECT NAME TYPE="trace" RECORD="deletion-record.json":
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
-    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} {{ if NAME != "" { "--name " + quote(NAME) } else { "--all" } }} --record {{quote(RECORD)}} --yes
+    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --name {{quote(NAME)}} --record {{quote(RECORD)}} --yes
+
+# CONFIRM must repeat the project id. Nothing here should be reachable by
+# autocomplete or by leaving an argument off.
+
+# Delete every trace in a project
+delete-all PROJECT CONFIRM TYPE="trace" RECORD="deletion-record.json":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -f langfuse_admin.py || { echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2; }
+    [ "{{CONFIRM}}" = "{{PROJECT}}" ] || { echo "refusing: pass the project id twice to confirm deleting everything" >&2; exit 2; }
+    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --all --record {{quote(RECORD)}} --yes
