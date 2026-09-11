@@ -113,7 +113,11 @@ load-sessions FORCE="" TAG="" +IDS="":
     # IDS has an empty default so FORCE and TAG can be optional, and run_manifest.py
     # reads an absent --session as "the whole manifest". Without this check,
     # `just load-sessions` is a full production load wearing the name of a narrow one.
-    [ -n "{{IDS}}" ] || { echo "refusing: no session ids given. This recipe loads named sessions; run_manifest.py with no --session loads everything. Use `just load` if that is what you want." >&2; exit 2; }
+    # No backticks in these strings. An earlier version wrote "Use `just load`" here
+    # and bash executed it as a command substitution, so the refusal message started
+    # a full background load. Off-pod it failed on missing roots; on the pod it would
+    # have run the entire manifest from the recipe written to prevent exactly that.
+    [ -n "{{IDS}}" ] || { echo "refusing: no session ids given. This recipe loads named sessions, and run_manifest.py with no --session loads everything. Run 'just load' if a full load is what you want." >&2; exit 2; }
     grep -q '"--session"' run_manifest.py || { echo "run_manifest.py has no --session on this branch; it is in pull request #6" >&2; exit 2; }
     # Without --force this silently does nothing for exactly the sessions you would
     # want it for: --session filters the manifest, it does not override a marker.
