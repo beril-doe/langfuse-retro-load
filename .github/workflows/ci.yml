@@ -8,9 +8,16 @@
 name: CI
 
 on:
+  # Every branch, not only main. A finished branch sat here for hours with tests that
+  # passed locally, no pull request, and therefore no check of any kind. Limiting push
+  # to main makes the one case where CI is the only reader the case it does not run in.
   push:
-    branches: [main]
   pull_request:
+
+# A pull request branch would otherwise run twice per push, once for each trigger.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
