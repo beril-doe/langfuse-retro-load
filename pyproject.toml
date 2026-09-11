@@ -1,0 +1,32 @@
+# Dependencies are declared here because the README already states a pinning
+# requirement that nothing implemented. langfuse_hook_official.py reaches into
+# `_otel_tracer` and `_create_observation_from_otel_span`, which are private and
+# not part of the public SDK surface, so a major release may rename them without
+# that counting as a breaking change. The failure mode is a hook that silently
+# stops recording, which is the worst kind for a tool whose whole job is recording.
+#
+# Nothing here is packaged or installed as a library. These scripts are run
+# directly on the BERDL pod. This file exists so that `uv sync` or `pip install -e .`
+# reproduces a working environment instead of relying on whatever the pod happens
+# to have.
+[project]
+name = "langfuse-retro-load"
+version = "0.1.0"
+description = "Load already-completed Claude Code sessions into Langfuse, backdated to when they happened."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned below 5 deliberately: see the note above about private internals.
+    "langfuse>=4.0,<5",
+    # retro_load.py reads a sibling .env without ever printing values.
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Only the artifact uploader needs these, and that code is not in this repo yet.
+upload = ["httpx>=0.27"]
+
+[tool.uv]
+# This project is uv-managed. Use `uv add` / `uv sync` / `uv lock --upgrade-package`,
+# never `pip install` or `uv pip install`.
+package = false
