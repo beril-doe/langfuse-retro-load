@@ -172,6 +172,18 @@ def api(path: str, header: str, host: str, data=None, method="GET"):
         return response.status, json.loads(response.read() or b"{}")
 
 
+def _count_once(url: str, header: str, host: str) -> tuple[object, str | None]:
+    """One totalItems read, with its own error. Kept separate so one request being
+    rejected does not stop the other from being attempted."""
+    try:
+        _, body = api(url, header, host)
+    except urllib.error.HTTPError as exc:
+        return None, f"HTTP {exc.code}"
+    except OSError as exc:
+        return None, type(exc).__name__
+    return (body.get("meta") or {}).get("totalItems"), None
+
+
 def total(path: str, header: str, host: str) -> tuple[object, str | None]:
     """Return (count, note). A count of None means it could not be counted.
 
@@ -182,15 +194,26 @@ def total(path: str, header: str, host: str) -> tuple[object, str | None]:
     number would silently re-read page one forever, so report that we cannot count it
     rather than return a number that looks fine and is wrong.
     """
+    if path.endswith("/traces"):
+        # See ALL_TIME. Both requests run independently: a deployment with
+        # LANGFUSE_API_TRACES_REJECT_NO_DATE_RANGE rejects the unbounded one outright,
+        # and sharing a handler meant that rejection returned before the bounded
+        # request was ever tried, in one of the configurations this exists to support.
+        a, a_err = _count_once(f"{path}?limit=1", header, host)
+        b, b_err = _count_once(f"{path}?limit=1&fromTimestamp={ALL_TIME}", header, host)
+        if a is None and b is None:
+            return None, a_err or b_err
+        if a is None:
+            return b, f"unbounded request rejected ({a_err}); using the bounded count"
+        if b is None:
+            return a, f"bounded request rejected ({b_err}); using the unbounded count"
+        if a != b:
+            return max(a, b), f"unbounded={a}, from {ALL_TIME[:10]}={b}; reporting the larger"
+        # Agreement is not proof of an all-time total. A plan with a data-access
+        # floor clamps both, so both can agree on the same recent subset.
+        return a, None
     try:
         _, body = api(f"{path}?limit=1", header, host)
-        if path.endswith("/traces"):
-            # See ALL_TIME. Ask both ways; disagreement means one of them is filtered.
-            _, bounded = api(f"{path}?limit=1&fromTimestamp={ALL_TIME}", header, host)
-            a = (body.get("meta") or {}).get("totalItems")
-            b = (bounded.get("meta") or {}).get("totalItems")
-            if a is not None and b is not None and a != b:
-                return max(a, b), f"unbounded={a}, from {ALL_TIME[:10]}={b}; reporting the larger"
     except urllib.error.HTTPError as exc:
         return None, f"HTTP {exc.code}"
     except OSError as exc:
