@@ -92,8 +92,11 @@ tracked pseudonymously. Don't change that without a real reason.
 # 1. Regenerate the manifest from current state (content-safe, no Langfuse calls)
 python3 build_manifest.py
 
-# 2. Check what is in the transcripts before sending any of it
-python3 scan_transcript.py ~/.claude/projects/*/*.jsonl
+# 2. Check what is in the transcripts before sending any of it.
+#    Scan every find_root in people.json, not just your own pod home: the frozen
+#    corpus roots live outside ~/.claude and would otherwise load unscanned.
+python3 -c "import json;[print(s['find_root']) for p in json.load(open('people.json')) for s in p['sources']]" \
+  | xargs -I{} sh -c 'find $(eval echo {}) -maxdepth 2 -name "*.jsonl" -print0 | xargs -0 python3 scan_transcript.py --quiet'
 python3 scan_transcript.py --detail scan-detail.txt <one-file>   # then read that file
 
 # 3. Sanity check before spending anything for real

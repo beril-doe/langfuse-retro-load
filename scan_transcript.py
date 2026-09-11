@@ -69,9 +69,15 @@ SECRET_RES = {
     "private_key_block": re.compile(r"BEGIN [A-Z ]*PRIVATE KEY"),
     "jwt": re.compile(r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\."),
     "slack_token": re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}"),
+    # The escaped-quote alternatives are load-bearing. A transcript is JSONL, so a tool
+    # result containing JSON arrives as \"token\":\"...\", and a nested payload as
+    # \\"token\\":\\"...\\". Without them the scanner reads the raw file and misses a
+    # credential that retro_load.py then decodes and uploads. The leak we actually found
+    # came through as a plain env dump, so this gap had not bitten yet.
     "keyed_value": re.compile(
         r"(?i)(?:token|secret|password|passwd|api[ _-]?key|credential)"
-        r"[\"'*`\t ]*[:=][\t ]*[\"']?[A-Za-z0-9!@#$%^&*_+/=-]{8,}"
+        r"(?:\\{1,2}[\"'])?[\"'*`\t ]*[:=][\t ]*(?:\\{1,2}[\"'])?"
+        r"[\"']?[A-Za-z0-9!@#$%^&*_+/=-]{8,}"
     ),
     # Only a URI that actually carries credentials. A bare mongodb://host:port is a
     # hostname, and source code building one from an f-string is neither. Real
@@ -250,6 +256,11 @@ def main() -> int:
         # umask can only clear bits, never add them.
         try:
             fd = os.open(args.detail, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # The mode argument only applies when os.open creates the file. Reusing an
+            # existing path keeps whatever permissions it already had, so a detail file
+            # written twice could stay group or world readable while holding exactly the
+            # material this script exists to find. fchmod the descriptor we hold.
+            os.fchmod(fd, 0o600)
         except OSError as exc:
             print(f"cannot write {args.detail}: {exc.strerror}", file=sys.stderr)
             return 2
