@@ -35,7 +35,7 @@ falling back to the unprefixed names and finally to US cloud. An EU or self-host
 would otherwise be queried at the wrong service and silently report nothing.
 
 Organization keys are used by `projects` only. `count` and `delete` still need a project
-key, because this script does not mint one. See issue #13.
+key for the project named, because this script does not mint one.
 """
 import argparse
 import base64
@@ -47,6 +47,9 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_HOST = "https://us.cloud.langfuse.com"
+
+#: Langfuse rejects a bulk delete body with more than this many traceIds.
+BULK_DELETE_LIMIT = 1000
 
 #: Every listable object type, and the endpoint that reports a total for it.
 #: Endpoints that page by cursor do not return `meta.totalItems`; those are marked so the
@@ -97,19 +100,23 @@ UNDELETABLE_REASON = {
 }
 
 
-def load_env() -> dict:
-    """A .env beside this script wins over ~/.env, matching the documented pod setup."""
+def load_env() -> tuple[dict, Path | None]:
+    """A .env beside this script wins over ~/.env, matching the documented pod setup.
+
+    Returns the file actually read, so an error can name it. Saying "~/.env" when a
+    local .env shadowed it sends the operator to edit the wrong credential file.
+    """
     env = {}
     local = Path(__file__).resolve().parent / ".env"
     path = local if local.exists() else Path.home() / ".env"
     if not path.exists():
-        return env
+        return env, None
     for line in path.read_text(errors="replace").splitlines():
         key, sep, value = line.partition("=")
         key = key.strip().removeprefix("export ")
         if sep and not key.startswith("#"):
             env[key] = value.strip().strip('"').strip("'")
-    return env
+    return env, path
 
 
 def auth_for_project(project_id: str) -> tuple[str, str]:
@@ -117,7 +124,7 @@ def auth_for_project(project_id: str) -> tuple[str, str]:
 
     Never falls back to "the only key present". Returns (auth header, host).
     """
-    env = load_env()
+    env, source = load_env()
     prefixes = sorted({k.split("_LANGFUSE_")[0] for k in env if "_LANGFUSE_" in k})
     for prefix in prefixes:
         if env.get(f"{prefix}_LANGFUSE_PROJECT_ID") != project_id:
@@ -131,10 +138,11 @@ def auth_for_project(project_id: str) -> tuple[str, str]:
             return header, host.rstrip("/")
     known = [p for p in prefixes if env.get(f"{p}_LANGFUSE_PROJECT_ID")]
     raise SystemExit(
-        f"no key in ~/.env names project {project_id}.\n"
+        f"no key in {source or '(no .env found)'} names project {project_id}.\n"
         f"prefixes that name a project: {', '.join(known) or '(none)'}\n"
-        "A project key sees only its own project. To reach another one, create an "
-        "organization API key and add <PREFIX>_LANGFUSE_ORG_PUBLIC_KEY / _SECRET_KEY."
+        "count and delete need a PROJECT key for that project specifically. Add\n"
+        "<PREFIX>_LANGFUSE_PROJECT_ID, _PUBLIC_KEY and _SECRET_KEY for it. An\n"
+        "organization key does not help here; it is only used by `projects`."
     )
 
 
@@ -211,7 +219,7 @@ def cmd_count(args) -> int:
 
 def cmd_projects(args) -> int:
     """List every project in an organization. Needs an organization key."""
-    env = load_env()
+    env, _ = load_env()
     prefix = args.org.upper()
     public = env.get(f"{prefix}_LANGFUSE_ORG_PUBLIC_KEY")
     secret = env.get(f"{prefix}_LANGFUSE_ORG_SECRET_KEY")
@@ -221,7 +229,10 @@ def cmd_projects(args) -> int:
               "returns 403 with one. Create an organization API key in the Langfuse UI under\n"
               "the organization's settings.", file=sys.stderr)
         return 2
-    host = (env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get("LANGFUSE_BASE_URL")
+    # Same resolution as auth_for_project. Omitting the _HOST forms sent an
+    # organization key to US cloud for a self-hosted or EU organization.
+    host = (env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get(f"{prefix}_LANGFUSE_HOST")
+            or env.get("LANGFUSE_BASE_URL") or env.get("LANGFUSE_HOST")
             or DEFAULT_HOST).rstrip("/")
     header = "Basic " + base64.b64encode(f"{public}:{secret}".encode()).decode()
     try:
@@ -230,7 +241,14 @@ def cmd_projects(args) -> int:
         print(f"HTTP {exc.code}. An organization key is required here, not a project key.",
               file=sys.stderr)
         return 1
-    for project in body.get("data", []):
+    # The organization endpoint returns its array under "projects" while the
+    # project endpoint uses "data". Accept either rather than silently print
+    # nothing, which is what reading only "data" did.
+    found = body.get("projects") or body.get("data") or []
+    if not found:
+        print("no projects returned", file=sys.stderr)
+        return 1
+    for project in found:
         print(f"{project['id']}  {project.get('name')}")
     return 0
 
@@ -245,6 +263,12 @@ def cmd_delete(args) -> int:
         return 2
     if args.type != "trace":
         print(f"{args.type} deletion is not implemented yet; only traces are.", file=sys.stderr)
+        return 2
+    # Checked here rather than by argparse, so an undeletable type reaches its
+    # explanation above instead of dying on a missing selector.
+    if not args.name and not args.all:
+        print("give --name to match a trace name, or --all to mean every trace",
+              file=sys.stderr)
         return 2
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
@@ -287,9 +311,18 @@ def cmd_delete(args) -> int:
         }, indent=2) + "\n")
         print(f"recorded to {args.record}")
 
-    status, body = api("/api/public/traces", header, host,
-                       {"traceIds": [t["id"] for t in targets]}, "DELETE")
-    print(f"HTTP {status}: {json.dumps(body)[:200]}")
+    # Langfuse rejects a bulk body carrying more than 1,000 traceIds. The two real
+    # deletions on 2026-09-11 were 67 and 483, both under it, so this never showed up.
+    # A larger project would have received HTTP 400 and deleted nothing.
+    ids = [t["id"] for t in targets]
+    batches = [ids[i:i + BULK_DELETE_LIMIT] for i in range(0, len(ids), BULK_DELETE_LIMIT)]
+    for n, batch in enumerate(batches, 1):
+        status, body = api("/api/public/traces", header, host, {"traceIds": batch}, "DELETE")
+        label = f"batch {n}/{len(batches)}" if len(batches) > 1 else "all"
+        print(f"  {label}: {len(batch)} traces, HTTP {status}: {json.dumps(body)[:120]}")
+        if status >= 300:
+            print("stopping: a batch failed, later batches not sent", file=sys.stderr)
+            return 1
     print("Deletion is asynchronous. Re-run count to confirm.")
     return 0
 
@@ -306,9 +339,11 @@ def main() -> int:
     d = sub.add_parser("delete", help="delete objects of one type")
     d.add_argument("--project", required=True)
     d.add_argument("--type", required=True)
-    # Mutually exclusive on purpose: accepting `--name foo --all` and letting --all win
-    # turns a narrow request into a project-wide deletion.
-    selector = d.add_mutually_exclusive_group(required=True)
+    # Mutually exclusive but NOT required at parse time. Requiring it here meant
+    # `delete --type observation` died on "one of --name/--all is required" and never
+    # reached the explanation that observations cannot be deleted at all. The type
+    # checks run first now, and cmd_delete requires a selector afterwards.
+    selector = d.add_mutually_exclusive_group(required=False)
     selector.add_argument("--name", help="match traces with this exact name")
     selector.add_argument("--all", action="store_true", help="every trace in the project")
     d.add_argument("--dry-run", action="store_true")
