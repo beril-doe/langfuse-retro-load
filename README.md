@@ -77,6 +77,11 @@ tracked pseudonymously. Don't change that without a real reason.
 
 ## Running it
 
+`pyproject.toml` and `uv.lock` describe the intended environment. They are not yet in
+use on the pod, because `uv` is not installed there; see the setup issue in this repo.
+Until that lands, the commands below run against whatever Python the pod provides,
+which is the reproducibility gap the lockfile exists to close.
+
 ```bash
 # 1. Regenerate the manifest from current state (content-safe, no Langfuse calls)
 python3 build_manifest.py
