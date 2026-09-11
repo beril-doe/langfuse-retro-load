@@ -452,6 +452,10 @@ def cmd_delete(args) -> int:
         data = json.loads(Path(args.record).read_text())
         data["batches"] = outcomes
         data["unsent_batches"] = len(batches) - len(outcomes)
+        # write_text is safe here despite appearances: it opens the existing file with
+        # O_TRUNC rather than unlinking and recreating, so the 0600 set by the exclusive
+        # create above survives. Verified on this platform: create 0600, write_text,
+        # still 0600. The umask only applies when a file is created.
         Path(args.record).write_text(json.dumps(data, indent=2) + "\n")
 
     def finish(code: int) -> int:
