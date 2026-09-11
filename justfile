@@ -27,6 +27,9 @@ setup:
     #!/usr/bin/env bash
     set -euo pipefail
     # Not `uv sync || echo`: that turns a resolver or network failure into success.
+    if [ ! -f pyproject.toml ]; then
+      echo "no pyproject.toml on this branch; it is in pull request #8" >&2; exit 2
+    fi
     if command -v uv >/dev/null 2>&1; then uv sync
     else echo "uv not installed; using the ambient python3 (issue #15)"; fi
 
