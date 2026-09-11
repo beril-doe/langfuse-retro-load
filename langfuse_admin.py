@@ -54,6 +54,17 @@ BULK_DELETE_LIMIT = 1000
 #: Every listable object type, and the endpoint that reports a total for it.
 #: Endpoints that page by cursor do not return `meta.totalItems`; those are marked so the
 #: count falls back to walking pages rather than silently reporting the page size.
+#: Traces are the one endpoint that can apply a server-configured default date
+#: window when fromTimestamp is absent (LANGFUSE_API_TRACES_DEFAULT_DATE_RANGE_DAYS
+#: on a self-hosted deployment). This tool exists because short windows hide
+#: backdated data, so inheriting one silently would be the exact defect it prevents.
+#:
+#: Passing a lower bound is not a free fix. Measured on the NMDC project 2026-09-11:
+#: unbounded returns 71 traces, fromTimestamp=2000-01-01 returns 70, reproducibly.
+#: Something is excluded by the bound. So ask both ways and take the larger,
+#: reporting when they disagree rather than silently choosing.
+ALL_TIME = "1970-01-01T00:00:00Z"
+
 COUNTABLE = {
     "trace": ("/api/public/traces", True),
     "observation": ("/api/public/observations", True),
@@ -91,7 +102,10 @@ DELETABLE = {
 
 UNDELETABLE_REASON = {
     "observation": "no delete exists at any version. Delete its trace, which takes every observation in it.",
-    "session": "not a stored object. It is a string that traces carry, and it stops appearing once its traces are gone.",
+    "session": ("no delete endpoint exists. A session is a label traces carry, but deleting "
+                "every trace does not clear it: beril-usage reported 103 sessions with 0 traces "
+                "and 0 observations on 2026-09-11. Whether they are eventually collected is "
+                "unknown, so do not plan on it."),
     "comment": "no delete endpoint.",
     "media": "no delete endpoint, but media is removed when its trace is deleted (verified 2026-09-11).",
     "annotation-queue": "the queue itself has no delete. Its items and assignments do.",
@@ -158,7 +172,9 @@ def api(path: str, header: str, host: str, data=None, method="GET"):
 
 
 def total(path: str, header: str, host: str) -> tuple[object, str | None]:
-    """Return (count, error). A failure must never be printable as if it were a count.
+    """Return (count, note). A count of None means it could not be counted.
+
+    A note with a count present is information, not failure.
 
     Three shapes of response. `meta.totalItems` is the easy case. `meta.totalPages` means
     page-numbered, so walk pages. Anything else is cursor-paged, and walking it by page
@@ -167,6 +183,13 @@ def total(path: str, header: str, host: str) -> tuple[object, str | None]:
     """
     try:
         _, body = api(f"{path}?limit=1", header, host)
+        if path.endswith("/traces"):
+            # See ALL_TIME. Ask both ways; disagreement means one of them is filtered.
+            _, bounded = api(f"{path}?limit=1&fromTimestamp={ALL_TIME}", header, host)
+            a = (body.get("meta") or {}).get("totalItems")
+            b = (bounded.get("meta") or {}).get("totalItems")
+            if a is not None and b is not None and a != b:
+                return max(a, b), f"unbounded={a}, from {ALL_TIME[:10]}={b}; reporting the larger"
     except urllib.error.HTTPError as exc:
         return None, f"HTTP {exc.code}"
     except OSError as exc:
@@ -203,12 +226,14 @@ def cmd_count(args) -> int:
     print(f"{'object':<20}{'count':>10}  {'note'}")
     failed = []
     for name, (path, _) in COUNTABLE.items():
-        count, error = total(path, header, host)
-        if error:
-            failed.append((name, error))
-            print(f"{name:<20}{'-':>10}  {error}")
+        count, note = total(path, header, host)
+        # A note alongside a count is information, not failure. Only a missing count
+        # means the type could not be counted.
+        if count is None:
+            failed.append((name, note))
+            print(f"{name:<20}{'-':>10}  {note}")
         else:
-            print(f"{name:<20}{count:>10}")
+            print(f"{name:<20}{count:>10}" + (f"  {note}" if note else ""))
     if failed:
         # Exit nonzero so a caller checking status is not told an incomplete count
         # succeeded. This is the whole point: a silent partial count is worse than none.
@@ -275,7 +300,10 @@ def cmd_delete(args) -> int:
 
     traces, page = [], 1
     while True:
-        _, body = api(f"/api/public/traces?limit=100&page={page}", header, host)
+        # Explicit lower bound so --all cannot enumerate only a recent subset on a
+        # deployment with a default window, then report it as the whole project.
+        _, body = api(f"/api/public/traces?limit=100&page={page}&fromTimestamp={ALL_TIME}",
+                      header, host)
         traces += body["data"]
         if page >= (body.get("meta") or {}).get("totalPages", 1):
             break
