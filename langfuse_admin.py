@@ -364,7 +364,7 @@ def cmd_delete(args) -> int:
         Path(args.record).write_text(json.dumps({
             # Written before any DELETE, so it is a plan, not a record of what happened.
             # It used to say delete_requested_at_utc across every batch, which was false
-            # for any batch that a earlier failure meant was never sent. The per-batch
+            # for any batch that an earlier failure meant was never sent. The per-batch
             # outcome is appended after the loop.
             "planned_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "project": args.project, "where": where, "host": host,
