@@ -78,11 +78,16 @@ tracked pseudonymously. Don't change that without a real reason.
 ## Running it
 
 ```bash
+# 0. Reproduce the environment. Without this the scripts run against whatever the pod
+#    happens to have installed, which is the thing pyproject.toml and uv.lock exist to
+#    prevent. Run every step below through `uv run` for the same reason.
+uv sync
+
 # 1. Regenerate the manifest from current state (content-safe, no Langfuse calls)
-python3 build_manifest.py
+uv run build_manifest.py
 
 # 2. Sanity check before spending anything for real
-python3 run_manifest.py --dry-run
+uv run run_manifest.py --dry-run
 
 # 3. Credentials -- .env next to these scripts, LANGFUSE_PUBLIC_KEY /
 #    LANGFUSE_SECRET_KEY / LANGFUSE_HOST, for whichever Langfuse project
@@ -91,7 +96,7 @@ python3 run_manifest.py --dry-run
 
 # 4. The real thing. Backgrounded, since a browser/terminal hiccup shouldn't
 #    kill a run partway through -- it's resumable via the markers either way.
-nohup python3 run_manifest.py > full_load_run.txt 2>&1 &
+nohup uv run run_manifest.py > full_load_run.txt 2>&1 &
 
 # 5. Verify independently against Langfuse's own API, not just this
 #    script's own "OK" output. Compare the run's own emitted-file count against

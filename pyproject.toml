@@ -5,10 +5,13 @@
 # that counting as a breaking change. The failure mode is a hook that silently
 # stops recording, which is the worst kind for a tool whose whole job is recording.
 #
-# Nothing here is packaged or installed as a library. These scripts are run
-# directly on the BERDL pod. This file exists so that `uv sync` or `pip install -e .`
-# reproduces a working environment instead of relying on whatever the pod happens
-# to have.
+# Nothing here is packaged or installed as a library. These scripts are run directly
+# on the BERDL pod. This file plus the committed uv.lock exist so that `uv sync`
+# reproduces one known environment instead of whatever the pod happens to have.
+#
+# `pip install -e .` is deliberately not offered. With several top-level scripts and
+# no package directory, setuptools flat-layout discovery fails rather than installing
+# the dependencies, so suggesting it would send someone down a dead end. Use uv.
 [project]
 name = "langfuse-retro-load"
 version = "0.1.0"
@@ -16,7 +19,10 @@ description = "Load already-completed Claude Code sessions into Langfuse, backda
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    # Pinned below 5 deliberately: see the note above about private internals.
+    # The range keeps a 5.x out. The committed uv.lock is what actually pins the 4.x,
+    # because a range alone lets every `uv sync` resolve a different release and leaves
+    # the private-internals version unrecorded, which is the thing this file exists to
+    # prevent. Change the pin with `uv lock --upgrade-package langfuse`, never by hand.
     "langfuse>=4.0,<5",
     # retro_load.py reads a sibling .env without ever printing values.
     "python-dotenv>=1.0",
