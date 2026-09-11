@@ -117,8 +117,12 @@ def main() -> int:
 
     # Enumerate every root before writing anything, so a failure anywhere leaves the
     # existing manifest untouched rather than replacing it with a partial one.
+    # Keyed by find_root, not (person, type). people.json documents one entry per
+    # place a person's traces live, and nothing stops a person having two of the same
+    # type; keying by type would have silently dropped one of them and produced a
+    # manifest short of those sessions, which is the failure this block prevents.
     try:
-        discovered = {(p["person"], s["type"]): find_jsonl_files(s["find_root"])
+        discovered = {s["find_root"]: find_jsonl_files(s["find_root"])
                       for p in people for s in p["sources"]}
     except DiscoveryFailed as exc:
         print(f"refusing to rebuild the manifest: {exc}", file=sys.stderr)
@@ -126,7 +130,7 @@ def main() -> int:
 
     for person in people:
         for source in person["sources"]:
-            files = discovered[(person["person"], source["type"])]
+            files = discovered[source["find_root"]]
             print(f"{person['person']}/{source['type']}: {len(files)} files found")
             for path in files:
                 sid = path.stem

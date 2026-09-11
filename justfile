@@ -68,7 +68,7 @@ scan:
 # Scan one file and write matched context for review
 scan-detail FILE OUT="scan-detail.txt":
     @test -f scan_transcript.py || (echo "scan_transcript.py is not on this branch; it is in pull request #6" >&2; exit 2)
-    {{PY}} scan_transcript.py --detail {{quote(OUT)}} {{quote(FILE)}}
+    @{{PY}} scan_transcript.py --detail {{quote(OUT)}} {{quote(FILE)}}
 
 # Overwrites the committed manifest.json from the find_roots on THIS machine.
 # Off the pod that means your own ~/.claude, which is not the corpus, so this
@@ -153,9 +153,13 @@ delete-dry PROJECT TYPE="trace" NAME="":
 
 # Delete traces with one exact name
 delete PROJECT NAME TYPE="trace" RECORD="":
-    @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
     #!/usr/bin/env bash
     set -euo pipefail
+    # The shebang must be the recipe's first line. With a guard line above it, Just
+    # runs every line in its own shell, so `set -euo pipefail` governs nothing and
+    # `rec` below never reaches the command that uses it: --record would be empty and
+    # no audit manifest would be written at all.
+    test -f langfuse_admin.py || { echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2; }
     # A fixed default record path meant each deletion overwrote the previous one's
     # pre-delete manifest, which is the only audit artifact these commands produce.
     rec="{{RECORD}}"; [ -n "$rec" ] || rec="deletion-record-$(date -u +%Y%m%dT%H%M%SZ).json"
