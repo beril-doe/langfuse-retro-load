@@ -43,6 +43,7 @@ import datetime
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -302,19 +303,27 @@ def cmd_delete(args) -> int:
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
 
+    # Filter server-side for --name. Paging the whole project and filtering locally
+    # made a narrow deletion cost as many requests as a full one, and on a large
+    # project that is a rate-limit risk for an operation touching a handful of traces.
+    # Verified against the live API: name=<no match> returns 0 of 71.
+    name_filter = f"&name={urllib.parse.quote(args.name)}" if args.name else ""
     traces, page = [], 1
     while True:
         # Explicit lower bound so --all cannot enumerate only a recent subset on a
         # deployment with a default window, then report it as the whole project.
-        _, body = api(f"/api/public/traces?limit=100&page={page}&fromTimestamp={ALL_TIME}",
-                      header, host)
+        _, body = api(f"/api/public/traces?limit=100&page={page}"
+                      f"&fromTimestamp={ALL_TIME}{name_filter}", header, host)
         traces += body["data"]
         if page >= (body.get("meta") or {}).get("totalPages", 1):
             break
         page += 1
+    # Still filtered locally as well: the server filter is a narrowing optimisation,
+    # not the authority on what gets deleted.
     targets = traces if args.all else [t for t in traces if t.get("name") == args.name]
 
-    print(f"{where}: {len(traces)} traces, {len(targets)} match")
+    scope = "in project" if args.all else f"matching {args.name!r}"
+    print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
     if not targets:
         return 0
     stamps = sorted(t["timestamp"] for t in targets if t.get("timestamp"))
@@ -330,10 +339,11 @@ def cmd_delete(args) -> int:
 
     if args.record:
         Path(args.record).write_text(json.dumps({
-            # Named for what it is. The DELETE below is asynchronous, so this is when the
-            # request was made, not when anything was removed. A field called deleted_at
-            # would be read later as evidence that it completed.
-            "delete_requested_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            # Written before any DELETE, so it is a plan, not a record of what happened.
+            # It used to say delete_requested_at_utc across every batch, which was false
+            # for any batch that a earlier failure meant was never sent. The per-batch
+            # outcome is appended after the loop.
+            "planned_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "project": args.project, "where": where, "host": host,
             "match": "all" if args.all else args.name,
             "count": len(targets),
@@ -348,6 +358,17 @@ def cmd_delete(args) -> int:
     # A larger project would have received HTTP 400 and deleted nothing.
     ids = [t["id"] for t in targets]
     batches = [ids[i:i + BULK_DELETE_LIMIT] for i in range(0, len(ids), BULK_DELETE_LIMIT)]
+    outcomes = []
+
+    def finish(code: int) -> int:
+        """Append what actually happened per batch, so the record is not a claim."""
+        if args.record:
+            data = json.loads(Path(args.record).read_text())
+            data["batches"] = outcomes
+            data["unsent_batches"] = len(batches) - len(outcomes)
+            Path(args.record).write_text(json.dumps(data, indent=2) + "\n")
+        return code
+
     for n, batch in enumerate(batches, 1):
         label = f"batch {n}/{len(batches)}" if len(batches) > 1 else "all"
         # urlopen raises HTTPError for any 4xx or 5xx, so api() never returns a failing
@@ -356,16 +377,20 @@ def cmd_delete(args) -> int:
         try:
             status, body = api("/api/public/traces", header, host, {"traceIds": batch}, "DELETE")
         except urllib.error.HTTPError as exc:
+            outcomes.append({"batch": n, "count": len(batch), "outcome": f"HTTP {exc.code}"})
             print(f"  {label}: {len(batch)} traces, HTTP {exc.code}", file=sys.stderr)
             print("stopping: a batch was rejected, later batches not sent", file=sys.stderr)
-            return 1
+            return finish(1)
         except OSError as exc:
+            outcomes.append({"batch": n, "count": len(batch), "outcome": type(exc).__name__})
             print(f"  {label}: {type(exc).__name__}", file=sys.stderr)
             print("stopping: a batch failed to send, later batches not sent", file=sys.stderr)
-            return 1
+            return finish(1)
+        outcomes.append({"batch": n, "count": len(batch), "outcome": f"HTTP {status}",
+                         "requested_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()})
         print(f"  {label}: {len(batch)} traces, HTTP {status}: {json.dumps(body)[:120]}")
     print("Deletion is asynchronous. Re-run count to confirm.")
-    return 0
+    return finish(0)
 
 
 def main() -> int:
