@@ -52,7 +52,20 @@ DEFAULT_HOST = "https://us.cloud.langfuse.com"
 #: Langfuse rejects a bulk delete body with more than this many traceIds.
 BULK_DELETE_LIMIT = 1000
 
+#: Removal date for the v3 endpoints this tool reads. Langfuse's own schema says
+#: /api/public/traces, /observations, /sessions and /v2/scores are removed from Cloud
+#: on this date, and from self-hosted deployments on upgrade to v4. Four of the routes
+#: below are on that list, so `count` and `delete` both stop working then, not
+#: gradually but on a date. Checked against schema 4.16.0 on 2026-09-11.
+#:
+#: The replacements are not drop-in. v2/observations is cursor-paged with no
+#: totalItems, so a count means walking pages; trace and session totals have to be
+#: derived from observations rather than read; and v3/scores has a different shape.
+#: Tracked rather than done here: this pull request already carries enough.
+V3_REMOVAL = "2026-11-16"
+
 #: Every listable object type, and the endpoint that reports a total for it.
+#: `deprecated` marks the ones removed on V3_REMOVAL.
 #: Endpoints that page by cursor do not return `meta.totalItems`; those are marked so the
 #: count falls back to walking pages rather than silently reporting the page size.
 #: Traces are the one endpoint that can apply a server-configured default date
@@ -67,10 +80,10 @@ BULK_DELETE_LIMIT = 1000
 ALL_TIME = "1970-01-01T00:00:00Z"
 
 COUNTABLE = {
-    "trace": ("/api/public/traces", True),
-    "observation": ("/api/public/observations", True),
-    "session": ("/api/public/sessions", True),
-    "score": ("/api/public/v2/scores", True),
+    "trace": ("/api/public/traces", True),           # deprecated, removed V3_REMOVAL
+    "observation": ("/api/public/observations", True),  # deprecated, removed V3_REMOVAL
+    "session": ("/api/public/sessions", True),       # deprecated, removed V3_REMOVAL
+    "score": ("/api/public/v2/scores", True),        # deprecated, removed V3_REMOVAL
     "score-config": ("/api/public/score-configs", True),
     "dataset": ("/api/public/v2/datasets", True),
     "dataset-item": ("/api/public/dataset-items", True),
@@ -247,7 +260,26 @@ def confirm_project(project_id: str, header: str, host: str) -> str:
     raise SystemExit(f"the key resolved for {project_id} does not actually serve it")
 
 
+DEPRECATED_PATHS = {"/api/public/traces", "/api/public/observations",
+                    "/api/public/sessions", "/api/public/v2/scores"}
+
+
+def warn_deprecated() -> None:
+    """Say it once, loudly, rather than let the tool fail silently in November."""
+    today = datetime.date.today().isoformat()
+    if today < V3_REMOVAL:
+        print(f"note: four of these endpoints are removed from Langfuse Cloud on "
+              f"{V3_REMOVAL}. After that this command needs rewriting against "
+              f"v2/observations and v3/scores. See the note on V3_REMOVAL.",
+              file=sys.stderr)
+    else:
+        print(f"warning: the endpoints this uses were scheduled for removal on "
+              f"{V3_REMOVAL}. Any zero below may mean the route is gone rather than "
+              f"the project being empty.", file=sys.stderr)
+
+
 def cmd_count(args) -> int:
+    warn_deprecated()
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
     print(f"{where}  ({args.project})  at {host}\n")
@@ -291,8 +323,21 @@ def cmd_projects(args) -> int:
     try:
         _, body = api("/api/public/organizations/projects", header, host)
     except urllib.error.HTTPError as exc:
-        print(f"HTTP {exc.code}. An organization key is required here, not a project key.",
-              file=sys.stderr)
+        # Not "you used the wrong key". 403 also means a plan without the admin-api
+        # entitlement, and other statuses mean other things entirely. Rewriting them
+        # all as a credential problem sends someone to rotate a key that was correct.
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            pass
+        print(f"HTTP {exc.code} from /api/public/organizations/projects", file=sys.stderr)
+        if detail:
+            print(f"  {detail}", file=sys.stderr)
+        if exc.code == 403:
+            print("  403 here means either a project key rather than an organization key, "
+                  "or an organization key on a plan without the admin-api entitlement.",
+                  file=sys.stderr)
         return 1
     # The organization endpoint returns its array under "projects" while the
     # project endpoint uses "data". Accept either rather than silently print
@@ -323,6 +368,7 @@ def cmd_delete(args) -> int:
         print("give --name to match a trace name, or --all to mean every trace",
               file=sys.stderr)
         return 2
+    warn_deprecated()
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
 
@@ -361,6 +407,15 @@ def cmd_delete(args) -> int:
         return 1
 
     if args.record:
+        # Exclusive create. write_text truncates, so reusing a filename destroyed the
+        # previous run's audit trail before this run had sent anything, and a mistyped
+        # path could overwrite something unrelated. The manifest is the only record
+        # these commands leave behind.
+        if Path(args.record).exists():
+            print(f"refusing: {args.record} already exists. Pick another path or delete "
+                  "it deliberately; overwriting it would destroy the previous deletion's "
+                  "record.", file=sys.stderr)
+            return 2
         Path(args.record).write_text(json.dumps({
             # Written before any DELETE, so it is a plan, not a record of what happened.
             # It used to say delete_requested_at_utc across every batch, which was false
