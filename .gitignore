@@ -7,3 +7,14 @@
 
 __pycache__/
 .venv/
+
+# Scan detail output. Holds the exact material scan_transcript.py exists to find.
+scan-detail*.txt
+
+# Deletion manifests. Written by `langfuse_admin.py delete --record` before
+# anything is removed, so they hold trace ids, session ids and user ids for a
+# real project. Useful locally, not something to publish.
+deletion-record*.json
+
+# Local run log from `just load`.
+full_load_run.txt
