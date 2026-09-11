@@ -106,6 +106,28 @@ curl -s "$LANGFUSE_HOST/api/public/observations?tag=<your-batch-tag>&limit=1" \
   "import json,sys; print(json.load(sys.stdin)['meta']['totalItems'])"
 ```
 
+## Tests
+
+```
+just test      # pytest, offline
+just lint      # ruff, the narrow ruleset pinned in pyproject.toml
+just check     # both, in the order CI runs them
+```
+
+Nothing in `tests/` talks to Langfuse. The deletion tests replace `api`,
+`auth_for_project` and `confirm_project` with functions that raise, so a refusal
+that reached the network fails the run instead of passing it. That is the point of
+those tests: the refusals in `langfuse_admin.py delete` have to happen before the
+tool authenticates, and testing only the exit code would not show it.
+
+The key resolver is tested separately, against a synthetic environment rather than a
+replaced function, because the guarantee there is that it never falls back to whichever
+key happens to be present. A test that replaced the resolver could not see that change.
+
+Both recipes need `uv`, which is not on the pod yet
+(https://github.com/beril-doe/langfuse-retro-load/issues/15). CI runs them on every
+push regardless.
+
 ## Known gaps (tracked as issues, not fixed here)
 
 - [#1](https://github.com/beril-doe/langfuse-retro-load/issues/1):
@@ -120,11 +142,6 @@ curl -s "$LANGFUSE_HOST/api/public/observations?tag=<your-batch-tag>&limit=1" \
   a live `.credentials.json` was found swept into the shared frozen corpus
   for every participant during this work. Not this tool's problem to fix,
   but tracked so it isn't lost.
-- [#3](https://github.com/beril-doe/langfuse-retro-load/issues/3):
-  the real load run before this fix wrote a real filesystem path (not
-  just the pseudonymous parts of it) into already-loaded traces'
-  metadata, confirmed directly against the live Langfuse API. Fixed
-  going forward; the historical data hasn't been corrected.
 
 A full session-by-session working log exists outside this repo (not
 committed here, since it's a working log rather than documentation). Ask a

@@ -30,7 +30,7 @@ def resolve_path(find_root: str, session_id: str) -> Path | None:
     root = Path(find_root).expanduser()
     r = subprocess.run(
         ["find", str(root), "-type", "f", "-name", f"{session_id}.jsonl"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if r.returncode != 0:
         print(f"  ! find failed under {root}: {r.stderr.strip()}", file=sys.stderr)
@@ -112,7 +112,9 @@ def main() -> int:
         if args.force:
             cmd.append("--force")
         cmd.append(str(path))
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        # check=False: a failed load is collected into `failed` and reported with its
+        # own stdout and stderr at the end. Raising here would abandon the rest of the run.
+        r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         ok = r.returncode == 0
         print(f"{sid}: {'OK' if ok else 'FAILED'}")
         if not ok:

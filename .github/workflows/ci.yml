@@ -1,0 +1,75 @@
+# Runs on every push and every pull request. Nothing here touches Langfuse.
+#
+# No Langfuse credentials, and as little GitHub credential as the job can be given.
+# Every test in `tests/` runs offline: the deletion tests replace `api`,
+# `auth_for_project` and `confirm_project` with functions that raise, so a refusal that
+# reached the network would fail the run rather than pass it. Anything needing a live
+# project belongs behind an opt-in marker, not here.
+#
+# The GitHub token is a separate question from the Langfuse one and the first version of
+# this file conflated them, claiming the job had no credentials at all. It does:
+# actions/checkout writes GITHUB_TOKEN into .git/config unless told not to, and the steps
+# after it run repository-controlled code, which on a pull request can be anyone's. So the
+# workflow takes read-only permissions and checkout is told not to persist anything.
+name: CI
+
+on:
+  # Every branch, not only main. A finished branch sat here for hours with tests that
+  # passed locally, no pull request, and therefore no check of any kind. Limiting push
+  # to main makes the one case where CI is the only reader the case it does not run in.
+  push:
+  pull_request:
+
+# A pull request branch would otherwise run twice per push, once for each trigger, and
+# keying on github.ref does not prevent it: that is refs/heads/<branch> on a push and
+# refs/pull/<n>/merge on a pull request, so the two never land in the same group. Measured
+# on this pull request, two runs four seconds apart on one commit. github.head_ref is set
+# only on a pull request and holds the source branch name, which is what github.ref_name
+# holds on a push, so the two agree. The head repository is in the key as well, because a
+# fork's branch name can collide with one here.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+# Read-only, so a dependency or a test cannot use the job's token to write to the repo.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Otherwise the token is left in .git/config for every later step to find.
+          persist-credentials: false
+
+      - name: Refuse a committed .env
+        # .gitignore already covers this. The point of repeating it here is that a
+        # .gitignore entry stops an accident and does nothing about a `git add -f`,
+        # and this repo's README tells every user to create the file in question.
+        run: |
+          tracked=$(git ls-files -- '.env' '.env.*' | grep -v '^\.env\.example$' || true)
+          if [ -n "$tracked" ]; then
+            echo "a .env file is tracked in git:" >&2
+            echo "$tracked" >&2
+            exit 1
+          fi
+          echo "no tracked .env"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the locked environment
+        # --locked, not --frozen: this fails if uv.lock disagrees with pyproject.toml
+        # instead of quietly resolving something else and testing an environment that
+        # does not match what anyone installing this repo would get.
+        run: uv sync --locked --all-extras
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest -q

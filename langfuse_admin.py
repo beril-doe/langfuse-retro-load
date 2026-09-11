@@ -267,7 +267,9 @@ DEPRECATED_PATHS = {"/api/public/traces", "/api/public/observations",
 
 def warn_deprecated() -> None:
     """Say it once, loudly, rather than let the tool fail silently in November."""
-    today = datetime.date.today().isoformat()
+    # UTC, not local. V3_REMOVAL is a date Langfuse states in UTC, and date.today()
+    # on a machine west of Greenwich would keep saying "before" for hours after it passed.
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     if today < V3_REMOVAL:
         print(f"note: four of these endpoints are removed from Langfuse Cloud on "
               f"{V3_REMOVAL}. After that this command needs rewriting against "
@@ -330,8 +332,8 @@ def cmd_projects(args) -> int:
         detail = ""
         try:
             detail = exc.read().decode("utf-8", "replace")[:300]
-        except Exception:
-            pass
+        except Exception:  # noqa: S110 - the HTTP status below is the real message;
+            pass               # failing to read the body must not replace it with a traceback.
         print(f"HTTP {exc.code} from /api/public/organizations/projects", file=sys.stderr)
         if detail:
             print(f"  {detail}", file=sys.stderr)
