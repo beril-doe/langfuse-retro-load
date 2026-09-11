@@ -21,12 +21,19 @@ Two pattern families, and the distinction matters:
               than imported because this has to run on the pod next to retro_load.py.
               If you change one table, change the other.
 
-              Prior art note, 2026-09-11: gitleaks 8.30.1 is installed on this
-              machine and already runs on every commit. Tested against the corpus
-              that held the real leak, it found the same JUPYTERHUB_API_TOKEN,
-              KBASE_AUTH_TOKEN and Spark-error token, with about 150 rules and
-              entropy filtering, against 11 rules here. The secret half of this file
-              is arguably redundant with it. See issue #10.
+              Prior art note, 2026-09-11, corrected the same day. gitleaks 8.30.1 is
+              installed here and runs on every commit. I first wrote that it finds the
+              same credentials this file does, having compared totals. It does not.
+              Its generic-api-key rule is entropy-gated with a floor near 3.5, and the
+              three real tokens in the corpus score 4.351, 3.531 and 3.328. gitleaks
+              misses the third, a genuine 32-character JUPYTERHUB_API_TOKEN, in every
+              form tried: bare assignment, quoted JSON pair, inside an environment dump,
+              as api_key=, as secret=, across six file extensions.
+
+              The two approaches fail in opposite directions. Keyword anchoring catches
+              anything after TOKEN= whatever its entropy and misses shapes nobody wrote
+              a rule for; gitleaks catches roughly 150 provider shapes and misses
+              low-entropy secrets. Run both and take the union. See issue #10.
 
   people   -- email addresses, the name-beside-address shape that an API dump of a
               membership list produces, and phone numbers. evalome has none of
