@@ -29,16 +29,25 @@ from pathlib import Path
 HERE = Path(__file__).parent
 
 
+class DiscoveryFailed(Exception):
+    """A find_root could not be fully enumerated.
+
+    Raised rather than returning an empty list. Both failures below used to print a
+    warning and return nothing, after which main() wrote the reduced manifest and
+    exited 0. An absent root or an unreadable subtree therefore replaced the
+    committed manifest with a partial one while reporting success, which is the
+    worst possible shape: a plausible wrong file and a green exit.
+    """
+
+
 def find_jsonl_files(find_root: str) -> list[Path]:
     root = Path(find_root).expanduser()
     if not root.exists():
-        print(f"  ! find_root does not exist, skipping: {root}")
-        return []
+        raise DiscoveryFailed(f"find_root does not exist: {root}")
     r = subprocess.run(["find", str(root), "-maxdepth", "2", "-type", "f", "-name", "*.jsonl"],
                         capture_output=True, text=True)
     if r.returncode != 0:
-        print(f"  ! find failed under {root}: {r.stderr.strip()}")
-        return []
+        raise DiscoveryFailed(f"find failed under {root}: {r.stderr.strip()}")
     return sorted(Path(p) for p in r.stdout.splitlines() if p.strip())
 
 
@@ -106,9 +115,18 @@ def main() -> int:
     manifest = []
     n_failed = 0
 
+    # Enumerate every root before writing anything, so a failure anywhere leaves the
+    # existing manifest untouched rather than replacing it with a partial one.
+    try:
+        discovered = {(p["person"], s["type"]): find_jsonl_files(s["find_root"])
+                      for p in people for s in p["sources"]}
+    except DiscoveryFailed as exc:
+        print(f"refusing to rebuild the manifest: {exc}", file=sys.stderr)
+        return 2
+
     for person in people:
         for source in person["sources"]:
-            files = find_jsonl_files(source["find_root"])
+            files = discovered[(person["person"], source["type"])]
             print(f"{person['person']}/{source['type']}: {len(files)} files found")
             for path in files:
                 sid = path.stem

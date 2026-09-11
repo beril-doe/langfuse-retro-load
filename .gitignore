@@ -17,3 +17,4 @@ deletion-record*.json
 
 # Local run log from `just load`.
 full_load_run.txt
+deletion-record*.json

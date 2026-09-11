@@ -78,11 +78,12 @@ scan-detail FILE OUT="scan-detail.txt":
 manifest:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Every frozen root, not just the first: people.json has two, and checking one
-    # lets build_manifest.py skip the other and write a partial manifest.
-    missing=$({{PYBIN}} -c "import json,pathlib;print(sum(1 for p in json.load(open('people.json')) for s in p['sources'] if s['type']=='workshop-frozen-corpus' and not pathlib.Path(s['find_root']).expanduser().is_dir()))")
+    # Every root of every type, not just the frozen-corpus ones. build_manifest.py
+    # processes all sources, so an absent pod-live root produces a manifest missing
+    # those sessions while both frozen roots are present and this check passes.
+    missing=$({{PYBIN}} -c "import json,pathlib;print(sum(1 for p in json.load(open('people.json')) for s in p['sources'] if not pathlib.Path(s['find_root']).expanduser().is_dir()))")
     if [ "$missing" != "0" ]; then
-      echo "refusing: the frozen-corpus root is not present here, so this would rebuild" >&2
+      echo "refusing: $missing find_root(s) in people.json are not present here, so this would rebuild" >&2
       echo "manifest.json from a partial set and commit the wrong thing. Run it on the pod." >&2
       exit 2
     fi
@@ -151,17 +152,23 @@ delete-dry PROJECT TYPE="trace" NAME="":
 # has its own recipe below.
 
 # Delete traces with one exact name
-delete PROJECT NAME TYPE="trace" RECORD="deletion-record.json":
+delete PROJECT NAME TYPE="trace" RECORD="":
     @test -f langfuse_admin.py || (echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2)
-    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --name {{quote(NAME)}} --record {{quote(RECORD)}} --yes
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # A fixed default record path meant each deletion overwrote the previous one's
+    # pre-delete manifest, which is the only audit artifact these commands produce.
+    rec="{{RECORD}}"; [ -n "$rec" ] || rec="deletion-record-$(date -u +%Y%m%dT%H%M%SZ).json"
+    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --name {{quote(NAME)}} --record "$rec" --yes
 
 # CONFIRM must repeat the project id. Nothing here should be reachable by
 # autocomplete or by leaving an argument off.
 
 # Delete every trace in a project
-delete-all PROJECT CONFIRM TYPE="trace" RECORD="deletion-record.json":
+delete-all PROJECT CONFIRM TYPE="trace" RECORD="":
     #!/usr/bin/env bash
     set -euo pipefail
     test -f langfuse_admin.py || { echo "langfuse_admin.py is not on this branch; it is in pull request #9" >&2; exit 2; }
     [ "{{CONFIRM}}" = "{{PROJECT}}" ] || { echo "refusing: pass the project id twice to confirm deleting everything" >&2; exit 2; }
-    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --all --record {{quote(RECORD)}} --yes
+    rec="{{RECORD}}"; [ -n "$rec" ] || rec="deletion-record-all-$(date -u +%Y%m%dT%H%M%SZ).json"
+    {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --all --record "$rec" --yes
