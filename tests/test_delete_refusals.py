@@ -99,3 +99,67 @@ def test_every_countable_type_is_classified():
                     - set(langfuse_admin.DELETABLE)
                     - set(langfuse_admin.UNDELETABLE_REASON))
     assert not unclassified
+
+
+class RecordingApi:
+    """Stands in for `api`, answering enumeration and recording every call.
+
+    Enumeration is a GET; a deletion is a DELETE. Keeping both on one recorder is what lets
+    a test say "it looked, and then it did not touch anything".
+    """
+
+    def __init__(self, traces):
+        self.calls = []
+        self._traces = traces
+
+    def __call__(self, path, header, host, data=None, method="GET"):
+        self.calls.append((method, path))
+        if method == "GET":
+            return 200, {"data": self._traces, "meta": {"totalPages": 1}}
+        return 200, {}
+
+    @property
+    def deletes(self):
+        return [c for c in self.calls if c[0] == "DELETE"]
+
+
+def enumerating(monkeypatch, traces=None):
+    """Let a test past the refusals and up to the confirmation, with no network."""
+    recorder = RecordingApi(traces if traces is not None else
+                            [{"id": "t1", "name": "n", "timestamp": "2026-01-01T00:00:00Z",
+                              "sessionId": "s1", "userId": "u1"}])
+    monkeypatch.setattr(langfuse_admin, "api", recorder)
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("Basic x", "https://h"))
+    monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "PROJ / name")
+    monkeypatch.setattr(langfuse_admin, "warn_deprecated", lambda: None)
+    return recorder
+
+
+def test_without_yes_it_enumerates_and_then_deletes_nothing(monkeypatch, capsys):
+    """The guard every other test in this file stops short of.
+
+    The refusal tests all return before the tool authenticates, which is what they are for,
+    and it means none of them reaches the confirmation that stands between a correct command
+    and a real deletion. A regression that dropped `--yes` would have left this whole safety
+    suite green.
+    """
+    recorder = enumerating(monkeypatch)
+    assert langfuse_admin.cmd_delete(args(all=True)) == 1
+    assert "refusing without --yes" in capsys.readouterr().err
+    assert recorder.deletes == [], "a DELETE was sent without --yes"
+
+
+def test_dry_run_deletes_nothing_even_with_yes(monkeypatch, capsys):
+    """--dry-run has to win over --yes, or the preview is not a preview."""
+    recorder = enumerating(monkeypatch)
+    assert langfuse_admin.cmd_delete(args(all=True, dry_run=True, yes=True)) == 0
+    assert "dry run, nothing sent" in capsys.readouterr().out
+    assert recorder.deletes == []
+
+
+def test_a_name_that_matches_nothing_deletes_nothing(monkeypatch):
+    """Server-side filtering plus local filtering means an unmatched name should reach the
+    end with an empty target list rather than falling through to everything."""
+    recorder = enumerating(monkeypatch)
+    assert langfuse_admin.cmd_delete(args(name="no-such-trace", yes=True)) == 0
+    assert recorder.deletes == []
