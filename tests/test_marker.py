@@ -10,7 +10,6 @@ The cause is visible in `marker_path`: the key is a hash of the source path and
 nothing else. A marker records that a file was loaded, never where it went.
 """
 import hashlib
-import inspect
 import json
 import sys
 from pathlib import Path
@@ -47,28 +46,28 @@ def test_the_marker_records_what_it_claims_to(tmp_path):
     assert recorded["turns_emitted"] == 5
 
 
-def test_a_marker_cannot_know_where_a_load_went(tmp_path):
-    """The August misfiling, stated as what the code can and cannot express.
+@pytest.mark.xfail(strict=True, reason=(
+    "Known defect, not yet fixed: a marker records that a file was loaded and never where it "
+    "went. On 2026-08-20 four sessions were loaded into projtestproj as a sample; the real run "
+    "hours later saw their markers, skipped them, and 198 turns never reached the project they "
+    "were meant for. When marker_path learns its destination this starts passing, strict xfail "
+    "turns that into a failure, and the fix is to delete this decorator."
+))
+def test_two_destinations_get_two_markers(tmp_path):
+    """The contract this repo should have, asserted now and failing now.
 
-    An earlier version of this test asserted that no key in the marker mentions a project
-    or a host. That locks the defect in as the contract: it passes today and fails on the
-    day someone fixes it, which is a regression test for the bug rather than against it.
+    The previous version asserted the behaviour that exists: that `marker_path` takes the
+    source path and nothing else. That is worse than having no test. It makes the unsafe
+    contract pass, so continuous integration stays green while a load of the same file into a
+    different project is still reported as already done, and it would have to be deleted
+    before the real fix could go green. A test that must be deleted to fix a bug is protecting
+    the bug.
 
-    The defect is structural, so state it structurally. `marker_path` takes the source
-    path and nothing else, so no marker can distinguish a load that went to `beril-usage`
-    from one that went to `projtestproj`, and `already_loaded` therefore reports a skip
-    for a file that reached the wrong project. When that is fixed, this fails with a
-    message saying what to do about it rather than looking like a broken assertion.
+    Written as a strict expected failure instead. The assertion says what safety looks like,
+    it fails today for the reason above, and the day it starts passing the suite says so.
     """
-    assert list(inspect.signature(retro_load.marker_path).parameters) == ["transcript_path"], (
-        "marker_path now takes more than the source path. If the new parameter is the "
-        "destination, this is the fix for the August misfiling: delete this test and "
-        "assert instead that two destinations produce two markers."
-    )
-    a = tmp_path / "s.jsonl"
-    retro_load.write_marker(a, "sess-1", 5, ["t"])
-    assert retro_load.already_loaded(a) is not None, (
-        "a second load of this file is skipped no matter which project it would go to")
+    path = tmp_path / "s.jsonl"
+    assert retro_load.marker_path(path, "project-a") != retro_load.marker_path(path, "project-b")
 
 
 def test_already_loaded_reads_back_what_was_written(tmp_path):
