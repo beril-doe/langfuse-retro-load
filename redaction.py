@@ -43,7 +43,10 @@ from __future__ import annotations
 import hmac
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TypeVar, overload
+
+_T = TypeVar("_T")
 
 SECRET = "secret"
 PERSON = "person"
@@ -62,17 +65,12 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
     "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_-]{20,}"),
     "google_api_key": re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
-    # The whole block, not the marker. As a detector, matching "BEGIN RSA PRIVATE KEY"
-    # was enough to raise a finding. As a redactor it is worse than useless: it rewrites
-    # the marker and leaves the base64 body, so the key is still loadable and the record
-    # says the turn was redacted. The body class stops at the first "-", which is the
-    # start of the END marker, and at the first quote, which is where a JSON string ends,
-    # so an unterminated block stops at the end of its value rather than eating the file.
-    "private_key_block": re.compile(
-        r"(?:-----)?BEGIN [A-Z ]*PRIVATE KEY(?:-----)?"
-        r"(?:[A-Za-z0-9+/=\s]|\\[rn]){0,10000}"
-        r"(?:(?:-----)?END [A-Z ]*PRIVATE KEY(?:-----)?)?"
-    ),
+    # Detection only. The marker is all a pattern can reliably find; where the key ends is
+    # decided by _span_for below, not here. An earlier version tried to match the body and
+    # the END marker with a bounded repeat, and the bound then became the defect: a key
+    # longer than the bound matched its prefix, and redact() replaced the prefix and left
+    # the rest of the key in the output while reporting that the block had been redacted.
+    "private_key_block": re.compile(r"(?:-----)?BEGIN [A-Z ]*PRIVATE KEY(?:-----)?"),
     # Three segments, not two. Stopping at the dot after the payload left the signature
     # in the rewritten text, and the signature is the credential material: the header and
     # payload are base64 of public JSON, and it is the signature that makes the token
@@ -166,16 +164,58 @@ _MIN_SECRET_CHARS = 8
 
 
 def is_masked(value: str) -> bool:
-    """True when what survives removing the mask is too short to be a credential.
+    """Whether a value looks like it has already been masked. Advisory only.
 
-    Not `MASKED_RE.search(value)`, which was the first version and was wrong in the
-    dangerous direction. That suppressed a finding whenever the value contained a run of
-    eight x characters anywhere, so `token=xxxxxxxxREALSECRET123` was dropped from the
-    findings and left in the text. Removing the masked runs and measuring what is left
-    keeps `gho_************` suppressed and reports that one.
+    **This does not decide whether anything is redacted, and it must not.** It used to. Two
+    rounds of review found two different ways for it to be wrong, and each one meant a real
+    secret was dropped from the findings and left in the text: first any run of eight `x`
+    characters anywhere in the value, then a value made entirely of the mask character, where
+    `sk-xxxxxxxxxxxxxxxx` reduces to `sk-` and reads as too short to be a credential.
+
+    Patching the predicate a third time would be treating a design problem as a wording
+    problem. A predicate that can be wrong is not allowed to stand between a secret and its
+    redaction, so this now only sets `Finding.masked`. Secrets are redacted either way, and a
+    report that wants to keep `gho_************` out of a reviewer's way filters on the flag.
+    Being wrong now costs a redacted asterisk run, not a leaked credential.
     """
     remainder = _KEY_PREFIX_RE.sub("", MASKED_RE.sub("", value))
     return len(remainder) < _MIN_SECRET_CHARS
+
+#: Where a secret value ends, in every serialization these transcripts carry: bare shell
+#: output, JSON, JSON embedded in JSON with escaped quotes, YAML, and prose.
+#:
+#: This exists because three separate defects were all one defect. A pattern was being asked
+#: to say where a secret ends, and it is not able to: `keyed_value` stopped at the first
+#: character outside its class, so `token=abcdefghijklmnop.qrstuvwxyz` lost its tail to the
+#: dot; the private-key pattern stopped at a length bound. Both reported a finding and left
+#: credential material in the output, which is worse than reporting nothing.
+#:
+#: So the match now only anchors detection, and the span that gets replaced runs to the next
+#: character that cannot be inside a value. An imprecise pattern over-redacts instead of
+#: under-redacting. Over-redaction costs a reader some context and is visible in the record;
+#: under-redaction ships the secret and says it did not.
+_VALUE_TERMINATORS = frozenset(' \t\r\n"\'\\,}]<>|')
+
+#: A private key is the exception: its body contains newlines, so the terminator set above
+#: would cut it at the first one. It ends at its end marker, or failing that at the end of
+#: whatever value encloses it.
+_PEM_END = re.compile(r"(?:-----)?END [A-Z ]*PRIVATE KEY(?:-----)?")
+_PEM_TERMINATORS = frozenset('"\'\\')
+
+
+def _span_for(pattern: str, text: str, start: int, end: int) -> tuple[int, int]:
+    """Widen a match to the whole value it sits in. Never narrows it."""
+    if pattern == "private_key_block":
+        marker = _PEM_END.search(text, end)
+        if marker:
+            return start, marker.end()
+        terminators = _PEM_TERMINATORS
+    else:
+        terminators = _VALUE_TERMINATORS
+    while end < len(text) and text[end] not in terminators:
+        end += 1
+    return start, end
+
 
 #: What this module writes in place of a match, and how it recognises its own work on a
 #: second pass. The two must stay in step, which is what test_idempotent checks.
@@ -199,6 +239,8 @@ class Finding:
     end: int
     length: int
     fingerprint: str
+    #: The matched text already looked masked. Advisory: it is redacted regardless.
+    masked: bool = False
 
     @property
     def placeholder(self) -> str:
@@ -248,9 +290,11 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             span = (match.start(), match.end())
             if span[0] == span[1] or _inside(span, protected):
                 continue
-            value = match.group(0)
-            if category is SECRET and is_masked(value):
-                continue
+            if category is SECRET:
+                span = _span_for(name, text, span[0], span[1])
+                if _inside(span, protected):
+                    continue
+            value = text[span[0]:span[1]]
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
@@ -265,13 +309,43 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
         taken.append(span)
         findings.append(Finding(pattern=name, category=CATEGORY[name], start=span[0],
                                 end=span[1], length=span[1] - span[0],
-                                fingerprint=fingerprint(value, key)))
+                                fingerprint=fingerprint(value, key),
+                                masked=CATEGORY[name] is SECRET and is_masked(value)))
     findings.sort(key=lambda f: f.start)
     return findings
 
 
-def redact(text: str, *, categories: frozenset[str] = DEFAULT_REDACT,
-           key: bytes | None = None) -> tuple[str, list[Finding]]:
+@dataclass(frozen=True)
+class Redactor:
+    """One key, held for a run, so fingerprints are comparable across calls.
+
+    The adapters process one turn at a time, and `redact()` on its own mints a fresh key per
+    call, which makes the same credential in two turns look like two unrelated findings. That
+    defeats the reason the fingerprint exists. Build one of these per run and use it for every
+    turn, and keep it out of anything written down.
+
+        r = Redactor()
+        for turn in turns:
+            clean, findings = r.redact(turn)
+    """
+
+    key: bytes = field(default_factory=new_key)
+
+    def detect(self, text: str) -> list[Finding]:
+        return detect(text, key=self.key)
+
+    def redact(self, text, *, categories: frozenset[str] = DEFAULT_REDACT):
+        return redact(text, categories=categories, key=self.key)
+
+
+@overload
+def redact(text: str, *, categories: frozenset[str] = ...,
+           key: bytes | None = ...) -> tuple[str, list[Finding]]: ...
+@overload
+def redact(text: _T, *, categories: frozenset[str] = ...,
+           key: bytes | None = ...) -> tuple[_T, list[Finding]]: ...
+def redact(text, *, categories: frozenset[str] = DEFAULT_REDACT,
+           key: bytes | None = None):
     """Rewrite matched spans and return the new text with a record of every finding.
 
     The returned list includes findings that were *not* rewritten, because a reviewer

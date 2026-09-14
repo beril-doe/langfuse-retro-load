@@ -152,11 +152,59 @@ def test_findings_do_not_overlap():
         assert a.end <= b.start
 
 
-def test_already_masked_secrets_are_not_reported():
-    """`gh auth status` prints Token: gho_************ and a transcript is full of that.
-    Counting it buries the one real finding under seventy harmless ones."""
-    assert not [f for f in redaction.detect("Token: gho_************", key=KEY)
-                if f.category == redaction.SECRET]
+def test_an_already_masked_value_is_flagged_and_still_redacted():
+    """`gh auth status` prints Token: gho_************ and a transcript is full of that, so a
+    report wants to keep it out of the way. It gets a flag for that, not an exemption.
+
+    Two rounds of review found two ways for the mask predicate to be wrong, and each one left
+    a real secret in the text. So it no longer decides anything: secrets are redacted either
+    way and `masked` only tells a reader which findings are probably noise."""
+    findings = redaction.detect("Token: gho_************", key=KEY)
+    secrets = [f for f in findings if f.category == redaction.SECRET]
+    assert secrets and all(f.masked for f in secrets)
+    clean, _ = redaction.redact("Token: gho_************", key=KEY)
+    assert "gho_" not in clean
+
+
+def test_a_secret_made_entirely_of_the_mask_character_is_still_redacted():
+    """The second way the predicate was wrong. `sk-xxxxxxxxxxxxxxxx` passes openai_style, and
+    removing the mask run leaves `sk-`, which read as too short to be a credential. Under the
+    old design that dropped the finding and left the value in the text."""
+    clean, findings = redaction.redact("sk-xxxxxxxxxxxxxxxx", key=KEY)
+    assert [f.pattern for f in findings] == ["openai_style"]
+    assert "xxxxxxxx" not in clean
+
+
+def test_a_value_is_redacted_past_characters_the_pattern_stops_at():
+    """`keyed_value` stops at the first character outside its class, so it ended at the dot
+    and left the rest of the credential in the output while reporting a finding. The pattern
+    now only anchors detection; the span runs to the end of the value."""
+    clean, findings = redaction.redact("token=abcdefghijklmnop.qrstuvwxyz", key=KEY)
+    assert [f.pattern for f in findings] == ["keyed_value"]
+    assert "qrstuvwxyz" not in clean
+
+
+def test_a_private_key_longer_than_any_bound_is_fully_redacted():
+    """The bounded repeat that replaced the marker-only pattern became the same defect one
+    round later: a key longer than the bound matched its prefix and the rest survived."""
+    body = "NOTAREALKEY" * 1000
+    text = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"  # gitleaks:allow
+    clean, findings = redaction.redact(text, key=KEY)
+    assert [f.pattern for f in findings] == ["private_key_block"]
+    assert "NOTAREALKEY" not in clean
+    assert "END RSA PRIVATE KEY" not in clean
+
+
+def test_a_run_scoped_redactor_gives_one_credential_one_fingerprint():
+    """redact() on its own mints a key per call, so the same credential in two turns looks
+    like two unrelated findings. The adapters process one turn at a time, which is exactly
+    when that matters."""
+    turns = ["first turn " + SAMPLES["github_pat"], "later turn " + SAMPLES["github_pat"]]
+    r = redaction.Redactor()
+    prints = [r.redact(t)[1][0].fingerprint for t in turns]
+    assert prints[0] == prints[1]
+    loose = [redaction.redact(t)[1][0].fingerprint for t in turns]
+    assert loose[0] != loose[1], "the bare function is per-call by design; this is why Redactor exists"
 
 
 def test_same_value_gets_the_same_fingerprint_and_different_values_do_not():
