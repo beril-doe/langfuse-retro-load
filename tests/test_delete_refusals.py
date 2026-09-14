@@ -77,11 +77,27 @@ def test_name_and_all_together_are_rejected_at_parse_time(monkeypatch):
     assert e.value.code == 2
 
 
-def test_undeletable_type_refuses_before_the_missing_selector(capsys):
+def test_undeletable_type_refuses_before_the_missing_selector(monkeypatch, capsys):
     """The regression that prompted the parse-time change. With no selector AND an
-    undeletable type, the type explanation must win, because it is the one that tells
-    the operator something they did not know."""
-    assert langfuse_admin.cmd_delete(args(type="observation")) == 2
+    undeletable type, the type explanation must win, because it is the one that tells the
+    operator something they did not know.
+
+    Routed through `main()` rather than calling `cmd_delete` directly. Calling the function
+    skips argparse entirely, so putting `required=True` back on the selector group would make
+    `main()` exit before `cmd_delete` ever ran while this test carried on passing. The
+    regression lives in the parser, so the test has to go through the parser.
+    """
+    monkeypatch.setattr(sys, "argv", ["langfuse_admin.py", "delete",
+                                      "--project", "p", "--type", "observation"])
+    # Either exit path is accepted and the message is what is asserted, because that is what
+    # the regression changes: argparse exiting first would print "one of the arguments is
+    # required" and never reach the explanation. main() returns its code rather than raising
+    # when the parse succeeds, so both have to be caught.
+    try:
+        code = langfuse_admin.main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code == 2
     assert "no delete exists" in capsys.readouterr().err
 
 

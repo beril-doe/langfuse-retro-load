@@ -9,7 +9,6 @@ session in the corpus. Nobody noticed for three weeks.
 The cause is visible in `marker_path`: the key is a hash of the source path and
 nothing else. A marker records that a file was loaded, never where it went.
 """
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -28,10 +27,18 @@ def marker_dir(tmp_path, monkeypatch):
     return d
 
 
-def test_marker_key_is_the_source_path(tmp_path):
+def test_two_sources_get_two_markers(tmp_path):
+    """Different files must not collide. Stated as the property, not as the recipe.
+
+    This used to also assert the filename equals the sha256 of the source path, which is the
+    same mistake as the one below it: a destination-aware marker changes that hash, so the
+    assertion would have to be deleted before the fix could pass. Two files getting two
+    markers stays true either way, and it is the thing that actually matters.
+    """
     a, b = tmp_path / "one.jsonl", tmp_path / "two.jsonl"
     assert retro_load.marker_path(a) != retro_load.marker_path(b)
-    assert retro_load.marker_path(a).name == hashlib.sha256(str(a).encode()).hexdigest() + ".json"
+    assert retro_load.marker_path(a).suffix == ".json"
+    assert retro_load.marker_path(a).parent == retro_load.marker_path(b).parent
 
 
 def test_the_marker_records_what_it_claims_to(tmp_path):
