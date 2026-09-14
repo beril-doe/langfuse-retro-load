@@ -59,7 +59,9 @@ ADVISORY = "advisory"
 #: `(?<![A-Za-z0-9])` rather than `\b`: a token embedded in a filename sits behind an
 #: underscore, and `\b` does not treat that as a boundary at all.
 PATTERNS: dict[str, re.Pattern[str]] = {
-    "bearer_header": re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{8,}"),
+    # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
+    # client sending "bearer" lowercase was passing through unredacted.
+    "bearer_header": re.compile(r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
     "openai_style": re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}"),
     "github_pat": re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}"),
     "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
@@ -315,7 +317,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     return findings
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Redactor:
     """One key, held for a run, so fingerprints are comparable across calls.
 
@@ -330,6 +332,12 @@ class Redactor:
     """
 
     key: bytes = field(default_factory=new_key)
+
+    def __repr__(self) -> str:
+        # The generated repr prints the key. Anything that logs a Redactor, or puts one in a
+        # traceback, would then publish the value that makes every fingerprint in the run
+        # reversible. The whole reason the key is random and unstored is to stop that.
+        return "Redactor(key=<hidden>)"
 
     def detect(self, text: str) -> list[Finding]:
         return detect(text, key=self.key)

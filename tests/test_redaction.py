@@ -327,3 +327,21 @@ def test_a_mask_next_to_a_real_secret_does_not_hide_it():
 ])
 def test_is_masked_measures_what_survives_the_mask(value, masked):
     assert redaction.is_masked(value) is masked
+
+
+def test_a_redactor_never_prints_its_key():
+    """The key makes every fingerprint in a run reversible, which is the whole reason it is
+    random and never stored. A generated dataclass repr publishes it to any log line, any
+    traceback and any debugger that touches the object."""
+    r = redaction.Redactor(key=b"a recognisable key value for this test")
+    assert "recognisable" not in repr(r)
+    assert "recognisable" not in f"{r}"
+    assert "recognisable" not in str({"redactor": r})
+
+
+def test_a_lowercase_bearer_scheme_is_still_a_credential():
+    """RFC 9110 makes the Authorization scheme token case-insensitive, and the pattern was
+    anchored on the capitalised spelling, so a client sending it lowercase passed through."""
+    clean, findings = redaction.redact("authorization: bearer abcdefghijklmnopqrst", key=KEY)
+    assert [f.pattern for f in findings] == ["bearer_header"]
+    assert "abcdefghijklmnopqrst" not in clean
