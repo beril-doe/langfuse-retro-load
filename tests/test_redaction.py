@@ -345,3 +345,44 @@ def test_a_lowercase_bearer_scheme_is_still_a_credential():
     clean, findings = redaction.redact("authorization: bearer abcdefghijklmnopqrst", key=KEY)
     assert [f.pattern for f in findings] == ["bearer_header"]
     assert "abcdefghijklmnopqrst" not in clean
+
+
+@pytest.mark.parametrize("shape,build", [
+    ("semicolon-separated fields",
+     lambda n: ";".join(f"token=abcdefgh{i:06d}" for i in range(n))),
+    ("unterminated private-key markers",
+     lambda n: " ".join("BEGIN RSA PRIVATE KEY body%d" % i for i in range(n))),  # gitleaks:allow
+])
+def test_many_matches_do_not_cost_quadratic_time(shape, build):
+    """Many matches, not one long string, which is what the other performance test misses.
+
+    That test uses a 60,000-character run of one character and therefore produces a single
+    candidate, so it cannot see per-candidate work at all. Widening each match by walking
+    right one character was linear per candidate and quadratic in the number of candidates,
+    and both inputs here have no terminator between fields. Measured before the fix: 200
+    fields took 0.014s and 1,600 took 0.846s, quadrupling as the input doubled.
+
+    Asserted as a ratio rather than a wall time, so it measures growth rather than how busy
+    the machine is. An eightfold input costs about eight times as much when the work is
+    linear and about sixty-four when it is quadratic. The bound is twenty-four: three times
+    the linear answer, so machine noise cannot fail it, and well under the quadratic one.
+
+    Sixty-four was the first bound and it was useless, because it is exactly the number the
+    defect produces. Reverting the fix left one of these two shapes green.
+    """
+    small, large = build(400), build(3200)
+    assert len(large) > 7 * len(small)
+
+    def cost(text):
+        best = float("inf")
+        for _ in range(3):  # the fastest of three, so a scheduling hiccup cannot fail this
+            start = time.perf_counter()
+            redaction.redact(text, key=KEY)
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    small_cost, large_cost = cost(small), cost(large)
+    assert large_cost < small_cost * 24, (
+        f"{shape}: {small_cost:.4f}s at {len(small):,} chars and {large_cost:.4f}s at "
+        f"{len(large):,} chars, a factor of {large_cost / small_cost:.0f}. Linear is about "
+        f"eight.")

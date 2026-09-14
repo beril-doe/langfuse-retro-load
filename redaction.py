@@ -40,6 +40,7 @@ because the right answer is different at each of the three points.
 """
 from __future__ import annotations
 
+import bisect
 import hmac
 import os
 import re
@@ -205,18 +206,53 @@ _PEM_END = re.compile(r"(?:-----)?END [A-Z ]*PRIVATE KEY(?:-----)?")
 _PEM_TERMINATORS = frozenset('"\'\\')
 
 
-def _span_for(pattern: str, text: str, start: int, end: int) -> tuple[int, int]:
-    """Widen a match to the whole value it sits in. Never narrows it."""
-    if pattern == "private_key_block":
-        marker = _PEM_END.search(text, end)
-        if marker:
-            return start, marker.end()
-        terminators = _PEM_TERMINATORS
-    else:
-        terminators = _VALUE_TERMINATORS
-    while end < len(text) and text[end] not in terminators:
-        end += 1
-    return start, end
+#: Precompiled terminator scans. Built once per call rather than per candidate.
+_VALUE_TERMINATOR_RE = re.compile("[" + re.escape("".join(sorted(_VALUE_TERMINATORS))) + "]")
+_PEM_TERMINATOR_RE = re.compile("[" + re.escape("".join(sorted(_PEM_TERMINATORS))) + "]")
+
+
+class _Boundaries:
+    """Where every value could end, worked out once for a whole input.
+
+    The first version of the widening walked right from each candidate one character at a
+    time. That is linear per candidate and there is a candidate per match, so it is quadratic
+    in the number of matches, and the pathological inputs are ordinary: `token=a;token=b;...`
+    has no terminator between fields, and prose containing many unterminated key markers has
+    none either. Measured on this branch before the fix, with time roughly quadrupling each
+    time the input doubled:
+
+        200 semicolon-separated fields, 4,199 chars    0.014s
+        1600 fields,                   33,599 chars    0.846s
+        400 unterminated key markers,  11,889 chars    0.105s
+
+    This is the same class of defect as the one fixed on 2026-09-10, where a missing lookbehind
+    took a pattern to 97 seconds on 200KB, and the design change today put it back somewhere
+    else. The performance test in place at the time could not see it: it uses one long run of a
+    single character, which produces exactly one candidate.
+
+    Each terminator position is now found once and the widening is a binary search.
+    """
+
+    __slots__ = ("value_ends", "pem_ends", "pem_markers", "length")
+
+    def __init__(self, text: str):
+        self.length = len(text)
+        self.value_ends = [m.start() for m in _VALUE_TERMINATOR_RE.finditer(text)]
+        self.pem_ends = [m.start() for m in _PEM_TERMINATOR_RE.finditer(text)]
+        self.pem_markers = [m.end() for m in _PEM_END.finditer(text)]
+
+    def _first_at_or_after(self, positions: list[int], index: int) -> int:
+        i = bisect.bisect_left(positions, index)
+        return positions[i] if i < len(positions) else self.length
+
+    def span_for(self, pattern: str, start: int, end: int) -> tuple[int, int]:
+        """Widen a match to the whole value it sits in. Never narrows it."""
+        if pattern == "private_key_block":
+            i = bisect.bisect_left(self.pem_markers, end)
+            if i < len(self.pem_markers):
+                return start, self.pem_markers[i]
+            return start, self._first_at_or_after(self.pem_ends, end)
+        return start, self._first_at_or_after(self.value_ends, end)
 
 
 #: What this module writes in place of a match, and how it recognises its own work on a
@@ -284,6 +320,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
         return []
     key = new_key() if key is None else key
     protected = _protected(text)
+    boundaries = _Boundaries(text)
 
     candidates = []
     for name, pattern in PATTERNS.items():
@@ -293,7 +330,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             if span[0] == span[1] or _inside(span, protected):
                 continue
             if category is SECRET:
-                span = _span_for(name, text, span[0], span[1])
+                span = boundaries.span_for(name, span[0], span[1])
                 if _inside(span, protected):
                     continue
             value = text[span[0]:span[1]]
