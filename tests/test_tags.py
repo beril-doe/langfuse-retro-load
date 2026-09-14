@@ -33,5 +33,20 @@ def test_recorded_consent_is_tagged():
 
 
 def test_event_day_uses_the_entry_date_not_a_hardcoded_one():
-    entry = {**BASE, "event_day": True, "event_day_date": "2026-05-07"}
+    """The date here must differ from the fallback in `compute_tags`, or this cannot fail.
+
+    It used 2026-05-07, which is exactly the fallback the function substitutes when an entry
+    has no `event_day_date`. An implementation that ignored the field entirely and always
+    emitted the fallback passed, which is the opposite of what the name claims.
+    """
+    fallback = "2026-05-07"
+    entry = {**BASE, "event_day": True, "event_day_date": "2024-11-30"}
+    tags = run_manifest.compute_tags(entry, "b")
+    assert "event_day:2024-11-30" in tags
+    assert f"event_day:{fallback}" not in tags
+
+
+def test_event_day_without_a_date_falls_back():
+    """The other half, so the fallback is covered deliberately rather than by accident."""
+    entry = {**BASE, "event_day": True}
     assert "event_day:2026-05-07" in run_manifest.compute_tags(entry, "b")
