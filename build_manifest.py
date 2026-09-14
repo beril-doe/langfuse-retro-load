@@ -44,8 +44,10 @@ def find_jsonl_files(find_root: str) -> list[Path]:
     root = Path(find_root).expanduser()
     if not root.exists():
         raise DiscoveryFailed(f"find_root does not exist: {root}")
+    # check=False on purpose: the returncode is inspected below so a failed find
+    # becomes DiscoveryFailed with find's own stderr, not a bare CalledProcessError.
     r = subprocess.run(["find", str(root), "-maxdepth", "2", "-type", "f", "-name", "*.jsonl"],
-                        capture_output=True, text=True)
+                       capture_output=True, text=True, check=False)
     if r.returncode != 0:
         raise DiscoveryFailed(f"find failed under {root}: {r.stderr.strip()}")
     return sorted(Path(p) for p in r.stdout.splitlines() if p.strip())
@@ -67,7 +69,7 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
     timestamps that were never re-printed.
     """
     r = subprocess.run([sys.executable, str(HERE / "retro_load.py"), "--dry-run", str(path)],
-                        capture_output=True, text=True)
+                       capture_output=True, text=True, check=False)
     if r.returncode != 0:
         print(f"  ! dry-run failed for {path}: {r.stderr.strip()[-300:]}")
         return {"turns": 0, "event_day": False, "failed": True}

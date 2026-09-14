@@ -176,3 +176,26 @@ delete-all PROJECT CONFIRM TYPE="trace" RECORD="":
     [ "{{CONFIRM}}" = "{{PROJECT}}" ] || { echo "refusing: pass the project id twice to confirm deleting everything" >&2; exit 2; }
     rec="{{RECORD}}"; [ -n "$rec" ] || rec="deletion-record-all-$(date -u +%Y%m%dT%H%M%SZ).json"
     {{PY}} langfuse_admin.py delete --project {{quote(PROJECT)}} --type {{quote(TYPE)}} --all --record "$rec" --yes
+
+# Run the offline test suite. No Langfuse credentials are used or needed.
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v uv >/dev/null 2>&1; then
+      echo "uv is not installed here, so pytest and ruff are not either (issue #15)." >&2
+      echo "The suite runs in CI on every push. To run it locally, install uv." >&2
+      exit 2
+    fi
+    uv run pytest -q
+
+# Lint with the narrow ruleset pinned in pyproject.toml, the same one CI runs.
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v uv >/dev/null 2>&1; then
+      echo "uv is not installed here (issue #15). CI lints every push." >&2; exit 2
+    fi
+    uv run ruff check .
+
+# What CI runs, in the order CI runs it.
+check: lint test

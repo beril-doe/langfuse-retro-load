@@ -36,3 +36,31 @@ upload = ["httpx>=0.27"]
 # This project is uv-managed. Use `uv add` / `uv sync` / `uv lock --upgrade-package`,
 # never `pip install` or `uv pip install`.
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# The vendored hook is copied verbatim from Langfuse so it can be diffed against
+# upstream. Linting it would invite edits that make that diff meaningless.
+exclude = ["langfuse_hook_official.py"]
+
+[tool.ruff.lint]
+# Deliberately narrow. Ruff's default set reports 120 findings here, 51 of them
+# `list` versus `typing.List`, and a linter whose output is mostly style is one
+# people stop reading. These are the families that have actually produced defects
+# in this repo or would hide one:
+#   E9  syntax errors
+#   F   undefined names, unused imports
+#   B   likely bugs, such as a mutable default argument
+#   PLW1510  subprocess.run without an explicit check, which silently ignores failure
+#   DTZ  naive datetimes, which matters because this tool compares against a UTC date
+#   S110/S112  try/except that swallows an exception with pass or continue
+# Widening this is a separate decision, not something to do while fixing something else.
+select = ["E9", "F", "B", "PLW1510", "DTZ", "S110", "S112"]
