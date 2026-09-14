@@ -20,16 +20,12 @@ on:
   push:
   pull_request:
 
-# A pull request branch would otherwise run twice per push, once for each trigger, and
-# keying on github.ref does not prevent it: that is refs/heads/<branch> on a push and
-# refs/pull/<n>/merge on a pull request, so the two never land in the same group. Measured
-# on this pull request, two runs four seconds apart on one commit. github.head_ref is set
-# only on a pull request and holds the source branch name, which is what github.ref_name
-# holds on a push, so the two agree. The head repository is in the key as well, because a
-# fork's branch name can collide with one here.
+# Supersede an earlier commit still running on the same branch. This is not what stops
+# the two triggers duplicating each other, which is the job-level `if` below: cancelling
+# the loser worked and left a red X on the pull request, which is worse to read than the
+# duplicate it replaced.
 concurrency:
-  group: >-
-    ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Read-only, so a dependency or a test cannot use the job's token to write to the repo.
@@ -38,6 +34,17 @@ permissions:
 
 jobs:
   test:
+    # Exactly one run per commit. A push covers every branch here, with or without a pull
+    # request, so the pull_request trigger only has to cover what push cannot see: a
+    # branch in a fork, whose pushes do not reach this repository's workflows.
+    #
+    # The cost of choosing push as the usual trigger is that it tests the branch tip
+    # rather than the merge with main, so a semantic conflict with main shows up at merge
+    # rather than here. Worth saying out loud; for a repository this size it is the
+    # cheaper trade than a cancelled run on every pull request.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
