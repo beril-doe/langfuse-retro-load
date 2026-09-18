@@ -184,20 +184,67 @@ def findings_for(transcript: Path, clearances: list[dict]):
     return per_turn, unclaimed, len(turns), any_cleared
 
 
+def client_for(prefix: str):
+    """A Langfuse client for one project, resolved the way this repository already does it.
+
+    `langfuse_admin.load_env` reads `./.env` if there is one and `~/.env` otherwise, and
+    `auth_for_project` matches a key set by its `_PROJECT_ID` and refuses to fall back to whichever
+    key happens to be present. That prefix convention is why nothing needs copying: the credentials
+    in `~/.env` are already in the form this tooling expects, and a copy under a second name would
+    be the naming drift the credential inventory tracks, plus a second place to rotate.
+
+    Values go from the file into this process and into the SDK. They are never printed, never
+    written to another file, and never put into the parent shell's environment.
+    """
+    import os
+
+    import langfuse_admin
+    from langfuse import Langfuse
+
+    env, source = langfuse_admin.load_env()
+    public = env.get(f"{prefix}_LANGFUSE_PUBLIC_KEY") or env.get("LANGFUSE_PUBLIC_KEY")
+    secret = env.get(f"{prefix}_LANGFUSE_SECRET_KEY") or env.get("LANGFUSE_SECRET_KEY")
+    host = (env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get(f"{prefix}_LANGFUSE_HOST")
+            or env.get("LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_HOST")
+            or "https://us.cloud.langfuse.com")
+    if not public or not secret:
+        print(f"no {prefix}_LANGFUSE_PUBLIC_KEY / _SECRET_KEY in {source or '(no .env found)'}. "
+              f"Prefixes present: "
+              f"{', '.join(sorted({k.split('_LANGFUSE_')[0] for k in env if '_LANGFUSE_' in k}))}",
+              file=sys.stderr)
+        return None
+    return Langfuse(public_key=public, secret_key=secret, host=host.rstrip("/"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--transcript", type=Path, required=True)
+    ap.add_argument("--transcript", type=Path, required=False)
     ap.add_argument("--session-id", default=None, help="default: the transcript's filename stem")
     ap.add_argument("--clearances", type=Path, default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="print the scores that would be created, talk to nothing")
     ap.add_argument("--limit", type=int, default=25, help="rows to print in a dry run")
+    ap.add_argument("--prefix", default="BERIL",
+                    help="which <PREFIX>_LANGFUSE_* credentials in .env to use. The repository "
+                         "already resolves keys this way in langfuse_admin.py; nothing is copied "
+                         "into a second file and no value is printed")
+    ap.add_argument("--check-auth", action="store_true",
+                    help="resolve credentials, name the project they open, and stop")
     args = ap.parse_args()
 
     clearances = []
     if args.clearances:
         clearances = [json.loads(line) for line in args.clearances.read_text().splitlines() if line.strip()]
+
+    if args.check_auth:
+        client = client_for(args.prefix)
+        if client is None:
+            return 1
+        project = client.api.projects.get()
+        for item in getattr(project, "data", []) or []:
+            print(f"  {args.prefix} keys open project {item.name!r} (id {item.id})")
+        return 0
 
     session_id = args.session_id or args.transcript.stem
     per_turn, unclaimed, total_turns, any_cleared = findings_for(args.transcript, clearances)
@@ -213,12 +260,9 @@ def main() -> int:
         print(f"(dry run: {len(plans)} scores over {len(per_turn)} traces, nothing sent)")
         return 0
 
-    from langfuse import Langfuse
-    import os
-    if not os.environ.get("LANGFUSE_PUBLIC_KEY") or not os.environ.get("LANGFUSE_SECRET_KEY"):
-        print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set", file=sys.stderr)
+    client = client_for(args.prefix)
+    if client is None:
         return 1
-    client = Langfuse()
     trace_ids = trace_ids_for_session(client, session_id)
     print(f"  matched {len(trace_ids)} traces in Langfuse for session {session_id}")
     plans = plan_scores(per_turn, trace_ids, any_cleared=any_cleared)
