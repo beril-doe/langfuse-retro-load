@@ -57,11 +57,23 @@ PLACEHOLDER_HINTS = re.compile(
     r"(?i)<[^>]*>|\byour[_ -]|example|changeme|change_me|xxx+|\bdummy\b|\bfake\b|placeholder"
     r"|not[ _]set|\bnone\b|\bnull\b|todo|\bredacted\b|\*{3,}")
 
+#: A value that is a variable reference holds no secret, whatever the key in front of it is
+#: called. `export ANTHROPIC_AUTH_TOKEN=$CBORG_API_KEY` is the shape, found 2026-09-18 in the
+#: first real use of this tool: three of six findings in one record were two references and a
+#: documentation placeholder, and only the placeholder was labelled. Kept separate from the
+#: hints above because this one is certain rather than a guess.
+REFERENCE_RE = re.compile(r"[:=]\s*\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\s*$|^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$")
+
 
 def shape(value: str) -> str:
     """What a value looks like, without being the value."""
     n = len(value)
-    hint = " looks like a placeholder" if PLACEHOLDER_HINTS.search(value) else ""
+    if REFERENCE_RE.search(value):
+        hint = " is a variable reference, not a value"
+    elif PLACEHOLDER_HINTS.search(value):
+        hint = " looks like a placeholder"
+    else:
+        hint = ""
     if n <= SHORT:
         return f"<{n} chars{hint}>"
     return f'<{n} chars, "{value[:2]}"…"{value[-2:]}"{hint}>'

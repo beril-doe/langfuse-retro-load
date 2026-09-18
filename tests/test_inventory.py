@@ -332,3 +332,23 @@ def test_reveal_short_values_do_not_leak_their_ends():
     """First and last two characters of a six-character token is most of the token."""
     import reveal
     assert reveal.shape("s3cret") == "<6 chars>"
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("TOKEN=$CBORG_API_KEY", "variable reference"),
+    ("TOKEN=${CBORG_API_KEY}", "variable reference"),
+    ("$CBORG_API_KEY", "variable reference"),
+    ('API_KEY="your-key-here"', "placeholder"),
+    ("TOKEN=" + "ab12" * 8, ""),
+])
+def test_reveal_names_a_reference_and_a_placeholder_for_what_they_are(value, expected):
+    """From the first real use, 2026-09-18: three of six findings in one record were two shell
+    variable references and a documentation placeholder, and only the placeholder was labelled,
+    so the other two needed --show-values to rule out. A reference holds no value whatever the
+    key in front of it is called."""
+    import reveal
+    out = reveal.shape(value)
+    if expected:
+        assert expected in out
+    else:
+        assert "reference" not in out and "placeholder" not in out
