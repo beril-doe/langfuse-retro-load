@@ -144,6 +144,36 @@ where that doesn't apply (e.g. someone's own ongoing pod-home work).
 Sessions/Users views are a re-identification surface, and consent was
 tracked pseudonymously. Don't change that without a real reason.
 
+## This repository is public, and two of its files are about people
+
+`people.json` and `manifest.json` are committed, and the repository is public. So
+everything in them is published, including the part that is a judgment about a
+person rather than a mechanism.
+
+- **A `consent_bin` is a decision someone made about a named account.** Putting it
+  here publishes it. The account name, the employer group and the consent status sit
+  in one record, and the person it describes has not necessarily been asked whether
+  that is fine.
+- **`manifest.json` is one row per session**, and `build_manifest.py` rewrites it
+  from `people.json`. Step 1 of "Running it" below regenerates it, so following the
+  instructions and committing the result publishes a fresh roster of session ids per
+  person. It is derived, so tracking it buys nothing that one command does not.
+- **A `pod-live` source is someone's ordinary work, not workshop data.** Its
+  `find_root` is `~/.claude/projects` on the pod, which is everything they have ever
+  done there. One such source currently contributes 60 of the 111 manifest entries.
+  Adding one publishes those session ids and sends that work to Langfuse.
+- **`consent_bin: null` means nobody checked**, which is not the same as consent.
+  Nothing in the code treats it as a reason not to load.
+- **This scales badly on purpose.** The frozen corpus holds 82 participant
+  directories. The file grows one entry per person and the manifest one row per
+  session, so loading the corpus as the repo stands today would publish 82 named
+  accounts with their consent decisions.
+
+The care already taken over `user_id` is the reason to care here: it is the pod
+account name rather than a real name because Langfuse's Sessions and Users views make
+re-identification easy. That reasoning stops at the Langfuse boundary and needs to
+reach the repository too.
+
 ## Running it
 
 `pyproject.toml` and `uv.lock` describe the intended environment. They are not yet in
