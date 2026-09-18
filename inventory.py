@@ -358,6 +358,67 @@ def redact_records(records: list, redactor: redaction.Redactor, *, subject: str,
     return out, rows
 
 
+def turn_of_record(records: list, turns: list) -> dict[int, int]:
+    """Which turn each record ended up in, by identity.
+
+    `build_turns` keeps the record dicts themselves rather than copies, so `id()` maps a turn's
+    members back to their position in the list it was given. Records that no turn claims are
+    absent from the result, and there are a lot of them: attachments, superseded assistant rows
+    (the assembler keeps the latest per message id), and the Claude Code metadata rows the
+    assembler ignores. Those never reach Langfuse, which is exactly why a rate computed over the
+    whole file overstates what is actually uploaded.
+    """
+    position = {id(record): index for index, record in enumerate(records)}
+    out: dict[int, int] = {}
+    for number, turn in enumerate(turns, 1):
+        for member in [turn.user_msg, *turn.assistant_msgs, *turn.tool_results_by_id.values()]:
+            index = position.get(id(member))
+            if index is not None:
+                out[index] = number
+    return out
+
+
+@dataclass(frozen=True)
+class TurnFindings:
+    """What one turn carries, which is what one Langfuse trace will carry."""
+    turn: int
+    secret: int
+    person: int
+    advisory: int
+    worst: str | None       # the pattern behind the most severe finding, for a categorical score
+    pointers: tuple[str, ...]
+
+
+def by_turn(rows: list[Row], turn_of: dict[int, int]) -> tuple[list[TurnFindings], list[Row]]:
+    """Group findings by turn, and hand back the ones no turn claims rather than dropping them.
+
+    The second return value is the honest part. A finding on a record the assembler discards is
+    not uploaded, and silently folding those into a per-turn total would report a trace as dirtier
+    than the thing Langfuse actually holds.
+    """
+    grouped: dict[int, list[Row]] = defaultdict(list)
+    unclaimed: list[Row] = []
+    for row in rows:
+        turn = turn_of.get(row.record) if row.record is not None else None
+        if turn is None:
+            unclaimed.append(row)
+        else:
+            grouped[turn].append(row)
+
+    order = {redaction.SECRET: 0, redaction.PERSON: 1, redaction.ADVISORY: 2}
+    out = []
+    for turn in sorted(grouped):
+        mine = grouped[turn]
+        counts = Counter(row.category for row in mine)
+        worst = min(mine, key=lambda r: (order.get(r.category, 9), -r.length))
+        out.append(TurnFindings(
+            turn=turn, secret=counts[redaction.SECRET], person=counts[redaction.PERSON],
+            advisory=counts[redaction.ADVISORY], worst=worst.pattern,
+            pointers=tuple(sorted({row.path for row in mine if row.path})),
+        ))
+    return out, unclaimed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
