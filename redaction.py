@@ -108,6 +108,16 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "phone_us": re.compile(r"(?<!\d)\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\d)"),
     "orcid": re.compile(r"(?<!\d)\d{4}-\d{4}-\d{4}-\d{3}[\dX]\b"),
+    # A home directory names the account that owns it, and on the pod an account name is
+    # a person. `retro_load.py` already substitutes a synthetic transcript path for this
+    # reason, since the frozen corpus is symlinked out of someone else's storage and the
+    # real path carries their username, but the same paths turn up in `cwd`, in shell
+    # output and in tracebacks, where nothing substitutes anything. Reported, never
+    # rewritten: a transcript is mostly paths, and rewriting them all would leave a trace
+    # nobody can follow in order to remove a name that is on the trace's own user_id.
+    # The pointer in the inventory is there for a caller that wants to rewrite one.
+    "account_path": re.compile(
+        r"(?<![A-Za-z0-9])/(?:home|Users|global_share)/[A-Za-z0-9][A-Za-z0-9._-]{1,31}"),
 }
 
 #: Personal-provider domains, kept separate from institutional addresses. An lbl.gov
@@ -139,7 +149,7 @@ CATEGORY: dict[str, str] = {
     "name_beside_email": PERSON, "phone_us": PERSON,
     # Public by design. Reported so a reader knows the turn names someone, never
     # rewritten: an ORCID is what a person publishes in order to be identified.
-    "orcid": ADVISORY,
+    "orcid": ADVISORY, "account_path": ADVISORY,
 }
 
 #: Rewrite these categories, report the rest. A caller can pass its own set; at the
@@ -414,3 +424,190 @@ def redact(text, *, categories: frozenset[str] = DEFAULT_REDACT,
         cursor = f.end
     out.append(text[cursor:])
     return "".join(out), findings
+
+
+# ----------------------------------------------------------------------------------------
+# Value-level and structure-level entry points.
+#
+# Everything above treats its input as a document and has to work out where each value
+# ends. Three rounds of review found three inputs where that was wrong, each in the same
+# direction: a finding was reported while credential material stayed in the output. The
+# span-widening in `_Boundaries` fixed the two that had a terminator to find, and two
+# review threads are still open against it because some inputs have none: a backslash
+# inside a keyed value, and a `BEGIN ... PRIVATE KEY` in unquoted prose with no `END`,
+# which widens to the end of the input.
+#
+# The entry points below remove the question instead of answering it again. A transcript
+# is JSONL, so something has already parsed it and knows exactly where every value starts
+# and stops. `redact_value` is told "this string is one value" and replaces the whole of
+# it. `redact_tree` walks a parsed structure and calls the right one per leaf.
+#
+# What that buys, stated as measured on 2026-09-18 rather than as the review thread frames
+# it: the widening is bounded by one JSON value. It is not eliminated. An unterminated
+# private key inside a `stdout` value still takes the rest of that value, and an asset read
+# as one string is one value, so nothing is bounded there at all. The thread's own worst
+# case, running to the end of the input, needs text with no quote after the marker: scanned
+# flat, a raw .jsonl stops at the next `"`, which is usually still inside the same record.
+# ----------------------------------------------------------------------------------------
+
+#: A finding that comes from the key a value sits under rather than from the value's own
+#: shape. `{"KBASE_AUTH_TOKEN": "s3cret"}` carries a credential that no pattern here
+#: matches, because six characters is shorter than any of them accept, and that the
+#: entropy-gated scanners miss for the same reason: the three real tokens in the September
+#: corpus scored 4.351, 3.531 and 3.328 against gitleaks' floor near 3.5. See
+#: https://github.com/beril-doe/langfuse-retro-load/issues/10. The key name is the
+#: evidence, and only a caller walking a parsed structure has it.
+CREDENTIAL_KEY = "credential_key"
+
+#: Keys whose value is credential material whatever the value looks like. Anchored at both
+#: ends, so `x-api-key`, `KBASE_AUTH_TOKEN` and `tokens` match while `token_count`,
+#: `password_hint` and `secret_name` do not: a key that merely mentions a credential is
+#: usually a count, a flag or a filename, and redacting those buries the real ones.
+CREDENTIAL_KEY_RE = re.compile(
+    r"(?i)^(?:.*[._-])?(?:token|secret|passwd|password|api[_-]?key|apikey|credential"
+    r"|authorization|private[_-]?key|access[_-]?key)s?$"
+)
+
+
+def _whole_value_finding(text: str, pattern: str, key: bytes) -> Finding:
+    """One finding covering the entire string, fingerprinted on the whole value.
+
+    Fingerprinting the whole value rather than the matched span is what makes the record
+    useful: the same credential appearing under `token` in one record and inside a shell
+    command in another gets the same fingerprint only if both fingerprint the same text,
+    and the value is the thing a reviewer counts.
+    """
+    # `is_masked` alone answers "is what survives the mask too short to be a credential",
+    # and a short real credential answers that the same way: `{"token": "s3cret"}` came
+    # back masked=True with no mask in it. A whole-value finding therefore requires an
+    # explicit mask run to be present before it says masked, because the flag's only job
+    # is to let a reviewer filter out `gho_************`, and filtering out a six
+    # character token instead is the failure this module keeps having to fix.
+    return Finding(pattern=pattern, category=SECRET, start=0, end=len(text),
+                   length=len(text), fingerprint=fingerprint(text, key),
+                   masked=bool(MASKED_RE.search(text)) and is_masked(text))
+
+
+def redact_value(text, *, key_name: str | None = None,
+                 categories: frozenset[str] = DEFAULT_REDACT, key: bytes | None = None):
+    """Redact a string the caller has already delimited: one value, not a document.
+
+    Two things happen here that cannot happen in the flat-string path:
+
+    A value carrying a secret is replaced **whole**. Nothing scans for a terminator, so the
+    backslash case open against `_Boundaries` has nothing to get wrong, and over-redaction
+    is bounded by the value the caller passed in. When that value is a whole file read as
+    one string, that bound is the file, which is the honest limit of this approach.
+
+    A value under a credential-shaped `key_name` is replaced **whether or not any pattern
+    matches it**. That is the only way a six-character token or an unrecognised provider
+    shape is caught, and it is the half of the union that gitleaks cannot do.
+
+    A value with no secret in it falls through to span mode, because an email address or a
+    phone number inside a longer value should not take the whole value with it.
+    """
+    if not isinstance(text, str) or not text:
+        return text, []
+    key = new_key() if key is None else key
+
+    # Already this module's own work, whole. Replacing it again would nest placeholders,
+    # and a value under a credential key is exactly where that would happen on every pass.
+    if PLACEHOLDER_RE.fullmatch(text):
+        return text, []
+
+    # Whether a finding is reported and whether it is rewritten are two questions. An
+    # inventory pass runs with no categories at all, and it still has to see everything,
+    # or the report it writes says a value is clean because this run was not rewriting.
+    if key_name is not None and CREDENTIAL_KEY_RE.match(key_name):
+        finding = _whole_value_finding(text, CREDENTIAL_KEY, key)
+        return (finding.placeholder if SECRET in categories else text), [finding]
+
+    findings = detect(text, key=key)
+    secrets = [f for f in findings if f.category == SECRET]
+    if secrets:
+        # Name the placeholder after the longest secret in the value, so a reader of the
+        # record still learns what kind of thing was in there.
+        widest = max(secrets, key=lambda f: (f.length, -f.start))
+        finding = _whole_value_finding(text, widest.pattern, key)
+        return (finding.placeholder if SECRET in categories else text), [finding]
+
+    return redact(text, categories=categories, key=key)
+
+
+@dataclass(frozen=True)
+class Located:
+    """One finding, plus where in the parsed structure it was found.
+
+    `path` is an RFC 6901 JSON pointer into the structure passed to `redact_tree`, which
+    is what lets a loader leave out one tool result while still emitting the turn it
+    belongs to, and lets a reviewer find the same value again on a later pass.
+    """
+    path: str
+    key_name: str | None
+    whole_value: bool
+    finding: Finding
+
+
+def _escape_token(token: str) -> str:
+    """RFC 6901: `~` becomes `~0` and `/` becomes `~1`, in that order."""
+    return token.replace("~", "~0").replace("/", "~1")
+
+
+def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
+                key: bytes | None = None, key_name: str | None = None, path: str = "",
+                skip_keys: frozenset[str] = frozenset()):
+    """Redact every string leaf of a parsed JSON structure, reporting where each one was.
+
+    Returns the rewritten structure and a list of `Located`. Containers are rebuilt rather
+    than mutated, so the caller's copy is untouched and a dry run can compare the two.
+
+    A leaf under a credential-shaped key goes through `redact_value`, which replaces it
+    whole. Every other leaf goes through the flat-string path, bounded by the leaf: an
+    unterminated private key in a `stdout` value takes the rest of that value and leaves
+    its siblings and every other record alone.
+
+    List elements inherit the key their list sits under, because `{"tokens": [a, b]}` is
+    two tokens, not two anonymous strings.
+
+    `skip_keys` names string fields to pass through untouched. It exists for identifiers
+    the caller's own machinery reads back, not as a way to exempt content: rewriting a
+    record's `uuid` would leave the record intact and quietly break the turn assembly that
+    joins it to its parent, which is a corruption no test of the redaction itself would
+    see. Containers under a skipped key are still walked.
+    """
+    if isinstance(node, dict):
+        out, found = {}, []
+        for name, value in node.items():
+            if isinstance(value, str) and str(name) in skip_keys:
+                out[name] = value
+                continue
+            child, child_found = redact_tree(
+                value, categories=categories, key=key, key_name=str(name),
+                path=f"{path}/{_escape_token(str(name))}", skip_keys=skip_keys,
+            )
+            out[name] = child
+            found.extend(child_found)
+        return out, found
+
+    if isinstance(node, list):
+        out_list, found = [], []
+        for index, value in enumerate(node):
+            child, child_found = redact_tree(
+                value, categories=categories, key=key, key_name=key_name,
+                path=f"{path}/{index}", skip_keys=skip_keys,
+            )
+            out_list.append(child)
+            found.extend(child_found)
+        return out_list, found
+
+    if not isinstance(node, str) or not node:
+        return node, []
+
+    if key_name is not None and CREDENTIAL_KEY_RE.match(key_name):
+        clean, findings = redact_value(node, key_name=key_name, categories=categories, key=key)
+        whole = bool(findings) and clean != node
+    else:
+        clean, findings = redact(node, categories=categories, key=key)
+        whole = False
+    return clean, [Located(path=path, key_name=key_name, whole_value=whole, finding=f)
+                   for f in findings]

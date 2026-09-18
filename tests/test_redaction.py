@@ -56,6 +56,7 @@ SAMPLES = {
     "name_beside_email": '{"display_name": "A Person", "email": "x"}',
     "phone_us": "call 555-867-5309 now",
     "orcid": "0000-0002-1825-0097",
+    "account_path": "reading /home/someuser/projects/notes.md",
 }
 
 

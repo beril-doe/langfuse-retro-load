@@ -14,7 +14,7 @@ directly from wherever it runs; it never needs to move a transcript
 anywhere. Push these files to the pod (`labctl pod put`, or however you
 transfer files there) and run everything from a pod terminal.
 
-## The four pieces
+## The pieces
 
 - **`langfuse_hook_official.py`**: Langfuse's own official Claude Code
   integration hook, vendored unmodified from
@@ -39,6 +39,75 @@ transfer files there) and run everything from a pod terminal.
   counts and tags automatically, writing `manifest.json`. `run_manifest.py`
   reads that manifest and drives the real loads. This replaces hand-typing
   `--tag` flags per file, which doesn't scale and is easy to get wrong.
+
+- **`redaction.py`**: detection and redaction of sensitive spans, as a pure
+  function. No file handling, no Langfuse, no clock. The same logic has to run
+  at three filter points that share nothing else, and this is the only copy.
+- **`inventory.py`**: the screening pass. Writes one row per finding, says
+  where each one is, and gives `retro_load.py` the means to leave out a value
+  rather than a session. See the next section.
+
+## Screening what goes out
+
+`retro_load.py` screens by default. Every record still goes out; the values
+that carry a secret or someone's personal details are replaced in place, one
+value at a time, and `--no-redact` turns that off.
+
+That is the whole design decision. The scanner proposed in
+[#6](https://github.com/beril-doe/langfuse-retro-load/pull/6) answers one
+question per file, as an exit status, which leaves a loader with two options:
+send all of it or send none of it. Langfuse observations are immutable once
+ingested and the only delete removes an entire trace, so "none of it" is the
+one that gets used, and a session's research is dropped because a tool result
+forty turns in printed an environment variable.
+
+```
+# Screen only: no Langfuse calls, writes the inventory and a report
+python3 inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.jsonl
+
+# Screen a project snapshot before attaching it as Langfuse media
+python3 inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
+
+# Load, screening as it goes, keeping the record of what was rewritten
+python3 retro_load.py --inventory inv.jsonl session.jsonl
+```
+
+Each row is addressed by session id, record number, and an RFC 6901 JSON
+pointer to the exact value, so a caller can rewrite one value, drop one
+observation, or drop one record, and still emit everything around it.
+`inventory.excluded_paths()` returns those pointers grouped by record.
+
+**No row carries matched text, a value, an absolute path, or the fingerprint
+key.** A fingerprint is HMAC-SHA256 under a key that is random per run and
+never stored, so equal fingerprints mean the same value appeared twice and
+nothing else. One token in 41 records is one thing to rotate; 41 unrelated
+findings is a different afternoon. It also means the inventory needs no
+special file permissions, unlike the `--detail` file in
+[#6](https://github.com/beril-doe/langfuse-retro-load/pull/6), whose whole
+purpose is to hold the material being looked for.
+
+Two detectors, union, per
+[#10](https://github.com/beril-doe/langfuse-retro-load/issues/10). The local
+patterns are keyword and shape anchored and can also use the key a value sits
+under, so `{"KBASE_AUTH_TOKEN": "s3cret"}` is caught on six characters.
+gitleaks knows about 150 provider shapes and gates on entropy near 3.5, so it
+catches what nobody here wrote a rule for and misses the low-entropy ones: the
+three real tokens in the September corpus scored 4.351, 3.531 and 3.328.
+Neither substitutes for the other. gitleaks rows are addressed by record, since
+it reports a line and a `.jsonl` line is a record.
+
+What this does not do, stated plainly:
+
+- **It bounds over-redaction, it does not remove it.** An unterminated
+  `BEGIN ... PRIVATE KEY` still takes the rest of the value it sits in. Walking
+  the parsed structure makes that one JSON value instead of everything after it
+  in the file. An asset read as one string is one value, so nothing is bounded
+  there.
+- **It cannot help a trace that is already loaded.** The remedy there is
+  deleting the whole trace, which is the thing this exists to avoid.
+- **It is about secrets and personal details, not consent.** Whether a session
+  should be loaded at all is a different question, answered by `people.json`
+  and by [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
 
 ## Adding a person or a new source
 

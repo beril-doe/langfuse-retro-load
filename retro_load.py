@@ -46,6 +46,9 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")  # must run before langfuse is imported anywhere
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+import inventory  # noqa: E402  (after the sys.path insert, like the hook import below)
+import redaction  # noqa: E402
 try:
     from langfuse_hook_official import (  # noqa: E402
         build_turns,
@@ -102,13 +105,20 @@ def already_loaded(transcript_path: Path) -> dict | None:
         return None
 
 
-def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str]) -> None:
+def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
+                 redaction_summary: dict | None = None) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
                 "session_id": session_id,
                 "turns_emitted": turn_count,
                 "tags": tags,
+                # What was rewritten before this went out, by category. A marker that says
+                # a file was loaded and not whether it was screened leaves the next reader
+                # unable to tell a clean session from an unscreened one, and the answer
+                # stops being recoverable once Langfuse has the copy: observations are
+                # immutable and the only delete takes the whole trace with it.
+                "redacted": redaction_summary,
                 "loaded_at_utc": None,  # not stamped from the script's own clock: it says nothing
                                          # about when the underlying conversation happened, which
                                          # is the whole point of a marker for a *retroactive* load
@@ -128,6 +138,12 @@ def main() -> int:
                                        "Langfuse's Sessions/Users views are a re-identification surface")
     ap.add_argument("--dry-run", action="store_true", help="parse and print turn summary, do not call Langfuse")
     ap.add_argument("--force", action="store_true", help="ignore an existing marker in ~/.retro_load_markers/")
+    ap.add_argument("--no-redact", dest="redact", action="store_false", default=True,
+                    help="send values verbatim. The default rewrites secrets and personal "
+                         "details in place, one value at a time, keeping every record")
+    ap.add_argument("--inventory", type=Path, default=None,
+                    help="write a JSONL row per finding here: what kind, which record, "
+                         "which JSON pointer. Carries no matched text and no values")
     args = ap.parse_args()
 
     transcript_path = args.transcript.expanduser().resolve()
@@ -145,8 +161,28 @@ def main() -> int:
         return 0
 
     msgs = load_all_jsonl(transcript_path)
+
+    # Screen before assembling turns, so everything the assembler reads is already
+    # rewritten and the vendored hook needs no changes. The unit left out is one value at
+    # one pointer: no record, turn or session is dropped for carrying one.
+    rows: list[inventory.Row] = []
+    if args.redact:
+        redactor = redaction.Redactor()
+        msgs, rows = inventory.redact_records(msgs, redactor, subject=session_id)
+    summary = {}
+    for row in rows:
+        summary[row.category] = summary.get(row.category, 0) + 1
+    if args.inventory:
+        inventory.write_inventory(rows, args.inventory)
+
     turns = build_turns(msgs)
     print(f"{transcript_path.name}: {len(msgs)} jsonl lines -> {len(turns)} turns")
+    if args.redact:
+        found = ", ".join(f"{k}={v}" for k, v in sorted(summary.items())) or "nothing"
+        print(f"  screened: {found}"
+              + (f"; inventory written to {args.inventory}" if args.inventory else ""))
+    else:
+        print("  NOT screened: --no-redact was passed, values go out verbatim")
 
     if args.dry_run:
         for i, t in enumerate(turns, 1):
@@ -201,7 +237,8 @@ def main() -> int:
               f"dedupe), it does not retry only the missing ones.", file=sys.stderr)
         return 1
 
-    write_marker(transcript_path, session_id, emitted, tags)
+    write_marker(transcript_path, session_id, emitted, tags,
+                 redaction_summary=(summary if args.redact else None))
     print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0
