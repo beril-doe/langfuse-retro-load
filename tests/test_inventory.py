@@ -302,3 +302,33 @@ def test_service_addresses_are_not_people(text, flagged):
     a credential, so nothing there is suppressed on a guess."""
     found = {f.pattern for f in redaction.detect(text, key=KEY)}
     assert bool(found & {"email_institutional", "email_personal"}) is flagged
+
+
+def test_reveal_shows_a_shape_not_a_value_by_default():
+    """The default answers "is this a real credential" without putting one on the screen."""
+    import reveal
+    leaf = f"KBASE_AUTH_TOKEN={'ab12' * 8} and more text"
+    out = reveal.context_for(leaf, 11, 11 + len("TOKEN=") + 32, show_values=False)
+    assert "ab12ab12" not in out
+    assert "38 chars" in out
+
+
+def test_reveal_redacts_a_neighbouring_finding_in_the_context():
+    """Reading about one credential must not show you a different one."""
+    import reveal
+    leaf = f"TOKEN={'ab12' * 8} then someone.else@gmail.com then end"
+    out = reveal.context_for(leaf, 0, 6 + 32, show_values=False)
+    assert "someone.else@gmail.com" not in out
+    assert "[REDACTED:email_personal:" in out
+
+
+def test_reveal_shape_flags_a_placeholder_without_deciding_anything():
+    import reveal
+    assert "placeholder" in reveal.shape("<your-api-key-here>")
+    assert "placeholder" not in reveal.shape("ab12" * 8)
+
+
+def test_reveal_short_values_do_not_leak_their_ends():
+    """First and last two characters of a six-character token is most of the token."""
+    import reveal
+    assert reveal.shape("s3cret") == "<6 chars>"
