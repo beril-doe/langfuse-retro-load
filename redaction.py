@@ -133,12 +133,48 @@ PERSONAL_DOMAINS = (r"(?:gmail|googlemail|yahoo|ymail|hotmail|outlook|live|iclou
 #: With it, and a bounded local part, 0.001s at all three.
 LOCAL_PART = r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}"
 
+#: Local parts that are a role or a service, never a person. `git@github.com` is the one
+#: that actually bit: it is the host half of every SSH remote URL, it has the exact shape of
+#: an institutional address, and redacting it turned a working instruction inside a trace
+#: into an unfollowable one. Found 2026-09-18 by reading a loaded trace, five occurrences of
+#: one value in a single turn. The cost of the mistake is not privacy, it is that the reader
+#: of a redacted trace cannot tell a real removal from a mangled command, which is how a
+#: redactor stops being trusted.
+ROLE_LOCAL_PARTS = (r"(?:git|noreply|no-reply|donotreply|do-not-reply|root|postmaster"
+                    r"|hostmaster|webmaster|mailer-daemon|abuse|admin|support|info"
+                    r"|notifications|bounce|nobody|daemon)")
+
 PATTERNS["email_personal"] = re.compile(rf"{LOCAL_PART}@{PERSONAL_DOMAINS}\b", re.IGNORECASE)
 PATTERNS["email_institutional"] = re.compile(
     LOCAL_PART + r"@(?!" + PERSONAL_DOMAINS + r"\b)[A-Za-z0-9.-]{1,255}"
     r"\.(?:gov|edu|org|net|com|io|ac\.[a-z]{2})\b",
     re.IGNORECASE,
 )
+
+#: Domains that cannot belong to a person. RFC 2606 reserves the first four for documentation
+#: and testing, so an address there is an example by definition. GitHub's noreply domain is a
+#: per-account forwarding address that GitHub publishes in every commit it authors.
+RESERVED_DOMAINS = re.compile(
+    r"(?i)@(?:[A-Za-z0-9.-]+\.)?(?:example\.(?:com|org|net)|test|invalid|localhost"
+    r"|users\.noreply\.github\.com)$")
+
+
+def _is_role_address(text: str, start: int, end: int) -> bool:
+    """Whether a match is a service address rather than a person's.
+
+    Two shapes, checked on the matched text rather than baked into the pattern, because a
+    negative lookbehind for a variable-length local part is not expressible and a second
+    alternation makes the pattern unreadable. An address whose local part is a role, and the
+    `user@host:path` shape of an SSH remote, which is a URL and not an address at all.
+    """
+    value = text[start:end]
+    local = value.split("@", 1)[0]
+    if re.fullmatch(ROLE_LOCAL_PARTS, local, re.IGNORECASE):
+        return True
+    if RESERVED_DOMAINS.search(value):
+        return True
+    # `git@github.com:owner/repo.git`: a colon then a path, immediately after the host.
+    return bool(re.match(r":[A-Za-z0-9._~-]+/", text[end:end + 40]))
 
 CATEGORY: dict[str, str] = {
     "bearer_header": SECRET, "openai_style": SECRET, "github_pat": SECRET,
@@ -343,6 +379,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 span = boundaries.span_for(name, span[0], span[1])
                 if _inside(span, protected):
                     continue
+            if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):
+                continue
             value = text[span[0]:span[1]]
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 

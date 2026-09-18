@@ -281,3 +281,24 @@ def test_a_clearance_narrows_only_by_the_fields_it_names(clearance, cleared):
                         pattern="keyed_value", category=redaction.SECRET,
                         fingerprint="abcd1234", length=38, masked=False, whole_value=False)
     assert scores.is_cleared(row, [clearance]) is cleared
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("git remote set-url origin git@github.com:kbaseincubator/repo.git", False),
+    ("noreply@github.com", False),
+    ("12345+someone@users.noreply.github.com", False),
+    ("mailer-daemon@lbl.gov", False),
+    ("write to admin@example.com", False),
+    ("someone@lbl.gov", True),
+    ("a.person@berkeley.edu", True),
+    ("contact j.doe@ornl.gov please", True),
+    ("someone.else@gmail.com", True),
+])
+def test_service_addresses_are_not_people(text, flagged):
+    """`git@github.com` is the host half of every SSH remote and has the exact shape of an
+    institutional address. Redacting it turned a working instruction inside a loaded trace into
+    an unfollowable one, found 2026-09-18 by reading the trace. The rule only ever suppresses in
+    the person category: for a secret, over-redaction costs readability and under-redaction ships
+    a credential, so nothing there is suppressed on a guess."""
+    found = {f.pattern for f in redaction.detect(text, key=KEY)}
+    assert bool(found & {"email_institutional", "email_personal"}) is flagged
