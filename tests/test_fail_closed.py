@@ -324,3 +324,29 @@ def test_a_real_value_in_angle_brackets_is_still_a_credential(node):
 def test_a_words_only_placeholder_is_still_left_alone(value):
     clean, found = redaction.redact_tree({"token": value}, key=KEY)
     assert clean == {"token": value} and found == []
+
+
+# --- seventh Copilot review ----------------------------------------------------------------
+
+@pytest.mark.parametrize("text,tail", [
+    ('password="abcdefgh,ijklmnop"', "ijklmnop"),
+    ("token='abcdefgh ijklmnop'", "ijklmnop"),
+    ('{\\"api_key\\":\\"abcdefgh,ijklmnop\\"}', "ijklmnop"),
+])
+def test_a_comma_or_space_inside_a_quoted_value_does_not_leave_the_tail(text, tail):
+    clean, findings = redaction.redact(text, key=KEY)
+    assert tail not in clean
+    assert [f.pattern for f in findings] == ["keyed_value"]
+
+
+def test_an_unquoted_value_still_ends_at_a_comma():
+    """The control: without quotes a comma is usually a separator, and what follows stays."""
+    clean, _ = redaction.redact("token=abcdefghijklmnop, next=value", key=KEY)
+    assert clean.endswith(", next=value")
+
+
+def test_a_start_time_without_a_timezone_is_a_presence_error(monkeypatch):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: {
+        "data": [{"startTime": "2026-05-07T21:34:03"}], "meta": {}})
+    with pytest.raises(presence.PresenceError):
+        presence.covered_through("https://x.test", "pk", "sk", "s-1")

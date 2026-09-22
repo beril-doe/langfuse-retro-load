@@ -306,6 +306,25 @@ _PEM_TERMINATOR_RE = re.compile(
     "[" + re.escape("".join(sorted(_PEM_TERMINATORS - {"\\"}))) + "]" + r"|\\+(?=[\"'])")
 
 
+def _through_closing_quote(text: str, span: tuple[int, int]) -> tuple[int, int]:
+    """Widen a quoted value to its closing quote, so a comma or space inside it is content.
+
+    `password="abcdefgh,ijklmnop"` used to end at the comma and leave `,ijklmnop` behind. Only
+    ever widens: with no closing quote the terminator-based end stands. A closing quote
+    escaped as `\\"` inside a JSONL line ends before its backslashes, like the value rule.
+    """
+    start, end = span
+    quote = text[start - 1] if start > 0 else ""
+    if quote not in ("\"", "'"):
+        return span
+    close = text.find(quote, start)
+    if close == -1:
+        return span
+    while close > start and text[close - 1] == "\\":
+        close -= 1
+    return start, max(end, close)
+
+
 class _Boundaries:
     """Where every value could end, worked out once for a whole input.
 
@@ -427,6 +446,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 continue
             if category is SECRET:
                 span = boundaries.span_for(name, span[0], span[1])
+                if has_value:
+                    span = _through_closing_quote(text, span)
                 if _inside(span, protected):
                     continue
             if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):

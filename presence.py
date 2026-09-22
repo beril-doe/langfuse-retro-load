@@ -103,6 +103,9 @@ def covered_through(host: str, public_key: str, secret_key: str, session_id: str
                 when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
             except ValueError as exc:
                 raise PresenceError(f"unparseable startTime in v2/observations: {stamp!r}") from exc
+            if when.tzinfo is None:
+                # A naive time can't be compared with span timestamps without guessing a zone.
+                raise PresenceError(f"startTime without a timezone in v2/observations: {stamp!r}")
             if latest is None or when > latest:
                 latest = when
         if not cursor or not rows:
