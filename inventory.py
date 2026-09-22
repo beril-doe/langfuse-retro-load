@@ -218,11 +218,17 @@ def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
             raise GitleaksFailed(f"gitleaks exited {result.returncode} on {path.name}; "
                                  f"its findings for this file are missing, not empty")
         if not result.stdout.strip():
+            if result.returncode == 2:
+                raise GitleaksFailed(f"gitleaks reported findings on {path.name} but wrote no "
+                                     f"report; its findings for this file are missing")
             continue
         try:
             findings = json.loads(result.stdout)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise GitleaksFailed(f"gitleaks wrote an unreadable report for {path.name}; its "
+                                 f"findings for this file are missing") from exc
+        if result.returncode == 2 and not findings:
+            raise GitleaksFailed(f"gitleaks reported findings on {path.name} but listed none")
         subject = _subject_for(path) if kind == "transcript" else (
             str(path.relative_to(root)) if root else path.name)
         for finding in findings:

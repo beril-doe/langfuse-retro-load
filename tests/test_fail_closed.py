@@ -198,3 +198,62 @@ def test_the_inventory_scan_follows_the_loader_policy(tmp_path):
     rows = inventory.scan_transcript(path, redaction.Redactor())
     assert [(r.path, r.pattern) for r in rows] == [
         ("/message/content/0/input/id", "github_pat")]
+
+
+# --- the dry-run contract build_manifest.py depends on (third Copilot review) -------------
+
+@pytest.fixture
+def manifest_env(monkeypatch, tmp_path):
+    """build_manifest.py runs retro_load.py as a subprocess; keep its markers out of $HOME."""
+    pytest.importorskip("dotenv")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    import build_manifest
+    return build_manifest
+
+
+def test_a_recently_active_session_still_gets_a_manifest_turn_count(manifest_env, tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path = tmp_path / "s-recent.jsonl"
+    path.write_text(
+        json.dumps({"type": "user", "uuid": "u-1", "timestamp": now,
+                    "message": {"role": "user", "content": "hi"}}) + "\n"
+        + json.dumps({"type": "assistant", "uuid": "a-1", "parentUuid": "u-1", "timestamp": now,
+                      "message": {"role": "assistant", "id": "m-1",
+                                  "content": [{"type": "text", "text": "hello"}]}}) + "\n")
+    summary = manifest_env.dry_run_summary(path, "2026-05-07")
+    assert summary["failed"] is False and summary["turns"] == 1
+
+
+def test_a_marked_session_still_gets_a_manifest_turn_count(manifest_env, monkeypatch, tmp_path):
+    path = _transcript(tmp_path).resolve()
+    monkeypatch.setenv("LANGFUSE_HOST", "https://a.test")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-a")
+    import retro_load
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "home" / ".retro_load_markers")
+    retro_load.write_marker(path, "s-1", 4, ["claude-code", "event_day:2026-05-07"],
+                            host="https://a.test", public_key="pk-a")
+    summary = manifest_env.dry_run_summary(path, "2026-05-07")
+    assert summary == {"turns": 4, "event_day": True, "failed": False}
+
+
+def test_one_unreadable_timestamp_makes_last_activity_unknown(retro_load):
+    msgs = [{"timestamp": "2026-01-01T00:00:00Z"}, {"timestamp": "not a time"}]
+    assert retro_load.last_activity(msgs) is None
+
+
+@pytest.mark.parametrize("stdout", ["", "not json", "[]"])
+def test_gitleaks_exit_2_without_a_usable_report_is_a_failure(monkeypatch, tmp_path, stdout):
+    path = tmp_path / "t.jsonl"
+    path.write_text("{}\n")
+    monkeypatch.setattr(inventory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, returncode=2, stdout=stdout, stderr=""))
+    with pytest.raises(inventory.GitleaksFailed):
+        inventory.gitleaks_rows([path], kind="transcript", key=KEY)
+
+
+def test_presence_counts_from_1970():
+    assert presence._FROM.startswith("1970-01-01")

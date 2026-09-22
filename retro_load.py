@@ -153,8 +153,17 @@ EXIT_SKIPPED = 3
 
 def last_activity(msgs) -> "datetime | None":
     """The latest timestamp on any record: when this session was last touched."""
-    stamps = [parse_ts(m) for m in msgs]
-    stamps = [t for t in stamps if t is not None]
+    stamps = []
+    for m in msgs:
+        raw = m.get("timestamp") if isinstance(m, dict) else None
+        if raw is None:
+            continue
+        parsed = parse_ts(m)
+        if parsed is None:
+            # One unreadable timestamp could be the newest, so the maximum of the rest is not
+            # the last activity. Unknown makes the idle check skip rather than guess.
+            return None
+        stamps.append(parsed)
     return max(stamps) if stamps else None
 
 
@@ -222,9 +231,11 @@ def main() -> int:
 
     prior = already_loaded(transcript_path)
     if marker_matches(prior, host, public_key, session_id) and not args.force:
-        print(f"already retro-loaded into {host} ({prior['turns_emitted']} turns, "
-              f"tags={prior['tags']}); pass --force to reload. marker: {marker_path(transcript_path)}")
-        return EXIT_SKIPPED
+        # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
+        # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
+        print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
+              f"into {host}; pass --force to reload. marker: {marker_path(transcript_path)}")
+        return 0 if args.dry_run else EXIT_SKIPPED
 
     msgs = load_all_jsonl(transcript_path)
 
@@ -249,9 +260,13 @@ def main() -> int:
     reason = skip_reason(last_seen=last_activity(msgs), now=datetime.now(timezone.utc),
                          min_idle_days=args.min_idle_days, existing=existing,
                          allow_existing=args.allow_existing)
-    if reason:
+    if reason and not args.dry_run:
         print(f"{transcript_path.name}: skipped, {reason}")
         return EXIT_SKIPPED
+    if reason:
+        # A dry run reports the decision and still prints its summary: build_manifest.py
+        # reads the turn count from it and treats a nonzero exit as a failed entry.
+        print(f"  would skip: {reason}")
 
     # Screen before assembling turns, so everything the assembler reads is already
     # rewritten and the vendored hook needs no changes. The unit left out is one value at

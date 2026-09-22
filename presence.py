@@ -31,8 +31,9 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-#: Wide enough to cover any backdated transcript. v2/metrics requires both bounds.
-_FROM = "2000-01-01T00:00:00Z"
+#: Wide enough to cover any backdated transcript. v2/metrics requires both bounds. 1970 to
+#: match langfuse_admin.ALL_TIME; on 2026-09-22 it counted the same as 2000 on both projects.
+_FROM = "1970-01-01T00:00:00Z"
 _TO = "2100-01-01T00:00:00Z"
 
 
