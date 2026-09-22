@@ -99,11 +99,13 @@ python3 run_manifest.py --dry-run
 nohup python3 run_manifest.py > full_load_run.txt 2>&1 &
 
 # 5. Verify independently against Langfuse's own API, not just this
-#    script's own "OK" output. Compare the run's own emitted-file count against
-#    Langfuse directly, e.g. for one tag:
-curl -s "$LANGFUSE_HOST/api/public/observations?tag=<your-batch-tag>&limit=1" \
-  -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" | python3 -c \
-  "import json,sys; print(json.load(sys.stdin)['meta']['totalItems'])"
+#    script's own "OK" output. Count the observations carrying your batch tag.
+#    The metrics API is the one that filters on tags: /api/public/observations
+#    ignores a ?tag= parameter and is removed from Langfuse Cloud on 2026-11-16.
+curl -s -G "$LANGFUSE_HOST/api/public/v2/metrics" \
+  -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
+  --data-urlencode 'query={"view":"observations","metrics":[{"measure":"count","aggregation":"count"}],"filters":[{"column":"tags","operator":"any of","value":["<your-batch-tag>"],"type":"arrayOptions"}],"fromTimestamp":"2000-01-01T00:00:00Z","toTimestamp":"2100-01-01T00:00:00Z"}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['count_count'])"
 ```
 
 ## Tests
