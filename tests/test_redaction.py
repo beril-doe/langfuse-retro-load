@@ -40,6 +40,7 @@ FAKE_SIGNATURE = "notarealsignature" * 3
 # https://github.com/beril-doe/langfuse-retro-load/issues/10.
 SAMPLES = {
     "bearer_header": "Authorization: Bearer abcdefghijklmnopqrstuvwx",
+    "auth_header": "Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3N3b3Jk",
     "openai_style": "key sk-abcdefghijklmnopqrstuvwxyz012345",
     "github_pat": "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
     "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
@@ -387,3 +388,70 @@ def test_many_matches_do_not_cost_quadratic_time(shape, build):
         f"{shape}: {small_cost:.4f}s at {len(small):,} chars and {large_cost:.4f}s at "
         f"{len(large):,} chars, a factor of {large_cost / small_cost:.0f}. Linear is about "
         f"eight.")
+
+
+# ---------------------------------------------------------------------------
+# https://github.com/beril-doe/langfuse-retro-load/issues/23: a reference is not a secret,
+# and the name of what was hidden stays readable.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "export ANTHROPIC_AUTH_TOKEN=$CBORG_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN=${CBORG_API_KEY}",
+    'api_key: "$OPENAI_API_KEY"',
+    "password=<your-password-here>",
+    "token: {{ secrets.GITHUB_TOKEN }}",
+])
+def test_a_variable_reference_is_left_alone(text):
+    clean, findings = redaction.redact(text, key=KEY)
+    assert clean == text
+    assert [f for f in findings if f.category == redaction.SECRET] == []
+
+
+@pytest.mark.parametrize("node", [
+    {"token": "$GITHUB_TOKEN"},
+    {"api_key": "${OPENAI_API_KEY}"},
+    {"password": "<your-password-here>"},
+])
+def test_a_reference_under_a_credential_key_is_left_alone(node):
+    clean, found = redaction.redact_tree(node, key=KEY)
+    assert clean == node
+    assert found == []
+
+
+# Built at runtime so no credential-shaped literal sits in the source for a scanner to flag.
+FAKE_VALUE = "abcdef0123456789" * 2
+FAKE_BASIC = "ZmFrZXVzZXI6" + "ZmFrZXBhc3N3b3Jk"
+
+
+@pytest.mark.parametrize("prefix,suffix", [
+    ("KBASE_AUTH_TOKEN=", ""),
+    ("export ANTHROPIC_AUTH_TOKEN=", ""),
+    ('{"api_key": "', '"}'),
+])
+def test_the_variable_name_survives_and_the_value_does_not(prefix, suffix):
+    clean, findings = redaction.redact(prefix + FAKE_VALUE + suffix, key=KEY)
+    assert clean.startswith(prefix)
+    assert FAKE_VALUE[:16] not in clean
+    assert [f.pattern for f in findings] == ["keyed_value"]
+
+
+def test_a_literal_value_is_still_redacted_beside_a_reference():
+    """The negative control for the reference rule: it must not exempt real values."""
+    text = "ANTHROPIC_AUTH_TOKEN=$CBORG_API_KEY password=hunter2hunter2"
+    clean, findings = redaction.redact(text, key=KEY)
+    assert "$CBORG_API_KEY" in clean
+    assert "hunter2hunter2" not in clean
+    assert [f.pattern for f in findings] == ["keyed_value"]
+
+
+@pytest.mark.parametrize("text", [
+    "Authorization: Basic " + FAKE_BASIC,
+    "Proxy-Authorization: Token abcdefghijklmnop",
+    "curl -H 'authorization: basic " + FAKE_BASIC + "' https://example.test",
+])
+def test_basic_and_token_schemes_keep_the_scheme_and_lose_the_credential(text):
+    clean, findings = redaction.redact(text, key=KEY)
+    assert [f.pattern for f in findings] == ["auth_header"]
+    assert FAKE_BASIC not in clean and "abcdefghijklmnop" not in clean
+    assert any(scheme in clean.lower() for scheme in ("basic ", "token "))

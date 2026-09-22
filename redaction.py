@@ -92,10 +92,21 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # form or file extension. Keyword anchoring has the opposite failure: it finds
     # anything after TOKEN= and nothing nobody wrote a rule for. See
     # https://github.com/beril-doe/langfuse-retro-load/issues/10.
+    #
+    # Only the value is redacted, named by the `value` group, so a reader can still see which
+    # variable was hidden: `KBASE_AUTH_TOKEN=...` used to become `KBASE_AUTH_[REDACTED...]`
+    # (https://github.com/beril-doe/langfuse-retro-load/issues/23).
     "keyed_value": re.compile(
         r"(?i)(?:token|secret|password|passwd|api[ _-]?key|credential)"
         r"(?:\\{1,2}[\"'])?[\"'*`\t ]*[:=][\t ]*(?:\\{1,2}[\"'])?"
-        r"[\"']?[A-Za-z0-9!@#$%^&*_+/=-]{8,}"
+        r"[\"']?(?P<value>[A-Za-z0-9!@#$%^&*_+/=-]{8,})"
+    ),
+    # Basic and Token schemes, which `bearer_header` does not cover. Taken from the live hook
+    # merged in https://github.com/beril-doe/BERIL-research-observatory/pull/420, so the two
+    # filter points agree on headers.
+    "auth_header": re.compile(
+        r"(?i)\b(?:proxy-)?authorization[\"']?[ \t]*[:=][ \t]*[\"']?(?:basic|token)[ \t]+"
+        r"(?P<value>[A-Za-z0-9._~+/=-]{8,})"
     ),
     # Only a URI that actually carries credentials. A bare mongodb://host:port is a
     # hostname, and source code building one from an f-string is neither.
@@ -176,11 +187,24 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
     # `git@github.com:owner/repo.git`: a colon then a path, immediately after the host.
     return bool(re.match(r":[A-Za-z0-9._~-]+/", text[end:end + 40]))
 
+#: A value that only names another value: `$CBORG_API_KEY`, `${GITHUB_TOKEN}`,
+#: `<your-token-here>`, `{{ secrets.TOKEN }}`. Redacting one hides where a credential came
+#: from and hides nothing secret (https://github.com/beril-doe/langfuse-retro-load/issues/23).
+REFERENCE_RE = re.compile(
+    r"\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|<[^<>\n]{1,80}>"
+    r"|\{\{\s*[A-Za-z_][\w.]*\s*\}\}")
+
+
+def is_reference(value: str) -> bool:
+    """True when the whole value, quotes and whitespace aside, is a reference, not a secret."""
+    return bool(REFERENCE_RE.fullmatch(value.strip().strip("\"'")))
+
+
 CATEGORY: dict[str, str] = {
     "bearer_header": SECRET, "openai_style": SECRET, "github_pat": SECRET,
     "aws_access_key_id": SECRET, "google_oauth": SECRET, "google_api_key": SECRET,
     "private_key_block": SECRET, "jwt": SECRET, "slack_token": SECRET,
-    "keyed_value": SECRET, "mongo_uri": SECRET,
+    "keyed_value": SECRET, "auth_header": SECRET, "mongo_uri": SECRET,
     "email_personal": PERSON, "email_institutional": PERSON,
     "name_beside_email": PERSON, "phone_us": PERSON,
     # Public by design. Reported so a reader knows the turn names someone, never
@@ -371,8 +395,9 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     candidates = []
     for name, pattern in PATTERNS.items():
         category = CATEGORY[name]
+        has_value = "value" in pattern.groupindex
         for match in pattern.finditer(text):
-            span = (match.start(), match.end())
+            span = match.span("value") if has_value else (match.start(), match.end())
             if span[0] == span[1] or _inside(span, protected):
                 continue
             if category is SECRET:
@@ -382,6 +407,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):
                 continue
             value = text[span[0]:span[1]]
+            if has_value and is_reference(value):
+                continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
@@ -556,7 +583,7 @@ def redact_value(text, *, key_name: str | None = None,
     # Whether a finding is reported and whether it is rewritten are two questions. An
     # inventory pass runs with no categories at all, and it still has to see everything,
     # or the report it writes says a value is clean because this run was not rewriting.
-    if key_name is not None and CREDENTIAL_KEY_RE.match(key_name):
+    if key_name is not None and CREDENTIAL_KEY_RE.match(key_name) and not is_reference(text):
         finding = _whole_value_finding(text, CREDENTIAL_KEY, key)
         return (finding.placeholder if SECRET in categories else text), [finding]
 
