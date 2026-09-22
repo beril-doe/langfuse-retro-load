@@ -277,7 +277,13 @@ _PEM_TERMINATORS = frozenset('"\'\\')
 
 
 #: Precompiled terminator scans. Built once per call rather than per candidate.
-_VALUE_TERMINATOR_RE = re.compile("[" + re.escape("".join(sorted(_VALUE_TERMINATORS))) + "]")
+#: A backslash ends a value only where it escapes a quote: `\\"` inside a JSONL line, or
+#: `\\\\"` one level deeper, which is the case the terminator exists for. A bare backslash is
+#: ordinary value content. Treating every backslash as the end left the tail of
+#: `password=abcdefgh\\\\ijklmnop` in the output while reporting the value redacted, the
+#: backslash thread on https://github.com/beril-doe/langfuse-retro-load/pull/20.
+_VALUE_TERMINATOR_RE = re.compile(
+    "[" + re.escape("".join(sorted(_VALUE_TERMINATORS - {"\\"}))) + "]" + r"|\\+(?=[\"'])")
 _PEM_TERMINATOR_RE = re.compile("[" + re.escape("".join(sorted(_PEM_TERMINATORS))) + "]")
 
 

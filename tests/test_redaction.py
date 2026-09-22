@@ -455,3 +455,33 @@ def test_basic_and_token_schemes_keep_the_scheme_and_lose_the_credential(text):
     assert [f.pattern for f in findings] == ["auth_header"]
     assert FAKE_BASIC not in clean and "abcdefghijklmnop" not in clean
     assert any(scheme in clean.lower() for scheme in ("basic ", "token "))
+
+
+# ---------------------------------------------------------------------------
+# The backslash thread on https://github.com/beril-doe/langfuse-retro-load/pull/20: a
+# backslash inside a value is content, and only one escaping a quote ends the value.
+# ---------------------------------------------------------------------------
+
+BACKSLASH_TAIL = "ijklmnop"
+
+
+@pytest.mark.parametrize("text", [
+    "password=abcdefgh\\\\" + BACKSLASH_TAIL,
+    "password=abcdefgh\\" + BACKSLASH_TAIL,
+    "stdout: token=abcdefgh\\\\" + BACKSLASH_TAIL + " and more",
+])
+def test_a_backslash_inside_a_value_does_not_leave_the_tail_behind(text):
+    clean, findings = redaction.redact(text, key=KEY)
+    assert BACKSLASH_TAIL not in clean
+    assert [f.pattern for f in findings] == ["keyed_value"]
+
+
+@pytest.mark.parametrize("text,after", [
+    ('x \\"token\\":\\"abcdefghijklmnop\\", next', '\\", next'),
+    ('x \\\\"token\\\\":\\\\"abcdefghijklmnop\\\\", next', '\\\\", next'),
+])
+def test_an_escaped_quote_still_ends_the_value(text, after):
+    """The case the backslash terminator exists for: JSON quoted inside a JSONL line."""
+    clean, _ = redaction.redact(text, key=KEY)
+    assert "abcdefghijklmnop" not in clean
+    assert clean.endswith(after)

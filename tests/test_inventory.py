@@ -67,10 +67,11 @@ def test_keys_that_merely_mention_a_credential_are_left_alone(name):
 
 
 def test_a_value_with_a_backslash_in_it_is_redacted_whole():
-    """The open thread at redaction.py:200. In a flat string the span stops at the
-    backslash and the tail survives; told that this is one value, nothing has to guess."""
+    """The thread at redaction.py:200. The flat path used to stop at the backslash and leave
+    the tail; a backslash now ends a value only when it escapes a quote, so both paths take
+    the whole value."""
     flat, _ = redaction.redact(f"password={BACKSLASHED}", key=KEY)
-    assert "lmnopqrstuv" in flat, "precondition: the flat path leaves the tail"
+    assert "lmnopqrstuv" not in flat
 
     clean, found = redaction.redact_tree({"password": BACKSLASHED}, key=KEY)
     assert BACKSLASHED not in json.dumps(clean)
