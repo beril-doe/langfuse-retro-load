@@ -107,12 +107,28 @@ def already_loaded(transcript_path: Path) -> dict | None:
         return None
 
 
+def marker_matches(prior: dict | None, host: str, public_key: str | None) -> bool:
+    """True only for a marker written by a load into this same host and project.
+
+    A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
+    not that it is in the project this run targets. Markers from before the destination was
+    recorded carry neither field and never match, so the project is asked instead.
+    """
+    return bool(prior) and prior.get("host") == host and bool(public_key) \
+        and prior.get("public_key") == public_key
+
+
 def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
-                 redaction_summary: dict | None = None) -> None:
+                 redaction_summary: dict | None = None, *, host: str | None = None,
+                 public_key: str | None = None) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
                 "session_id": session_id,
+                # The destination, so a later run can tell "loaded here" from "loaded
+                # somewhere". The public key names a project and is not a secret.
+                "host": host,
+                "public_key": public_key,
                 "turns_emitted": turn_count,
                 "tags": tags,
                 # What was rewritten before this went out, by category. A marker that says
@@ -149,8 +165,10 @@ def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
     observations the target project already holds for this session id.
     """
     if existing and not allow_existing:
-        return (f"the project already holds {existing} observations for this session; "
-                f"sending it again would duplicate them. Pass --allow-existing to send anyway")
+        return (f"the project already holds {existing} observations for this session and "
+                f"this loader has no record of completing it there: live tracing sent it, or "
+                f"an earlier load failed partway. Sending would duplicate what is there; "
+                f"check it first, and pass --allow-existing only to send anyway")
     if min_idle_days > 0:
         if last_seen is None:
             return ("no record carries a timestamp, so there is no way to tell whether the "
@@ -197,35 +215,35 @@ def main() -> int:
     session_id = args.session_id or transcript_path.stem
     tags = ["claude-code", "retro-load"] + args.tag
 
-    prior = already_loaded(transcript_path)
-    if prior and not args.force:
-        print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}); "
-              f"pass --force to reload. marker: {marker_path(transcript_path)}")
-        return 0
-
-    msgs = load_all_jsonl(transcript_path)
-
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
     secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
     host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
 
+    prior = already_loaded(transcript_path)
+    if marker_matches(prior, host, public_key) and not args.force:
+        print(f"already retro-loaded into {host} ({prior['turns_emitted']} turns, "
+              f"tags={prior['tags']}); pass --force to reload. marker: {marker_path(transcript_path)}")
+        return EXIT_SKIPPED
+
+    msgs = load_all_jsonl(transcript_path)
+
     # Ask the project, not the local marker, whether this session is already there. The
     # marker cannot say which project a session went to. "Could not tell" stops the send.
+    # --dry-run never calls Langfuse, so it does not ask either. --allow-existing covers a
+    # project that answered "yes, it is here", never one that could not answer.
     existing = 0
-    if public_key and secret_key:
-        try:
-            existing = presence.session_observation_count(host, public_key, secret_key, session_id)
-        except presence.PresenceError as e:
-            if not args.allow_existing:
-                print(f"could not check {host} for session {session_id}, not sending: {e}",
-                      file=sys.stderr)
-                return 1
-            print(f"  ! presence check failed, sending anyway (--allow-existing): {e}")
-    elif not args.dry_run:
+    if args.dry_run:
+        print("  presence not checked: --dry-run does not call Langfuse")
+    elif not (public_key and secret_key):
         print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set in environment", file=sys.stderr)
         return 1
     else:
-        print("  presence not checked: no Langfuse credentials in the environment")
+        try:
+            existing = presence.session_observation_count(host, public_key, secret_key, session_id)
+        except presence.PresenceError as e:
+            print(f"could not check {host} for session {session_id}, not sending: {e}",
+                  file=sys.stderr)
+            return 1
 
     reason = skip_reason(last_seen=last_activity(msgs), now=datetime.now(timezone.utc),
                          min_idle_days=args.min_idle_days, existing=existing,
@@ -303,7 +321,8 @@ def main() -> int:
         return 1
 
     write_marker(transcript_path, session_id, emitted, tags,
-                 redaction_summary=(summary if args.redact else None))
+                 redaction_summary=(summary if args.redact else None),
+                 host=host, public_key=public_key)
     print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0

@@ -1,0 +1,173 @@
+"""Each place where "could not tell" or "not checked" used to read as "clean" or "not there".
+
+From the first Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/25.
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import inventory  # noqa: E402
+import presence  # noqa: E402
+import redaction  # noqa: E402
+
+KEY = b"fixed key for reproducible tests, never used outside them"
+FAKE = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+
+
+# --- presence.py --------------------------------------------------------------------------
+
+def test_an_unparseable_start_time_is_a_presence_error(monkeypatch):
+    def fake_get(host, path, params, auth, timeout):
+        return {"data": [{"startTime": "not a time"}], "meta": {}}
+    monkeypatch.setattr(presence, "_get", fake_get)
+    with pytest.raises(presence.PresenceError):
+        presence.covered_through("https://x.test", "pk", "sk", "s-1")
+
+
+# --- retro_load.py ------------------------------------------------------------------------
+
+@pytest.fixture
+def retro_load(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import retro_load as module
+    monkeypatch.setattr(module, "MARKER_DIR", tmp_path / "markers")
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    return module
+
+
+def _transcript(tmp_path) -> Path:
+    path = tmp_path / "s-1.jsonl"
+    path.write_text(json.dumps({"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+                                "message": {"role": "user", "content": "hi"}}) + "\n")
+    return path
+
+
+def _run(module, monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", *argv])
+    return module.main()
+
+
+def test_a_failed_presence_check_stops_even_with_allow_existing(retro_load, monkeypatch, tmp_path):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+
+    def unreachable(*a, **k):
+        raise presence.PresenceError("HTTP 503")
+    monkeypatch.setattr(retro_load.presence, "session_observation_count", unreachable)
+    assert _run(retro_load, monkeypatch, "--allow-existing", str(_transcript(tmp_path))) == 1
+
+
+def test_a_dry_run_never_asks_langfuse(retro_load, monkeypatch, tmp_path):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+
+    def must_not_be_called(*a, **k):
+        raise AssertionError("dry run queried Langfuse")
+    monkeypatch.setattr(retro_load.presence, "session_observation_count", must_not_be_called)
+    assert _run(retro_load, monkeypatch, "--dry-run", "--min-idle-days", "0",
+                str(_transcript(tmp_path))) == 0
+
+
+def test_a_marker_for_another_project_does_not_short_circuit(retro_load, monkeypatch, tmp_path):
+    path = _transcript(tmp_path)
+    retro_load.write_marker(path.resolve(), "s-1", 1, ["claude-code"], host="https://a.test",
+                            public_key="pk-a")
+    monkeypatch.setenv("LANGFUSE_HOST", "https://b.test")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-b")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-b")
+    asked = []
+    monkeypatch.setattr(retro_load.presence, "session_observation_count",
+                        lambda *a, **k: asked.append(a) or 5)
+    assert _run(retro_load, monkeypatch, str(path)) == retro_load.EXIT_SKIPPED
+    assert asked, "the target project was never asked"
+
+
+def test_a_marker_for_this_project_is_honoured(retro_load, monkeypatch, tmp_path):
+    path = _transcript(tmp_path)
+    retro_load.write_marker(path.resolve(), "s-1", 1, ["claude-code"], host="https://a.test",
+                            public_key="pk-a")
+    monkeypatch.setenv("LANGFUSE_HOST", "https://a.test")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-a")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-a")
+    monkeypatch.setattr(retro_load.presence, "session_observation_count",
+                        lambda *a, **k: pytest.fail("a matching marker should answer first"))
+    assert _run(retro_load, monkeypatch, str(path)) == retro_load.EXIT_SKIPPED
+
+
+def test_a_marker_without_a_destination_never_matches(retro_load):
+    assert not retro_load.marker_matches({"session_id": "s-1", "turns_emitted": 3},
+                                         "https://a.test", "pk-a")
+
+
+def test_something_already_there_is_not_called_complete(retro_load):
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 22, tzinfo=timezone.utc)
+    reason = retro_load.skip_reason(last_seen=None, now=now, min_idle_days=0, existing=12,
+                                    allow_existing=False)
+    assert "failed partway" in reason and "live tracing" in reason
+
+
+# --- redaction / inventory ----------------------------------------------------------------
+
+def test_a_credential_under_a_nested_id_in_tool_input_is_screened():
+    record = {"id": "rec-1", "type": "assistant",
+              "message": {"content": [{"type": "tool_use", "id": "toolu_1",
+                                       "input": {"id": FAKE, "type": "keep me"}}]}}
+    clean, found = redaction.redact_tree(record, key=KEY, skip_keys=inventory.STRUCTURAL_KEYS,
+                                         payload_keys=inventory.PAYLOAD_KEYS)
+    assert FAKE not in json.dumps(clean)
+    assert clean["id"] == "rec-1" and clean["message"]["content"][0]["id"] == "toolu_1"
+    assert [f.finding.pattern for f in found] == ["github_pat"]
+
+
+def test_an_asset_too_large_to_scan_is_not_reported_clean(monkeypatch, tmp_path):
+    path = tmp_path / "big.md"
+    path.write_text("x" * 10)
+    monkeypatch.setattr(inventory, "MAX_ASSET_BYTES", 5)
+    rows = inventory.scan_asset(path, redaction.Redactor())
+    assert [(r.pattern, r.category) for r in rows] == [
+        (inventory.UNSCANNED_TOO_LARGE, redaction.SECRET)]
+
+
+def test_a_failed_gitleaks_run_raises_rather_than_reading_as_clean(monkeypatch, tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text("{}\n")
+    monkeypatch.setattr(inventory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, returncode=1, stdout="", stderr="boom"))
+    with pytest.raises(inventory.GitleaksFailed):
+        inventory.gitleaks_rows([path], kind="transcript", key=KEY)
+
+
+def test_gitleaks_finding_leaks_is_not_a_failure(monkeypatch, tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text("{}\n")
+    report = json.dumps([{"RuleID": "github-pat", "Secret": FAKE, "StartLine": 1}])
+    monkeypatch.setattr(inventory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, returncode=2, stdout=report, stderr=""))
+    rows = inventory.gitleaks_rows([path], kind="transcript", key=KEY)
+    assert [r.pattern for r in rows] == [inventory.GITLEAKS_PREFIX + "github-pat"]
+
+
+# --- scores.py ----------------------------------------------------------------------------
+
+def test_scores_never_mixes_prefixed_and_unprefixed_keys(monkeypatch):
+    pytest.importorskip("langfuse")
+    import langfuse_admin
+    import scores
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (
+        {"BERIL_LANGFUSE_PUBLIC_KEY": "pk-beril", "LANGFUSE_SECRET_KEY": "sk-other",
+         "LANGFUSE_HOST": "https://other.test"}, None))
+    assert scores.client_for("BERIL") is None
+
+
+def test_scores_without_a_transcript_is_a_usage_error(monkeypatch):
+    import scores
+    monkeypatch.setattr(sys, "argv", ["scores.py"])
+    with pytest.raises(SystemExit) as exit_info:
+        scores.main()
+    assert exit_info.value.code == 2

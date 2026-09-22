@@ -136,6 +136,14 @@ def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
     return rows
 
 
+#: Pattern name for an asset over MAX_ASSET_BYTES, which was never read.
+UNSCANNED_TOO_LARGE = "unscanned_too_large"
+
+
+class GitleaksFailed(RuntimeError):
+    """gitleaks ran and failed, so its half of the union is missing, not empty."""
+
+
 def scan_asset(path: Path, redactor: redaction.Redactor, *, root: Path | None = None) -> list[Row]:
     """Every finding in one file being uploaded as an asset.
 
@@ -153,7 +161,12 @@ def scan_asset(path: Path, redactor: redaction.Redactor, *, root: Path | None = 
     relative = str(path.relative_to(root)) if root else path.name
     size = path.stat().st_size
     if size > MAX_ASSET_BYTES:
-        return []
+        # Not scanned is not clean. One blocking row, in the secret category so every caller
+        # that leaves out secret-bearing files leaves this one out too, named for the reason.
+        return [Row(subject=relative, kind="asset", record=None, record_uuid=None, path="",
+                    detector="redaction", pattern=UNSCANNED_TOO_LARGE,
+                    category=redaction.SECRET, fingerprint="", length=size, masked=False,
+                    whole_value=True)]
     text = path.read_text(encoding="utf-8", errors="replace")
     if path.suffix in {".json", ".ipynb"}:
         try:
@@ -191,12 +204,17 @@ def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
     for path in paths:
         try:
             result = subprocess.run(
-                ["gitleaks", "detect", "--no-git", "--no-banner",
+                # --exit-code 2 separates "found something" from "failed": gitleaks exits 1
+                # for both by default, and a failure read as no output looks clean.
+                ["gitleaks", "detect", "--no-git", "--no-banner", "--exit-code", "2",
                  "--report-format", "json", "--report-path", "-", "--source", str(path)],
                 capture_output=True, text=True, check=False,
             )
         except FileNotFoundError:
             return []
+        if result.returncode not in (0, 2):
+            raise GitleaksFailed(f"gitleaks exited {result.returncode} on {path.name}; "
+                                 f"its findings for this file are missing, not empty")
         if not result.stdout.strip():
             continue
         try:
@@ -333,6 +351,11 @@ STRUCTURAL_KEYS: frozenset[str] = frozenset({
     "sourceToolAssistantUUID", "type", "role", "timestamp", "version",
 })
 
+#: Subtrees that carry what a tool was given or returned, not how the transcript is put
+#: together. Inside them a field named `id` or `type` is content, so the structural skip
+#: stops at their boundary.
+PAYLOAD_KEYS: frozenset[str] = frozenset({"input", "toolUseResult"})
+
 
 def redact_records(records: list, redactor: redaction.Redactor, *, subject: str,
                    categories: frozenset[str] = redaction.DEFAULT_REDACT):
@@ -350,7 +373,8 @@ def redact_records(records: list, redactor: redaction.Redactor, *, subject: str,
     out, rows = [], []
     for index, record in enumerate(records):
         clean, found = redaction.redact_tree(
-            record, categories=categories, key=redactor.key, skip_keys=STRUCTURAL_KEYS)
+            record, categories=categories, key=redactor.key, skip_keys=STRUCTURAL_KEYS,
+            payload_keys=PAYLOAD_KEYS)
         out.append(clean)
         uuid = record.get("uuid") if isinstance(record, dict) else None
         rows.extend(_rows_from(found, subject, "transcript", index,

@@ -165,14 +165,16 @@ def send(client, plans: list[ScorePlan]) -> tuple[int, list[str]]:
     return sent, failures
 
 
-def findings_for(transcript: Path, clearances: list[dict]):
+def findings_for(transcript: Path, clearances: list[dict], *, session_id: str | None = None):
     """Scan one transcript and group it the way Langfuse will hold it."""
     import retro_load
     from langfuse_hook_official import build_turns
 
     records = retro_load.load_all_jsonl(transcript)
     redactor = redaction.Redactor()
-    _, rows = inventory.redact_records(records, redactor, subject=transcript.stem,
+    # The subject is the session id Langfuse holds, so a clearance addressed to it matches
+    # even when --session-id overrides the filename.
+    _, rows = inventory.redact_records(records, redactor, subject=session_id or transcript.stem,
                                        categories=inventory.REPORT_ONLY)
     kept = [row for row in rows if not is_cleared(row, clearances)]
     cleared_rows = [row for row in rows if is_cleared(row, clearances)]
@@ -196,19 +198,19 @@ def client_for(prefix: str):
     Values go from the file into this process and into the SDK. They are never printed, never
     written to another file, and never put into the parent shell's environment.
     """
-    import os
-
     import langfuse_admin
     from langfuse import Langfuse
 
+    # All three from the named prefix, or none. Falling back to unprefixed keys, or to a host
+    # from somewhere else, could pair one project's public key with another's secret or
+    # write scores to the wrong instance, which is what auth_for_project refuses to do.
     env, source = langfuse_admin.load_env()
-    public = env.get(f"{prefix}_LANGFUSE_PUBLIC_KEY") or env.get("LANGFUSE_PUBLIC_KEY")
-    secret = env.get(f"{prefix}_LANGFUSE_SECRET_KEY") or env.get("LANGFUSE_SECRET_KEY")
-    host = (env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get(f"{prefix}_LANGFUSE_HOST")
-            or env.get("LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_HOST")
-            or "https://us.cloud.langfuse.com")
-    if not public or not secret:
-        print(f"no {prefix}_LANGFUSE_PUBLIC_KEY / _SECRET_KEY in {source or '(no .env found)'}. "
+    public = env.get(f"{prefix}_LANGFUSE_PUBLIC_KEY")
+    secret = env.get(f"{prefix}_LANGFUSE_SECRET_KEY")
+    host = env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get(f"{prefix}_LANGFUSE_HOST")
+    if not public or not secret or not host:
+        print(f"no complete {prefix}_LANGFUSE_PUBLIC_KEY / _SECRET_KEY / _BASE_URL set in "
+              f"{source or '(no .env found)'}. "
               f"Prefixes present: "
               f"{', '.join(sorted({k.split('_LANGFUSE_')[0] for k in env if '_LANGFUSE_' in k}))}",
               file=sys.stderr)
@@ -232,6 +234,8 @@ def main() -> int:
     ap.add_argument("--check-auth", action="store_true",
                     help="resolve credentials, name the project they open, and stop")
     args = ap.parse_args()
+    if not args.check_auth and args.transcript is None:
+        ap.error("--transcript is required unless --check-auth is given")
 
     clearances = []
     if args.clearances:
@@ -247,7 +251,8 @@ def main() -> int:
         return 0
 
     session_id = args.session_id or args.transcript.stem
-    per_turn, unclaimed, total_turns, any_cleared = findings_for(args.transcript, clearances)
+    per_turn, unclaimed, total_turns, any_cleared = findings_for(args.transcript, clearances,
+                                                                 session_id=session_id)
     print(f"{args.transcript.name}: {total_turns} turns, {len(per_turn)} with findings, "
           f"{len(unclaimed)} findings on records no turn claims (not scored)")
 

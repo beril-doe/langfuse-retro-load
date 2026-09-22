@@ -81,7 +81,7 @@ def main() -> int:
     if args.limit is not None:
         manifest = manifest[: args.limit]
 
-    not_found, already, planned, files_emitted, failed, skipped = [], [], [], 0, [], []
+    not_found, planned, files_emitted, failed, skipped = [], [], 0, [], []
 
     for entry in manifest:
         sid = entry["session_id"]
@@ -95,16 +95,17 @@ def main() -> int:
 
         if args.dry_run:
             prior = already_loaded(path)
-            status = f"ALREADY LOADED ({prior['turns_emitted']} turns)" if prior else "would load"
+            # A marker is not proof the file is in this run's project, so say only what it is.
+            status = (f"marker from an earlier load ({prior['turns_emitted']} turns, "
+                      f"target {prior.get('host') or 'not recorded'})") if prior else "no marker"
             # retro_load.py prepends claude-code/retro-load itself; show the real full set.
             print(f"{sid}: {status} | user_id={user_id} | tags={['claude-code', 'retro-load'] + tags}")
             planned.append(sid)
             continue
 
-        prior = already_loaded(path)
-        if prior and not args.force:
-            already.append(sid)
-            continue
+        # No marker short circuit here: a marker is keyed by the source path and cannot say
+        # which project a file went to. retro_load.py checks its marker against the target
+        # and asks the project, and reports either as a skip.
 
         # Delegate the actual emission to retro_load.py as a subprocess, reusing
         # its exact CLI (credentials, propagate_attributes, marker-writing) rather
@@ -141,8 +142,7 @@ def main() -> int:
     if args.dry_run:
         print(f"  {len(planned)} resolved and would run, {len(not_found)} not found on disk")
     else:
-        print(f"  {files_emitted} files emitted, {len(already)} already loaded (skipped), "
-              f"{len(skipped)} skipped by retro_load.py, "
+        print(f"  {files_emitted} files emitted, {len(skipped)} skipped, "
               f"{len(not_found)} not found, {len(failed)} failed")
     if skipped:
         print("  SKIPPED:")
