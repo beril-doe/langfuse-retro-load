@@ -479,8 +479,10 @@ def main() -> int:
 
     detectors = ["redaction"]
     if not args.no_gitleaks:
-        gitleaks = gitleaks_rows([p for p in args.paths if p not in unreadable],
-                                 kind=kind, key=redactor.key, root=args.asset_root)
+        # An asset over the size bound was never read, and gitleaks must not read it either.
+        scannable = [p for p in args.paths if p not in unreadable
+                     and not (kind == "asset" and p.stat().st_size > MAX_ASSET_BYTES)]
+        gitleaks = gitleaks_rows(scannable, kind=kind, key=redactor.key, root=args.asset_root)
         if gitleaks:
             rows.extend(gitleaks)
             detectors.append("gitleaks")

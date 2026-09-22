@@ -69,8 +69,10 @@ def session_observation_count(host: str, public_key: str, secret_key: str, sessi
                 _auth(public_key, secret_key), timeout)
     try:
         rows = body["data"]
+        if not isinstance(rows, list):
+            raise TypeError("data is not a list")
         return int(rows[0]["count_count"]) if rows else 0
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         raise PresenceError(f"unexpected v2/metrics response: {str(body)[:200]}") from exc
 
 
@@ -89,7 +91,9 @@ def covered_through(host: str, public_key: str, secret_key: str, session_id: str
         try:
             rows = body["data"]
             cursor = (body.get("meta") or {}).get("cursor")
-        except (KeyError, TypeError) as exc:
+            if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+                raise TypeError("data is not a list of objects")
+        except (KeyError, TypeError, AttributeError) as exc:
             raise PresenceError(f"unexpected v2/observations response: {str(body)[:200]}") from exc
         for row in rows:
             stamp = row.get("startTime")

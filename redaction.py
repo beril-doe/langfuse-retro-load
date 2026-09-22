@@ -686,7 +686,9 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
 
     if key_name is not None and CREDENTIAL_KEY_RE.match(key_name):
         clean, findings = redact_value(node, key_name=key_name, categories=categories, key=key)
-        whole = bool(findings) and clean != node
+        # Whether the finding covers the whole leaf, not whether this call rewrote it: a
+        # report-only pass rewrites nothing and still has to say the unit was the value.
+        whole = any(f.start == 0 and f.end == len(node) for f in findings)
     else:
         clean, findings = redact(node, categories=categories, key=key)
         whole = False

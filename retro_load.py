@@ -37,6 +37,7 @@ off it):
 
 import argparse
 import hashlib
+import shutil
 import json
 import os
 import sys
@@ -108,13 +109,17 @@ def already_loaded(transcript_path: Path) -> dict | None:
 
 
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
-                   session_id: str) -> bool:
+                   session_id: str, *, screened: bool = True) -> bool:
     """True only for a marker written by a load of this session into this host and project.
 
     A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
     not that it is in the project this run targets. Markers from before the destination was
     recorded carry neither field and never match, so the project is asked instead.
     """
+    # A --no-redact load records redacted=None. It is not a completion a screened run can
+    # rely on: what went out was never screened.
+    if screened and prior and prior.get("redacted") is None:
+        return False
     return bool(prior) and prior.get("host") == host and bool(public_key) \
         and prior.get("public_key") == public_key and prior.get("session_id") == session_id
 
@@ -149,6 +154,50 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
 
 #: Exit status for "deliberately not sent", so run_manifest.py can count it apart from a load.
 EXIT_SKIPPED = 3
+
+
+def line_of_record(transcript_path: Path) -> dict[int, int]:
+    """Record index, as load_all_jsonl() counts it, to 0-based file line.
+
+    load_all_jsonl() skips blank and unparseable lines, so the two numberings differ, and
+    gitleaks reports lines.
+    """
+    out, index = {}, 0
+    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+        for line_no, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except ValueError:  # noqa: S112 -- load_all_jsonl() skips these lines too
+                continue
+            out[index] = line_no
+            index += 1
+    return out
+
+
+def gitleaks_hold(transcript_path: Path, rows, key: bytes) -> str | None:
+    """Why this session must not be sent, going by gitleaks, or None.
+
+    gitleaks is the other half of the detector union (https://github.com/beril-doe/langfuse-retro-load/issues/10).
+    It reports lines, not values, so the loader cannot rewrite what it finds. If it flags a
+    line where the local patterns rewrote nothing, the secret is still in what would be sent.
+    """
+    if shutil.which("gitleaks") is None:
+        print("  gitleaks not installed: only the local patterns screened this load")
+        return None
+    try:
+        found = inventory.gitleaks_rows([transcript_path], kind="transcript", key=key)
+    except inventory.GitleaksFailed as e:
+        return f"gitleaks failed, so its half of the screening is missing: {e}"
+    lines_rewritten = {line_of_record(transcript_path).get(r.record)
+                       for r in rows if r.category == redaction.SECRET}
+    uncovered = sorted({r.record for r in found if r.record not in lines_rewritten})
+    if uncovered:
+        return (f"gitleaks flags line(s) {', '.join(str(n + 1) for n in uncovered)} where the "
+                f"local patterns rewrote nothing; review with reveal.py before sending")
+    return None
 
 
 def last_activity(msgs) -> "datetime | None":
@@ -230,7 +279,7 @@ def main() -> int:
     host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
 
     prior = already_loaded(transcript_path)
-    if marker_matches(prior, host, public_key, session_id) and not args.force:
+    if marker_matches(prior, host, public_key, session_id, screened=args.redact) and not args.force:
         # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
         # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
         print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
@@ -280,6 +329,12 @@ def main() -> int:
         summary[row.category] = summary.get(row.category, 0) + 1
     if args.inventory:
         inventory.write_inventory(rows, args.inventory)
+
+    if args.redact and not args.dry_run:
+        hold = gitleaks_hold(transcript_path, rows, redactor.key)
+        if hold:
+            print(f"{transcript_path.name}: not sending, {hold}", file=sys.stderr)
+            return 1
 
     turns = build_turns(msgs)
     print(f"{transcript_path.name}: {len(msgs)} jsonl lines -> {len(turns)} turns")

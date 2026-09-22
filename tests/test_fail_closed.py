@@ -75,8 +75,8 @@ def test_a_dry_run_never_asks_langfuse(retro_load, monkeypatch, tmp_path):
 
 def test_a_marker_for_another_project_does_not_short_circuit(retro_load, monkeypatch, tmp_path):
     path = _transcript(tmp_path)
-    retro_load.write_marker(path.resolve(), "s-1", 1, ["claude-code"], host="https://a.test",
-                            public_key="pk-a")
+    retro_load.write_marker(path.resolve(), "s-1", 1, ["claude-code"], redaction_summary={},
+                            host="https://a.test", public_key="pk-a")
     monkeypatch.setenv("LANGFUSE_HOST", "https://b.test")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-b")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-b")
@@ -89,8 +89,8 @@ def test_a_marker_for_another_project_does_not_short_circuit(retro_load, monkeyp
 
 def test_a_marker_for_this_project_is_honoured(retro_load, monkeypatch, tmp_path):
     path = _transcript(tmp_path)
-    retro_load.write_marker(path.resolve(), "s-1", 1, ["claude-code"], host="https://a.test",
-                            public_key="pk-a")
+    retro_load.write_marker(path.resolve(), "s-1", 1, ["claude-code"], redaction_summary={},
+                            host="https://a.test", public_key="pk-a")
     monkeypatch.setenv("LANGFUSE_HOST", "https://a.test")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-a")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-a")
@@ -105,7 +105,7 @@ def test_a_marker_without_a_destination_never_matches(retro_load):
 
 
 def test_a_marker_for_another_session_id_does_not_match(retro_load):
-    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a"}
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": {}}
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1")
     assert not retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-2")
 
@@ -235,7 +235,7 @@ def test_a_marked_session_still_gets_a_manifest_turn_count(manifest_env, monkeyp
     import retro_load
     monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "home" / ".retro_load_markers")
     retro_load.write_marker(path, "s-1", 4, ["claude-code", "event_day:2026-05-07"],
-                            host="https://a.test", public_key="pk-a")
+                            redaction_summary={}, host="https://a.test", public_key="pk-a")
     summary = manifest_env.dry_run_summary(path, "2026-05-07")
     assert summary == {"turns": 4, "event_day": True, "failed": False}
 
@@ -257,3 +257,55 @@ def test_gitleaks_exit_2_without_a_usable_report_is_a_failure(monkeypatch, tmp_p
 
 def test_presence_counts_from_1970():
     assert presence._FROM.startswith("1970-01-01")
+
+
+# --- fourth Copilot review, and the "previously missed" items in the second and third -----
+
+def test_an_unscreened_marker_does_not_satisfy_a_screened_run(retro_load):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": None}
+    assert not retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1", screened=True)
+    assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1", screened=False)
+
+
+def test_gitleaks_on_a_line_the_local_patterns_missed_holds_the_send(retro_load, monkeypatch, tmp_path):
+    path = tmp_path / "s-1.jsonl"
+    path.write_text("\n" + json.dumps({"a": 1}) + "\n" + json.dumps({"b": 2}) + "\n")
+    monkeypatch.setattr(retro_load.shutil, "which", lambda name: "/usr/bin/gitleaks")
+    flagged = inventory.Row(subject="s-1", kind="transcript", record=2, record_uuid=None, path="",
+                            detector="gitleaks", pattern="gitleaks:x", category=redaction.SECRET,
+                            fingerprint="", length=1, masked=False, whole_value=False)
+    monkeypatch.setattr(retro_load.inventory, "gitleaks_rows", lambda *a, **k: [flagged])
+    local_on_line_2 = inventory.Row(subject="s-1", kind="transcript", record=1, record_uuid=None,
+                                    path="/b", detector="redaction", pattern="keyed_value",
+                                    category=redaction.SECRET, fingerprint="", length=1,
+                                    masked=False, whole_value=False)
+    assert "line(s) 3" in retro_load.gitleaks_hold(path, [], KEY)
+    assert retro_load.gitleaks_hold(path, [local_on_line_2], KEY) is None
+
+
+def test_a_failed_gitleaks_run_holds_the_send(retro_load, monkeypatch, tmp_path):
+    monkeypatch.setattr(retro_load.shutil, "which", lambda name: "/usr/bin/gitleaks")
+
+    def failed(*a, **k):
+        raise inventory.GitleaksFailed("exit 1")
+    monkeypatch.setattr(retro_load.inventory, "gitleaks_rows", failed)
+    assert "gitleaks failed" in retro_load.gitleaks_hold(_transcript(tmp_path), [], KEY)
+
+
+@pytest.mark.parametrize("body", [{"data": "x"}, {"data": [None]}, {"data": ["row"]}])
+def test_a_malformed_observations_response_is_a_presence_error(monkeypatch, body):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: body)
+    with pytest.raises(presence.PresenceError):
+        presence.covered_through("https://x.test", "pk", "sk", "s-1")
+
+
+@pytest.mark.parametrize("body", [{"data": "x"}, {"data": [None]}])
+def test_a_malformed_metrics_response_is_a_presence_error(monkeypatch, body):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: body)
+    with pytest.raises(presence.PresenceError):
+        presence.session_observation_count("https://x.test", "pk", "sk", "s-1")
+
+
+def test_a_report_only_credential_key_finding_is_marked_whole_value():
+    _, found = redaction.redact_tree({"TOKEN": "s3cret"}, categories=frozenset(), key=KEY)
+    assert [f.whole_value for f in found] == [True]
