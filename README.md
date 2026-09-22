@@ -109,6 +109,27 @@ What this does not do, stated plainly:
   should be loaded at all is a different question, answered by `people.json`
   and by [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
 
+## Not sending a session twice
+
+Langfuse has no create-time dedupe, so `retro_load.py` asks the target project before sending
+anything, through `presence.py`:
+
+- **Already there.** If the project holds any observations for the session id, the session is
+  skipped. This covers a second run of this loader and a session live tracing already sent. The
+  local marker cannot answer this, because it does not record which project a session went to.
+  `--allow-existing` sends anyway.
+- **Still in use.** A session whose last record is newer than `--min-idle-days` (default 7) is
+  skipped, because resuming it with live tracing on would re-send every earlier turn.
+- **Could not tell.** A failed check stops the send. A skipped session can be loaded later; a
+  duplicate can only be removed by deleting whole traces.
+
+A skip exits with status 3, and `run_manifest.py` lists skipped sessions separately.
+
+`presence.covered_through()` returns the latest start time the project holds for a session. It
+is not used here. It is for whatever forwards live traces (in BERIL, the relay), which could drop
+re-sent turns that start at or before it. `presence.py` uses only the standard library and the
+read routes that survive 2026-11-16, so it can be copied as is.
+
 ## Adding a person or a new source
 
 Edit `people.json`, not the Python. One entry per person, one `sources`

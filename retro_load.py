@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -48,6 +49,7 @@ load_dotenv(Path(__file__).parent / ".env")  # must run before langfuse is impor
 sys.path.insert(0, str(Path(__file__).parent))
 
 import inventory  # noqa: E402  (after the sys.path insert, like the hook import below)
+import presence  # noqa: E402
 import redaction  # noqa: E402
 try:
     from langfuse_hook_official import (  # noqa: E402
@@ -128,6 +130,39 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
     )
 
 
+#: Exit status for "deliberately not sent", so run_manifest.py can count it apart from a load.
+EXIT_SKIPPED = 3
+
+
+def last_activity(msgs) -> "datetime | None":
+    """The latest timestamp on any record: when this session was last touched."""
+    stamps = [parse_ts(m) for m in msgs]
+    stamps = [t for t in stamps if t is not None]
+    return max(stamps) if stamps else None
+
+
+def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
+                allow_existing: bool) -> str | None:
+    """Why this session should not be sent now, or None if it should.
+
+    Kept free of I/O so the decision is testable on its own. `existing` is the number of
+    observations the target project already holds for this session id.
+    """
+    if existing and not allow_existing:
+        return (f"the project already holds {existing} observations for this session; "
+                f"sending it again would duplicate them. Pass --allow-existing to send anyway")
+    if min_idle_days > 0:
+        if last_seen is None:
+            return ("no record carries a timestamp, so there is no way to tell whether the "
+                    "session is still in use. Pass --min-idle-days 0 to send anyway")
+        idle_days = (now - last_seen).total_seconds() / 86400
+        if idle_days < min_idle_days:
+            return (f"last activity {last_seen.isoformat()} is {idle_days:.1f} days ago, under "
+                    f"--min-idle-days {min_idle_days:g}. A session still in use could be resumed "
+                    f"with live tracing on and sent twice")
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("transcript", type=Path, help="path to a Claude Code .jsonl transcript")
@@ -141,6 +176,14 @@ def main() -> int:
     ap.add_argument("--no-redact", dest="redact", action="store_false", default=True,
                     help="send values verbatim. The default rewrites secrets and personal "
                          "details in place, one value at a time, keeping every record")
+    ap.add_argument("--allow-existing", action="store_true",
+                    help="send even when the target project already holds observations for "
+                         "this session id. Without it the session is skipped, since Langfuse "
+                         "has no create-time dedupe")
+    ap.add_argument("--min-idle-days", type=float, default=7.0,
+                    help="skip a session whose last record is newer than this many days, so "
+                         "one still in use is not backfilled and then re-sent by live tracing "
+                         "when resumed (default 7; 0 turns the check off)")
     ap.add_argument("--inventory", type=Path, default=None,
                     help="write a JSONL row per finding here: what kind, which record, "
                          "which JSON pointer. Carries no matched text and no values")
@@ -161,6 +204,35 @@ def main() -> int:
         return 0
 
     msgs = load_all_jsonl(transcript_path)
+
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+
+    # Ask the project, not the local marker, whether this session is already there. The
+    # marker cannot say which project a session went to. "Could not tell" stops the send.
+    existing = 0
+    if public_key and secret_key:
+        try:
+            existing = presence.session_observation_count(host, public_key, secret_key, session_id)
+        except presence.PresenceError as e:
+            if not args.allow_existing:
+                print(f"could not check {host} for session {session_id}, not sending: {e}",
+                      file=sys.stderr)
+                return 1
+            print(f"  ! presence check failed, sending anyway (--allow-existing): {e}")
+    elif not args.dry_run:
+        print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set in environment", file=sys.stderr)
+        return 1
+    else:
+        print("  presence not checked: no Langfuse credentials in the environment")
+
+    reason = skip_reason(last_seen=last_activity(msgs), now=datetime.now(timezone.utc),
+                         min_idle_days=args.min_idle_days, existing=existing,
+                         allow_existing=args.allow_existing)
+    if reason:
+        print(f"{transcript_path.name}: skipped, {reason}")
+        return EXIT_SKIPPED
 
     # Screen before assembling turns, so everything the assembler reads is already
     # rewritten and the vendored hook needs no changes. The unit left out is one value at
@@ -191,13 +263,6 @@ def main() -> int:
                   f"assistant_msgs={len(t.assistant_msgs)}")
         print("(dry run — nothing sent to Langfuse)")
         return 0
-
-    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
-    if not public_key or not secret_key:
-        print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set in environment", file=sys.stderr)
-        return 1
 
     from langfuse import Langfuse, propagate_attributes  # noqa: E402  (import after env check)
 
