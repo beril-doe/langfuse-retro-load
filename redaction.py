@@ -362,10 +362,13 @@ class _Boundaries:
     def span_for(self, pattern: str, start: int, end: int) -> tuple[int, int]:
         """Widen a match to the whole value it sits in. Never narrows it."""
         if pattern == "private_key_block":
+            # The earlier of the key's END marker and the end of the value it sits in, so an
+            # unterminated key cannot reach an END marker in a later field across a quote.
+            value_end = self._first_at_or_after(self.pem_ends, end)
             i = bisect.bisect_left(self.pem_markers, end)
-            if i < len(self.pem_markers):
+            if i < len(self.pem_markers) and self.pem_markers[i] <= value_end:
                 return start, self.pem_markers[i]
-            return start, self._first_at_or_after(self.pem_ends, end)
+            return start, value_end
         return start, self._first_at_or_after(self.value_ends, end)
 
 
@@ -570,6 +573,16 @@ def redact(text, *, categories: frozenset[str] = DEFAULT_REDACT,
 #: evidence, and only a caller walking a parsed structure has it.
 CREDENTIAL_KEY = "credential_key"
 
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def is_credential_key(name: str) -> bool:
+    """CREDENTIAL_KEY_RE, with camelCase split first: `authToken` is `auth_Token`.
+
+    `tokenCount` still does not match, since the credential word has to end the name.
+    """
+    return bool(CREDENTIAL_KEY_RE.match(_CAMEL_BOUNDARY.sub("_", name)))
+
 #: Keys whose value is credential material whatever the value looks like. Anchored at both
 #: ends, so `x-api-key`, `KBASE_AUTH_TOKEN` and `tokens` match while `token_count`,
 #: `password_hint` and `secret_name` do not: a key that merely mentions a credential is
@@ -629,7 +642,7 @@ def redact_value(text, *, key_name: str | None = None,
     # Whether a finding is reported and whether it is rewritten are two questions. An
     # inventory pass runs with no categories at all, and it still has to see everything,
     # or the report it writes says a value is clean because this run was not rewriting.
-    if key_name is not None and CREDENTIAL_KEY_RE.match(key_name) and not is_reference(text):
+    if key_name is not None and is_credential_key(key_name) and not is_reference(text):
         finding = _whole_value_finding(text, CREDENTIAL_KEY, key)
         return (finding.placeholder if SECRET in categories else text), [finding]
 
@@ -721,7 +734,7 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
     if not isinstance(node, str) or not node:
         return node, []
 
-    if key_name is not None and CREDENTIAL_KEY_RE.match(key_name):
+    if key_name is not None and is_credential_key(key_name):
         clean, findings = redact_value(node, key_name=key_name, categories=categories, key=key)
         # Whether the finding covers the whole leaf, not whether this call rewrote it: a
         # report-only pass rewrites nothing and still has to say the unit was the value.

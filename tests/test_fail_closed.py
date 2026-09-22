@@ -350,3 +350,31 @@ def test_a_start_time_without_a_timezone_is_a_presence_error(monkeypatch):
         "data": [{"startTime": "2026-05-07T21:34:03"}], "meta": {}})
     with pytest.raises(presence.PresenceError):
         presence.covered_through("https://x.test", "pk", "sk", "s-1")
+
+
+# --- eighth Copilot review ----------------------------------------------------------------
+
+def test_an_unterminated_key_does_not_reach_an_end_marker_in_a_later_field():
+    body = "MIIEfakekeybody" + "AbCdEf" * 4
+    key_word = "PRIVATE" + " KEY"  # split so no key marker sits in the source
+    text = ('{"a": "-----BEGIN RSA ' + key_word + '-----\\n' + body + '", "b": "kept text", '
+            '"c": "-----END RSA ' + key_word + '-----"}')
+    clean, _ = redaction.redact(text, key=KEY)
+    assert body not in clean
+    assert '"b": "kept text"' in clean
+
+
+@pytest.mark.parametrize("name", ["authToken", "accessToken", "clientSecret", "apiKey"])
+def test_camel_case_credential_keys_are_recognised(name):
+    clean, found = redaction.redact_tree({name: "s3cret"}, key=KEY)
+    assert clean[name] != "s3cret" and found
+
+
+@pytest.mark.parametrize("name", ["tokenCount", "secretName", "passwordHint"])
+def test_camel_case_keys_that_only_mention_a_credential_are_left_alone(name):
+    clean, found = redaction.redact_tree({name: "ordinary"}, key=KEY)
+    assert clean == {name: "ordinary"} and found == []
+
+
+def test_a_timestamp_without_a_zone_makes_last_activity_unknown(retro_load):
+    assert retro_load.last_activity([{"timestamp": "2026-05-07T21:34:03"}]) is None

@@ -163,7 +163,8 @@ def last_activity(msgs) -> "datetime | None":
         if raw is None:
             continue
         parsed = parse_ts(m)
-        if parsed is None:
+        if parsed is None or parsed.tzinfo is None:
+            # A time with no zone can't be compared with now without guessing one.
             # One unreadable timestamp could be the newest, so the maximum of the rest is not
             # the last activity. Unknown makes the idle check skip rather than guess.
             return None

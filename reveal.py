@@ -108,7 +108,9 @@ def main() -> int:
     ap.add_argument("--turn", type=int, action="append", default=[],
                     help="turn number, as the Langfuse trace name gives it (repeatable)")
     ap.add_argument("--record", type=int, action="append", default=[],
-                    help="0-based line in the .jsonl, as the inventory gives it (repeatable)")
+                    help="0-based record number, as the inventory gives it: the position among "
+                         "parsed records, so blank and unparseable lines are not counted "
+                         "(repeatable)")
     ap.add_argument("--pointer", action="append", default=[],
                     help="JSON pointer, as the inventory or a score's metadata gives it")
     ap.add_argument("--pattern", action="append", default=[],
