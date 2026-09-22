@@ -188,7 +188,9 @@ def test_an_unterminated_key_in_raw_jsonl_is_not_cut_at_an_escaped_newline():
 
 
 def test_the_inventory_scan_follows_the_loader_policy(tmp_path):
-    record = {"uuid": "u-1", "type": "assistant", "id": "abcdefghijklmnop0123456789abcdef",
+    # A token-shaped value in a structural field: the loader skips it, so the inventory must too.
+    structural = "ghp_" + "zY9xW8vU7tS6rQ5pO4nM3lK2jI1hG0fE9dC8"
+    record = {"uuid": "u-1", "type": "assistant", "id": structural,
               "message": {"content": [{"type": "tool_use", "id": "toolu_1",
                                        "input": {"id": FAKE}}]}}
     path = tmp_path / "s-1.jsonl"
