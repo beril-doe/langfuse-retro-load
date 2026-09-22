@@ -129,8 +129,10 @@ def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
                 rows.extend(_rows_from(found, subject, "transcript", index, None))
                 continue
             uuid = record.get("uuid") if isinstance(record, dict) else None
+            # The loader's own policy, so the report says what a load would screen.
             _, found = redaction.redact_tree(record, categories=REPORT_ONLY,
-                                             key=redactor.key)
+                                             key=redactor.key, skip_keys=STRUCTURAL_KEYS,
+                                             payload_keys=PAYLOAD_KEYS)
             rows.extend(_rows_from(found, subject, "transcript", index,
                                    uuid if isinstance(uuid, str) else None))
     return rows

@@ -101,7 +101,13 @@ def test_a_marker_for_this_project_is_honoured(retro_load, monkeypatch, tmp_path
 
 def test_a_marker_without_a_destination_never_matches(retro_load):
     assert not retro_load.marker_matches({"session_id": "s-1", "turns_emitted": 3},
-                                         "https://a.test", "pk-a")
+                                         "https://a.test", "pk-a", "s-1")
+
+
+def test_a_marker_for_another_session_id_does_not_match(retro_load):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a"}
+    assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1")
+    assert not retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-2")
 
 
 def test_something_already_there_is_not_called_complete(retro_load):
@@ -171,3 +177,22 @@ def test_scores_without_a_transcript_is_a_usage_error(monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         scores.main()
     assert exit_info.value.code == 2
+
+
+def test_an_unterminated_key_in_raw_jsonl_is_not_cut_at_an_escaped_newline():
+    body = "MIIEfakekeybody" + "AbCdEf" * 4
+    raw = '{"stdout": "-----BEGIN RSA PRIVATE KEY-----\\n' + body + '\\n' + body + '"}'
+    clean, _ = redaction.redact(raw, key=KEY)
+    assert body not in clean
+    assert clean.endswith('"}')
+
+
+def test_the_inventory_scan_follows_the_loader_policy(tmp_path):
+    record = {"uuid": "u-1", "type": "assistant", "id": "abcdefghijklmnop0123456789abcdef",
+              "message": {"content": [{"type": "tool_use", "id": "toolu_1",
+                                       "input": {"id": FAKE}}]}}
+    path = tmp_path / "s-1.jsonl"
+    path.write_text(json.dumps(record) + "\n")
+    rows = inventory.scan_transcript(path, redaction.Redactor())
+    assert [(r.path, r.pattern) for r in rows] == [
+        ("/message/content/0/input/id", "github_pat")]

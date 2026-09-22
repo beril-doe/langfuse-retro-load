@@ -107,15 +107,16 @@ def already_loaded(transcript_path: Path) -> dict | None:
         return None
 
 
-def marker_matches(prior: dict | None, host: str, public_key: str | None) -> bool:
-    """True only for a marker written by a load into this same host and project.
+def marker_matches(prior: dict | None, host: str, public_key: str | None,
+                   session_id: str) -> bool:
+    """True only for a marker written by a load of this session into this host and project.
 
     A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
     not that it is in the project this run targets. Markers from before the destination was
     recorded carry neither field and never match, so the project is asked instead.
     """
     return bool(prior) and prior.get("host") == host and bool(public_key) \
-        and prior.get("public_key") == public_key
+        and prior.get("public_key") == public_key and prior.get("session_id") == session_id
 
 
 def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
@@ -220,7 +221,7 @@ def main() -> int:
     host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
 
     prior = already_loaded(transcript_path)
-    if marker_matches(prior, host, public_key) and not args.force:
+    if marker_matches(prior, host, public_key, session_id) and not args.force:
         print(f"already retro-loaded into {host} ({prior['turns_emitted']} turns, "
               f"tags={prior['tags']}); pass --force to reload. marker: {marker_path(transcript_path)}")
         return EXIT_SKIPPED

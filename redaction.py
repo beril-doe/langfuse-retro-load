@@ -284,7 +284,10 @@ _PEM_TERMINATORS = frozenset('"\'\\')
 #: backslash thread on https://github.com/beril-doe/langfuse-retro-load/pull/20.
 _VALUE_TERMINATOR_RE = re.compile(
     "[" + re.escape("".join(sorted(_VALUE_TERMINATORS - {"\\"}))) + "]" + r"|\\+(?=[\"'])")
-_PEM_TERMINATOR_RE = re.compile("[" + re.escape("".join(sorted(_PEM_TERMINATORS))) + "]")
+#: Same backslash rule as values: raw JSONL writes a key's line breaks as `\\n`, and ending on
+#: that first escape left the rest of the key in the output.
+_PEM_TERMINATOR_RE = re.compile(
+    "[" + re.escape("".join(sorted(_PEM_TERMINATORS - {"\\"}))) + "]" + r"|\\+(?=[\"'])")
 
 
 class _Boundaries:
