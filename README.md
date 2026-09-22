@@ -102,7 +102,10 @@ nohup python3 run_manifest.py > full_load_run.txt 2>&1 &
 #    script's own "OK" output. Count the observations carrying your batch tag.
 #    The metrics API is the one that filters on tags: /api/public/observations
 #    ignores a ?tag= parameter and is removed from Langfuse Cloud on 2026-11-16.
-curl -s -G "$LANGFUSE_HOST/api/public/v2/metrics" \
+#    curl does not read .env: the three variables must already be exported in
+#    this shell. LANGFUSE_BASE_URL is the documented name (.env.example);
+#    LANGFUSE_HOST is accepted as a fallback, as retro_load.py does.
+curl -s -G "${LANGFUSE_BASE_URL:-$LANGFUSE_HOST}/api/public/v2/metrics" \
   -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
   --data-urlencode 'query={"view":"observations","metrics":[{"measure":"count","aggregation":"count"}],"filters":[{"column":"tags","operator":"any of","value":["<your-batch-tag>"],"type":"arrayOptions"}],"fromTimestamp":"2000-01-01T00:00:00Z","toTimestamp":"2100-01-01T00:00:00Z"}' \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['count_count'])"
