@@ -306,3 +306,21 @@ def test_gitleaks_rows_use_the_same_record_numbers(monkeypatch, tmp_path):
         a, returncode=2, stdout=report, stderr=""))
     rows = inventory.gitleaks_rows([path], kind="transcript", key=KEY)
     assert [r.record for r in rows] == [0]
+
+
+# --- sixth Copilot review: an angle-bracketed value is a placeholder only if it is words -
+
+@pytest.mark.parametrize("node", [
+    {"token": "<" + FAKE + ">"},
+    {"api_key": "<sk-proj-" + "B" * 40 + ">"},
+    {"password": "<hunter2hunter2>"},
+])
+def test_a_real_value_in_angle_brackets_is_still_a_credential(node):
+    clean, found = redaction.redact_tree(node, key=KEY)
+    assert clean != node and found
+
+
+@pytest.mark.parametrize("value", ["<your-token-here>", "<API KEY>", "<your_password>"])
+def test_a_words_only_placeholder_is_still_left_alone(value):
+    clean, found = redaction.redact_tree({"token": value}, key=KEY)
+    assert clean == {"token": value} and found == []

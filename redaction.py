@@ -191,13 +191,29 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
 #: `<your-token-here>`, `{{ secrets.TOKEN }}`. Redacting one hides where a credential came
 #: from and hides nothing secret (https://github.com/beril-doe/langfuse-retro-load/issues/23).
 REFERENCE_RE = re.compile(
-    r"\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|<[^<>\n]{1,80}>"
+    r"\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}"
     r"|\{\{\s*[A-Za-z_][\w.]*\s*\}\}")
+
+#: A placeholder in angle brackets is words only: `<your-token-here>`, `<API KEY>`. Anything
+#: with a digit or other symbol could be a real value someone wrapped in brackets, such as
+#: `<ghp_...>`, so it is not exempt (second-to-last Copilot round on
+#: https://github.com/beril-doe/langfuse-retro-load/pull/25).
+_PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
 
 def is_reference(value: str) -> bool:
-    """True when the whole value, quotes and whitespace aside, is a reference, not a secret."""
-    return bool(REFERENCE_RE.fullmatch(value.strip().strip("\"'")))
+    """True when the whole value, quotes and whitespace aside, names another value.
+
+    A variable or template reference, or a words-only placeholder that nothing in PATTERNS
+    recognises as a secret.
+    """
+    bare = value.strip().strip("\"'")
+    if REFERENCE_RE.fullmatch(bare):
+        return True
+    if _PLACEHOLDER_RE.fullmatch(bare):
+        return not any(CATEGORY.get(name) == SECRET and pattern is not None
+                       and pattern.search(bare[1:-1]) for name, pattern in PATTERNS.items())
+    return False
 
 
 CATEGORY: dict[str, str] = {
