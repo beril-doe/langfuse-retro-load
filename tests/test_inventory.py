@@ -205,7 +205,9 @@ def test_an_unparseable_line_is_still_scanned(tmp_path):
     path.write_text("{this is not json, KBASE_AUTH_TOKEN=" + "ab12" * 8 + "}\n")
     rows = inventory.scan_transcript(path, redaction.Redactor(key=KEY))
     assert [row.category for row in rows] == [redaction.SECRET]
-    assert rows[0].record == 0
+    # No record number: record counts parsed records, as the loader does, and the loader
+    # never sends a line it cannot parse.
+    assert rows[0].record is None
 
 
 def test_an_asset_is_addressed_by_its_path_under_the_snapshot_root(tmp_path):

@@ -87,14 +87,18 @@ special file permissions, unlike the `--detail` file in
 purpose is to hold the material being looked for.
 
 Two detectors, union, per
-[#10](https://github.com/beril-doe/langfuse-retro-load/issues/10). The local
+https://github.com/beril-doe/langfuse-retro-load/issues/10, **in the inventory step
+only**: `inventory.py` runs both, while `retro_load.py` rewrites with the local
+patterns and does not run gitleaks at load time yet. Run `inventory.py` on a batch
+before loading it. The local
 patterns are keyword and shape anchored and can also use the key a value sits
 under, so `{"KBASE_AUTH_TOKEN": "s3cret"}` is caught on six characters.
 gitleaks knows about 150 provider shapes and gates on entropy near 3.5, so it
 catches what nobody here wrote a rule for and misses the low-entropy ones: the
 three real tokens in the September corpus scored 4.351, 3.531 and 3.328.
-Neither substitutes for the other. gitleaks rows are addressed by record, since
-it reports a line and a `.jsonl` line is a record.
+Neither substitutes for the other. gitleaks reports a file line, which the
+inventory converts to a record number. A record number counts parsed records only,
+the same way the loader does, so a blank or unparseable line has none.
 
 What this does not do, stated plainly:
 

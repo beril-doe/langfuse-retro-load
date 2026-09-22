@@ -106,18 +106,42 @@ def _subject_for(path: Path) -> str:
     return path.stem
 
 
+def record_numbers(path: Path) -> dict[int, int]:
+    """0-based file line to record number, for every line that parses.
+
+    A record number is the position among parsed records, which is how retro_load.py's
+    load_all_jsonl(), redact_records() and reveal.py count. Blank and unparseable lines have
+    no record number: the loader never sends them.
+    """
+    out, index = {}, 0
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line_no, line in enumerate(handle):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except ValueError:  # noqa: S112 -- the loader skips these lines too
+                continue
+            out[line_no] = index
+            index += 1
+    return out
+
+
 def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
     """Every finding in one .jsonl transcript, addressed by record and JSON pointer.
 
     Parses each line rather than scanning the raw text, which is what gives the pointer
     and what bounds the damage a value with no terminator can do. A line that will not
     parse is still scanned, as one string, because an unparseable line is exactly where
-    something unexpected ended up.
+    something unexpected ended up. Such a row has no record number, since the loader never
+    sends that line; `record` counts parsed records only, the same as the loader.
     """
     subject = _subject_for(path)
     rows: list[Row] = []
+    index = 0
     with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for index, line in enumerate(handle):
+        for line in handle:
             line = line.strip()
             if not line:
                 continue
@@ -126,7 +150,7 @@ def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
             except ValueError:
                 _, found = redaction.redact_tree(line, categories=REPORT_ONLY,
                                                  key=redactor.key)
-                rows.extend(_rows_from(found, subject, "transcript", index, None))
+                rows.extend(_rows_from(found, subject, "transcript", None, None))
                 continue
             uuid = record.get("uuid") if isinstance(record, dict) else None
             # The loader's own policy, so the report says what a load would screen.
@@ -135,6 +159,7 @@ def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
                                              payload_keys=PAYLOAD_KEYS)
             rows.extend(_rows_from(found, subject, "transcript", index,
                                    uuid if isinstance(uuid, str) else None))
+            index += 1
     return rows
 
 
@@ -231,6 +256,8 @@ def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
             raise GitleaksFailed(f"gitleaks reported findings on {path.name} but listed none")
         subject = _subject_for(path) if kind == "transcript" else (
             str(path.relative_to(root)) if root else path.name)
+        # gitleaks reports file lines; a transcript row's record is its parsed-record number.
+        numbers = record_numbers(path) if kind == "transcript" else {}
         for finding in findings:
             match = str(finding.get("Secret") or finding.get("Match") or "")
             line = finding.get("StartLine")
@@ -238,7 +265,8 @@ def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
                 subject=subject, kind=kind,
                 # gitleaks counts lines from 1 and a .jsonl record is a line, so this is
                 # the same `record` the pointer-addressed rows use.
-                record=(line - 1) if isinstance(line, int) and line > 0 else None,
+                record=(numbers.get(line - 1) if kind == "transcript" else line - 1)
+                if isinstance(line, int) and line > 0 else None,
                 record_uuid=None, path="", detector="gitleaks",
                 pattern=GITLEAKS_PREFIX + str(finding.get("RuleID", "unknown")),
                 category=redaction.SECRET,

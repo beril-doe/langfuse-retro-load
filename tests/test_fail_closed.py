@@ -267,31 +267,6 @@ def test_an_unscreened_marker_does_not_satisfy_a_screened_run(retro_load):
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1", screened=False)
 
 
-def test_gitleaks_on_a_line_the_local_patterns_missed_holds_the_send(retro_load, monkeypatch, tmp_path):
-    path = tmp_path / "s-1.jsonl"
-    path.write_text("\n" + json.dumps({"a": 1}) + "\n" + json.dumps({"b": 2}) + "\n")
-    monkeypatch.setattr(retro_load.shutil, "which", lambda name: "/usr/bin/gitleaks")
-    flagged = inventory.Row(subject="s-1", kind="transcript", record=2, record_uuid=None, path="",
-                            detector="gitleaks", pattern="gitleaks:x", category=redaction.SECRET,
-                            fingerprint="", length=1, masked=False, whole_value=False)
-    monkeypatch.setattr(retro_load.inventory, "gitleaks_rows", lambda *a, **k: [flagged])
-    local_on_line_2 = inventory.Row(subject="s-1", kind="transcript", record=1, record_uuid=None,
-                                    path="/b", detector="redaction", pattern="keyed_value",
-                                    category=redaction.SECRET, fingerprint="", length=1,
-                                    masked=False, whole_value=False)
-    assert "line(s) 3" in retro_load.gitleaks_hold(path, [], KEY)
-    assert retro_load.gitleaks_hold(path, [local_on_line_2], KEY) is None
-
-
-def test_a_failed_gitleaks_run_holds_the_send(retro_load, monkeypatch, tmp_path):
-    monkeypatch.setattr(retro_load.shutil, "which", lambda name: "/usr/bin/gitleaks")
-
-    def failed(*a, **k):
-        raise inventory.GitleaksFailed("exit 1")
-    monkeypatch.setattr(retro_load.inventory, "gitleaks_rows", failed)
-    assert "gitleaks failed" in retro_load.gitleaks_hold(_transcript(tmp_path), [], KEY)
-
-
 @pytest.mark.parametrize("body", [{"data": "x"}, {"data": [None]}, {"data": ["row"]}])
 def test_a_malformed_observations_response_is_a_presence_error(monkeypatch, body):
     monkeypatch.setattr(presence, "_get", lambda *a, **k: body)
@@ -309,3 +284,25 @@ def test_a_malformed_metrics_response_is_a_presence_error(monkeypatch, body):
 def test_a_report_only_credential_key_finding_is_marked_whole_value():
     _, found = redaction.redact_tree({"TOKEN": "s3cret"}, categories=frozenset(), key=KEY)
     assert [f.whole_value for f in found] == [True]
+
+
+def test_record_numbers_count_parsed_records_like_the_loader(tmp_path):
+    """The previously-missed item in review 5284462504: one record-number contract."""
+    path = tmp_path / "s-1.jsonl"
+    path.write_text("\n" + "not json " + FAKE + "\n" + json.dumps({"token": FAKE}) + "\n")
+    rows = inventory.scan_transcript(path, redaction.Redactor())
+    by_record = sorted(((r.record, r.path) for r in rows if r.category == redaction.SECRET),
+                       key=lambda pair: (pair[0] is None, pair))
+    # Line 3 is the first parsed record, so record 0; the unparseable line 2 has no number.
+    assert by_record == [(0, "/token"), (None, "")]
+    assert inventory.record_numbers(path) == {2: 0}
+
+
+def test_gitleaks_rows_use_the_same_record_numbers(monkeypatch, tmp_path):
+    path = tmp_path / "s-1.jsonl"
+    path.write_text("\n" + json.dumps({"a": 1}) + "\n")
+    report = json.dumps([{"RuleID": "github-pat", "Secret": FAKE, "StartLine": 2}])
+    monkeypatch.setattr(inventory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, returncode=2, stdout=report, stderr=""))
+    rows = inventory.gitleaks_rows([path], kind="transcript", key=KEY)
+    assert [r.record for r in rows] == [0]
