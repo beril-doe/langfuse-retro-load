@@ -105,7 +105,8 @@ def test_a_marker_without_a_destination_never_matches(retro_load):
 
 
 def test_a_marker_for_another_session_id_does_not_match(retro_load):
-    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": {}}
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": {},
+             "turns_emitted": 3, "tags": ["claude-code"]}
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1")
     assert not retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-2")
 
@@ -262,7 +263,8 @@ def test_presence_counts_from_1970():
 # --- fourth Copilot review, and the "previously missed" items in the second and third -----
 
 def test_an_unscreened_marker_does_not_satisfy_a_screened_run(retro_load):
-    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": None}
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": None,
+             "turns_emitted": 3, "tags": ["claude-code"]}
     assert not retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1", screened=True)
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1", screened=False)
 
@@ -378,3 +380,16 @@ def test_camel_case_keys_that_only_mention_a_credential_are_left_alone(name):
 
 def test_a_timestamp_without_a_zone_makes_last_activity_unknown(retro_load):
     assert retro_load.last_activity([{"timestamp": "2026-05-07T21:34:03"}]) is None
+
+
+# --- ninth Copilot review: a malformed marker is no marker ---------------------------------
+
+@pytest.mark.parametrize("prior", [
+    [],
+    "loaded",
+    {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": {}},
+    {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a", "redacted": {},
+     "turns_emitted": "3", "tags": []},
+])
+def test_a_malformed_marker_never_matches(retro_load, prior):
+    assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False

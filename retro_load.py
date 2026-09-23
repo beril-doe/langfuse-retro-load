@@ -115,9 +115,14 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
     not that it is in the project this run targets. Markers from before the destination was
     recorded carry neither field and never match, so the project is asked instead.
     """
+    # A marker that is not an object, or lacks what the early return prints, is treated as
+    # absent, which sends the session to the presence check rather than raising.
+    if not isinstance(prior, dict) or not isinstance(prior.get("turns_emitted"), int) \
+            or not isinstance(prior.get("tags"), list):
+        return False
     # A --no-redact load records redacted=None. It is not a completion a screened run can
     # rely on: what went out was never screened.
-    if screened and prior and prior.get("redacted") is None:
+    if screened and prior.get("redacted") is None:
         return False
     return bool(prior) and prior.get("host") == host and bool(public_key) \
         and prior.get("public_key") == public_key and prior.get("session_id") == session_id
