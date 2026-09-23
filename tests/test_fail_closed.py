@@ -604,3 +604,31 @@ def test_a_gitleaks_report_of_the_wrong_shape_is_a_failure(monkeypatch, tmp_path
         a, returncode=2, stdout=report, stderr=""))
     with pytest.raises(inventory.GitleaksFailed):
         inventory.gitleaks_rows([path], kind="transcript", key=KEY)
+
+
+# --- nineteenth Copilot review -------------------------------------------------------------
+
+@pytest.mark.parametrize("name,text", [
+    ("config.env", "KBASE_AUTH_TOKEN=s3cret\nOTHER=value\n"),
+    ("config.env", "export API_KEY='s3cret'\n"),
+    ("config.yaml", "service:\n  token: s3cret\n"),
+])
+def test_a_short_keyed_secret_in_a_text_asset_is_found(tmp_path, name, text):
+    path = tmp_path / name
+    path.write_text(text)
+    rows = inventory.scan_asset(path, redaction.Redactor())
+    assert [r.pattern for r in rows if r.category == redaction.SECRET] == [redaction.CREDENTIAL_KEY]
+
+
+def test_a_keyed_line_that_only_mentions_a_credential_is_left_alone(tmp_path):
+    path = tmp_path / "config.env"
+    path.write_text("TOKEN_COUNT=12\nSECRET_NAME=prod\nAPI_KEY=$FROM_VAULT\n")
+    assert inventory.scan_asset(path, redaction.Redactor()) == []
+
+
+@pytest.mark.parametrize("summary", [{"secret": "oops"}, {"secret": -1}, {"secret": True},
+                                     {"nonsense": 1}])
+def test_a_marker_with_a_malformed_summary_never_matches(retro_load, summary):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
+             "turns_emitted": 3, "tags": [], "redacted": summary}
+    assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False

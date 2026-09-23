@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -214,7 +215,37 @@ def scan_asset(path: Path, redactor: redaction.Redactor, *, root: Path | None = 
     else:
         parsed = text
     _, found = redaction.redact_tree(parsed, categories=REPORT_ONLY, key=redactor.key)
-    return blocked + _rows_from(found, relative, "asset", None, None)
+    rows = blocked + _rows_from(found, relative, "asset", None, None)
+    if isinstance(parsed, str):
+        rows += _keyed_lines(parsed, relative, redactor.key)
+    return rows
+
+
+#: `KEY=value`, `export KEY=value` or `key: value` on a line of its own, as in a .env or YAML
+#: file. Only used to give the key-name rule its key, which a flat string scan never has.
+_KEYED_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*[:=]\s*(\S.*?)\s*$")
+
+
+def _keyed_lines(text: str, relative: str, key: bytes) -> list[Row]:
+    """Findings from the key-name rule on each `KEY=value` line of a text asset.
+
+    `KBASE_AUTH_TOKEN=s3cret` is too short for the flat keyed pattern and too low in entropy
+    for gitleaks; under its own key name it is the credential. Addressed as `/line/N`.
+    """
+    rows = []
+    for number, line in enumerate(text.splitlines()):
+        match = _KEYED_LINE.match(line)
+        if not match or not redaction.is_credential_key(match.group(1)):
+            continue
+        value = match.group(2).strip("\"'")
+        _, found = redaction.redact_value(value, key_name=match.group(1),
+                                          categories=REPORT_ONLY, key=key)
+        rows += [Row(subject=relative, kind="asset", record=None, record_uuid=None,
+                     path=f"/line/{number}", detector="redaction", pattern=f.pattern,
+                     category=f.category, fingerprint=f.fingerprint, length=f.length,
+                     masked=f.masked, whole_value=f.start == 0 and f.end == len(value))
+                 for f in found if f.pattern == redaction.CREDENTIAL_KEY]
+    return rows
 
 
 def _rows_from(found: list[redaction.Located], subject: str, kind: str,
