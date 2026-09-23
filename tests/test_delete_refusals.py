@@ -111,7 +111,7 @@ def test_every_countable_type_is_classified():
     """Adding an object type to COUNTABLE without deciding whether it can be deleted
     makes `count` report it and `delete` call it unknown. This is the check that
     catches the next Langfuse object type rather than the ones already here."""
-    unclassified = (set(langfuse_admin.COUNTABLE)
+    unclassified = ((set(langfuse_admin.COUNTABLE) | set(langfuse_admin.DERIVED))
                     - set(langfuse_admin.DELETABLE)
                     - set(langfuse_admin.UNDELETABLE_REASON))
     assert not unclassified
@@ -119,6 +119,8 @@ def test_every_countable_type_is_classified():
 
 class RecordingApi:
     """Stands in for `api`, answering enumeration and recording every call.
+
+    Enumeration reads v2/observations, so each trace is answered as one observation of it.
 
     Enumeration is a GET; a deletion is a DELETE. Keeping both on one recorder is what lets
     a test say "it looked, and then it did not touch anything".
@@ -131,7 +133,10 @@ class RecordingApi:
     def __call__(self, path, header, host, data=None, method="GET"):
         self.calls.append((method, path))
         if method == "GET":
-            return 200, {"data": self._traces, "meta": {"totalPages": 1}}
+            return 200, {"data": [{"id": f"o-{t['id']}", "traceId": t["id"],
+                                   "traceName": t.get("name"), "startTime": t.get("timestamp"),
+                                   "sessionId": t.get("sessionId"), "userId": t.get("userId")}
+                                  for t in self._traces], "meta": {}}
         return 200, {}
 
     @property
@@ -147,7 +152,6 @@ def enumerating(monkeypatch, traces=None):
     monkeypatch.setattr(langfuse_admin, "api", recorder)
     monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("Basic x", "https://h"))
     monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "PROJ / name")
-    monkeypatch.setattr(langfuse_admin, "warn_deprecated", lambda: None)
     return recorder
 
 

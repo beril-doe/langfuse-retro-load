@@ -53,38 +53,39 @@ DEFAULT_HOST = "https://us.cloud.langfuse.com"
 #: Langfuse rejects a bulk delete body with more than this many traceIds.
 BULK_DELETE_LIMIT = 1000
 
-#: Removal date for the v3 endpoints this tool reads. Langfuse's own schema says
-#: /api/public/traces, /observations, /sessions and /v2/scores are removed from Cloud
-#: on this date, and from self-hosted deployments on upgrade to v4. Four of the routes
-#: below are on that list, so `count` and `delete` both stop working then, not
-#: gradually but on a date. Checked against schema 4.16.0 on 2026-09-11.
+#: Where traces, observations, sessions and scores are counted from. Langfuse removes
+#: /api/public/traces, /observations, /sessions and /v2/scores from Cloud on 2026-11-16,
+#: and from self-hosted deployments on upgrade to v4, so none of these four is read here.
+#: Checked against https://cloud.langfuse.com/generated/api/openapi.yml on 2026-09-23.
 #:
-#: The replacements are not drop-in. v2/observations is cursor-paged with no
-#: totalItems, so a count means walking pages; trace and session totals have to be
-#: derived from observations rather than read; and v3/scores has a different shape.
-#: Tracked rather than done here: this pull request already carries enough.
-V3_REMOVAL = "2026-11-16"
-
-#: Every listable object type, and the endpoint that reports a total for it.
-#: `deprecated` marks the ones removed on V3_REMOVAL.
-#: Endpoints that page by cursor do not return `meta.totalItems`; those are marked so the
-#: count falls back to walking pages rather than silently reporting the page size.
-#: Traces are the one endpoint that can apply a server-configured default date
-#: window when fromTimestamp is absent (LANGFUSE_API_TRACES_DEFAULT_DATE_RANGE_DAYS
-#: on a self-hosted deployment). This tool exists because short windows hide
-#: backdated data, so inheriting one silently would be the exact defect it prevents.
+#: Observations are walked through v2/observations, which is cursor-paged with no
+#: total. Traces and sessions have no replacement list route; the spec's own guidance is
+#: to read them through v2/observations, so they are counted as the distinct traceId and
+#: non-empty sessionId values among the observations. That changes what "session"
+#: means: the old route kept counting a session after every trace in it was deleted
+#: (beril-usage reported 103 sessions with 0 traces on 2026-09-11), and this does not.
+#: A trace with no observations is invisible to it. Measured 2026-09-23 on the NMDC
+#: project: the old route listed 87 trace ids and the walk found the same 87.
 #:
-#: Passing a lower bound is not a free fix. Measured on the NMDC project 2026-09-11:
-#: unbounded returns 71 traces, fromTimestamp=2000-01-01 returns 70, reproducibly.
-#: Something is excluded by the bound. So ask both ways and take the larger,
-#: reporting when they disagree rather than silently choosing.
+#: The walk's observation total is checked against v2/metrics, a separate real-time
+#: count, and a disagreement is reported rather than resolved silently.
+#:
+#: The lower bound is explicit so a deployment-level default window cannot shrink the
+#: walk to recent data. That was a real concern with the old traces route, whose
+#: default window was configurable (LANGFUSE_API_TRACES_DEFAULT_DATE_RANGE_DAYS).
 ALL_TIME = "1970-01-01T00:00:00Z"
 
+#: Largest page each cursor route accepts, from the spec.
+OBSERVATIONS_PAGE = 1000
+SCORES_PAGE = 100
+
+#: Counted from v2/observations and v3/scores rather than from a list route.
+DERIVED = ("trace", "observation", "session", "score")
+
+#: Every other listable object type, and the endpoint that reports a total for it.
+#: Endpoints that page by cursor do not return `meta.totalItems`; those are reported
+#: as uncountable rather than silently reporting the page size.
 COUNTABLE = {
-    "trace": ("/api/public/traces", True),           # deprecated, removed V3_REMOVAL
-    "observation": ("/api/public/observations", True),  # deprecated, removed V3_REMOVAL
-    "session": ("/api/public/sessions", True),       # deprecated, removed V3_REMOVAL
-    "score": ("/api/public/v2/scores", True),        # deprecated, removed V3_REMOVAL
     "score-config": ("/api/public/score-configs", True),
     "dataset": ("/api/public/v2/datasets", True),
     "dataset-item": ("/api/public/dataset-items", True),
@@ -186,18 +187,6 @@ def api(path: str, header: str, host: str, data=None, method="GET"):
         return response.status, json.loads(response.read() or b"{}")
 
 
-def _count_once(url: str, header: str, host: str) -> tuple[object, str | None]:
-    """One totalItems read, with its own error. Kept separate so one request being
-    rejected does not stop the other from being attempted."""
-    try:
-        _, body = api(url, header, host)
-    except urllib.error.HTTPError as exc:
-        return None, f"HTTP {exc.code}"
-    except OSError as exc:
-        return None, type(exc).__name__
-    return (body.get("meta") or {}).get("totalItems"), None
-
-
 def total(path: str, header: str, host: str) -> tuple[object, str | None]:
     """Return (count, note). A count of None means it could not be counted.
 
@@ -208,24 +197,6 @@ def total(path: str, header: str, host: str) -> tuple[object, str | None]:
     number would silently re-read page one forever, so report that we cannot count it
     rather than return a number that looks fine and is wrong.
     """
-    if path.endswith("/traces"):
-        # See ALL_TIME. Both requests run independently: a deployment with
-        # LANGFUSE_API_TRACES_REJECT_NO_DATE_RANGE rejects the unbounded one outright,
-        # and sharing a handler meant that rejection returned before the bounded
-        # request was ever tried, in one of the configurations this exists to support.
-        a, a_err = _count_once(f"{path}?limit=1", header, host)
-        b, b_err = _count_once(f"{path}?limit=1&fromTimestamp={ALL_TIME}", header, host)
-        if a is None and b is None:
-            return None, a_err or b_err
-        if a is None:
-            return b, f"unbounded request rejected ({a_err}); using the bounded count"
-        if b is None:
-            return a, f"bounded request rejected ({b_err}); using the unbounded count"
-        if a != b:
-            return max(a, b), f"unbounded={a}, from {ALL_TIME[:10]}={b}; reporting the larger"
-        # Agreement is not proof of an all-time total. A plan with a data-access
-        # floor clamps both, so both can agree on the same recent subset.
-        return a, None
     try:
         _, body = api(f"{path}?limit=1", header, host)
     except urllib.error.HTTPError as exc:
@@ -253,6 +224,118 @@ def total(path: str, header: str, host: str) -> tuple[object, str | None]:
         page += 1
 
 
+def walk(path: str, params: dict, header: str, host: str):
+    """Yield every item from a cursor-paged route. Errors propagate to the caller."""
+    cursor = None
+    while True:
+        query = dict(params, cursor=cursor) if cursor else params
+        _, body = api(f"{path}?{urllib.parse.urlencode(query)}", header, host)
+        yield from body.get("data") or []
+        cursor = (body.get("meta") or {}).get("cursor")
+        if not cursor:
+            return
+
+
+def _failure(exc: Exception) -> str:
+    return f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+
+
+def observation_census(header: str, host: str) -> tuple[dict, str | None]:
+    """Count observations, and the traces and sessions they belong to, in one walk.
+
+    Returns ({"observation": n, "trace": n, "session": n}, note), or ({}, reason) when
+    the walk fails part way, because a partial walk is an undercount that looks real.
+    """
+    observations, traces, sessions = 0, set(), set()
+    params = {"limit": OBSERVATIONS_PAGE, "fields": "core,basic", "fromStartTime": ALL_TIME}
+    try:
+        for obs in walk("/api/public/v2/observations", params, header, host):
+            observations += 1
+            traces.add(obs.get("traceId"))
+            if obs.get("sessionId"):
+                sessions.add(obs["sessionId"])
+    except (urllib.error.HTTPError, OSError) as exc:
+        return {}, f"{_failure(exc)} walking v2/observations"
+    counts = {"observation": observations, "trace": len(traces - {None}),
+              "session": len(sessions)}
+    return counts, _metrics_disagreement(observations, header, host)
+
+
+def _metrics_disagreement(walked: int, header: str, host: str) -> str | None:
+    """Compare the walk with v2/metrics. Say so when they differ or the check fails."""
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = {"view": "observations", "metrics": [{"measure": "count", "aggregation": "count"}],
+             "fromTimestamp": ALL_TIME, "toTimestamp": now}
+    try:
+        _, body = api("/api/public/v2/metrics?query="
+                      + urllib.parse.quote(json.dumps(query)), header, host)
+        rows = body.get("data") or []
+        counted = int(rows[0]["count_count"]) if rows else 0
+    except (urllib.error.HTTPError, OSError) as exc:
+        return f"not cross-checked: {_failure(exc)} from v2/metrics"
+    except (KeyError, TypeError, ValueError):
+        return "not cross-checked: v2/metrics returned an unexpected shape"
+    if counted != walked:
+        return f"walked {walked}, v2/metrics says {counted}; data may still be arriving"
+    return None
+
+
+def count_scores(header: str, host: str) -> tuple[object, str | None]:
+    """Walk v3/scores. It is cursor-paged and reports no total."""
+    try:
+        return sum(1 for _ in walk("/api/public/v3/scores", {"limit": SCORES_PAGE},
+                                   header, host)), None
+    except (urllib.error.HTTPError, OSError) as exc:
+        return None, f"{_failure(exc)} walking v3/scores"
+
+
+def instant(stamp) -> datetime.datetime | None:
+    """Parse an ISO 8601 timestamp to an aware datetime, or None if it is not one.
+
+    Comparing the strings is wrong once precision or offset varies: "...00.5Z" sorts
+    before "...00Z" although it is half a second later.
+    """
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
+    """Every trace with at least one observation, optionally narrowed to one trace name.
+
+    Built from v2/observations, grouped by traceId. A trace's timestamp is its earliest
+    observation's startTime. A trace with no observations cannot be seen this way.
+    """
+    # `filter` takes precedence over the plain query parameters, so the lower bound
+    # has to be inside it too, not beside it.
+    conditions = [{"type": "datetime", "column": "startTime", "operator": ">=",
+                   "value": ALL_TIME}]
+    if name:
+        conditions.append({"type": "string", "column": "traceName", "operator": "=",
+                           "value": name})
+    params = {"limit": OBSERVATIONS_PAGE, "fields": "core,basic,trace_context",
+              "filter": json.dumps(conditions)}
+    traces: dict[str, dict] = {}
+    for obs in walk("/api/public/v2/observations", params, header, host):
+        trace_id = obs.get("traceId")
+        if not trace_id:
+            continue
+        trace = traces.setdefault(trace_id, {"id": trace_id, "name": obs.get("traceName"),
+                                             "sessionId": None, "userId": None,
+                                             "timestamp": None})
+        trace["sessionId"] = trace["sessionId"] or obs.get("sessionId")
+        trace["userId"] = trace["userId"] or obs.get("userId")
+        start = obs.get("startTime")
+        if instant(start) and (trace["timestamp"] is None
+                               or instant(start) < instant(trace["timestamp"])):
+            trace["timestamp"] = start
+    return list(traces.values())
+
+
 def confirm_project(project_id: str, header: str, host: str) -> str:
     _, body = api("/api/public/projects", header, host)
     for project in body.get("data", []):
@@ -261,35 +344,18 @@ def confirm_project(project_id: str, header: str, host: str) -> str:
     raise SystemExit(f"the key resolved for {project_id} does not actually serve it")
 
 
-DEPRECATED_PATHS = {"/api/public/traces", "/api/public/observations",
-                    "/api/public/sessions", "/api/public/v2/scores"}
-
-
-def warn_deprecated() -> None:
-    """Say it once, loudly, rather than let the tool fail silently in November."""
-    # UTC, not local. V3_REMOVAL is a date Langfuse states in UTC, and date.today()
-    # on a machine west of Greenwich would keep saying "before" for hours after it passed.
-    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-    if today < V3_REMOVAL:
-        print(f"note: four of these endpoints are removed from Langfuse Cloud on "
-              f"{V3_REMOVAL}. After that this command needs rewriting against "
-              f"v2/observations and v3/scores. See the note on V3_REMOVAL.",
-              file=sys.stderr)
-    else:
-        print(f"warning: the endpoints this uses were scheduled for removal on "
-              f"{V3_REMOVAL}. Any zero below may mean the route is gone rather than "
-              f"the project being empty.", file=sys.stderr)
-
-
 def cmd_count(args) -> int:
-    warn_deprecated()
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
     print(f"{where}  ({args.project})  at {host}\n")
     print(f"{'object':<20}{'count':>10}  {'note'}")
     failed = []
-    for name, (path, _) in COUNTABLE.items():
-        count, note = total(path, header, host)
+    census, census_note = observation_census(header, host)
+    rows = [(kind, census.get(kind), census_note if kind == "observation" or not census
+             else None) for kind in ("trace", "observation", "session")]
+    rows.append(("score", *count_scores(header, host)))
+    rows += [(name, *total(path, header, host)) for name, (path, _) in COUNTABLE.items()]
+    for name, count, note in rows:
         # A note alongside a count is information, not failure. Only a missing count
         # means the type could not be counted.
         if count is None:
@@ -371,37 +437,32 @@ def cmd_delete(args) -> int:
         print("give --name to match a trace name, or --all to mean every trace",
               file=sys.stderr)
         return 2
-    warn_deprecated()
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
 
-    # Filter server-side for --name. Paging the whole project and filtering locally
-    # made a narrow deletion cost as many requests as a full one, and on a large
-    # project that is a rate-limit risk for an operation touching a handful of traces.
-    # Verified against the live API: name=<no match> returns 0 of 71.
-    name_filter = f"&name={urllib.parse.quote(args.name)}" if args.name else ""
-    traces, page = [], 1
-    while True:
-        # Explicit lower bound so --all cannot enumerate only a recent subset on a
-        # deployment with a default window, then report it as the whole project.
-        _, body = api(f"/api/public/traces?limit=100&page={page}"
-                      f"&fromTimestamp={ALL_TIME}{name_filter}", header, host)
-        traces += body["data"]
-        if page >= (body.get("meta") or {}).get("totalPages", 1):
-            break
-        page += 1
+    # Filter server-side for --name, so a narrow deletion does not page the whole project.
+    try:
+        traces = enumerate_traces(header, host, args.name)
+    except (urllib.error.HTTPError, OSError) as exc:
+        print(f"could not enumerate traces: {_failure(exc)} from v2/observations; "
+              "nothing deleted", file=sys.stderr)
+        return 1
     # Still filtered locally as well: the server filter is a narrowing optimisation,
     # not the authority on what gets deleted.
     targets = traces if args.all else [t for t in traces if t.get("name") == args.name]
 
     scope = "in project" if args.all else f"matching {args.name!r}"
     print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
+    print("  (found through their observations; a trace with none is not listed)")
     if not targets:
         return 0
-    stamps = sorted(t["timestamp"] for t in targets if t.get("timestamp"))
+    stamps = sorted(i for i in (instant(t.get("timestamp")) for t in targets) if i)
     sessions = {t.get("sessionId") for t in targets if t.get("sessionId")}
     print(f"  sessions touched: {len(sessions)}")
-    print(f"  date range      : {stamps[0][:19]} to {stamps[-1][:19]}")
+    if stamps:
+        print(f"  date range      : {stamps[0].isoformat()[:19]} to {stamps[-1].isoformat()[:19]}")
+    else:
+        print("  date range      : unknown, no target has a timestamp")
     if args.dry_run:
         print("dry run, nothing sent")
         return 0
