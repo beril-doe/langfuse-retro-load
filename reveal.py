@@ -146,7 +146,8 @@ def main() -> int:
         _, found = redaction.redact_tree(record, categories=inventory.REPORT_ONLY,
                                          key=redactor.key,
                                          skip_keys=inventory.STRUCTURAL_KEYS,
-                                         payload_keys=inventory.PAYLOAD_KEYS)
+                                         payload_keys=inventory.PAYLOAD_KEYS,
+                                         payload_by_type=inventory.PAYLOAD_BY_TYPE)
         for located in found:
             f = located.finding
             if f.category not in wanted_categories:

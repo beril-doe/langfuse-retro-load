@@ -680,7 +680,8 @@ def _escape_token(token: str) -> str:
 def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
                 key: bytes | None = None, key_name: str | None = None, path: str = "",
                 skip_keys: frozenset[str] = frozenset(),
-                payload_keys: frozenset[str] = frozenset()):
+                payload_keys: frozenset[str] = frozenset(),
+                payload_by_type: dict[str, frozenset[str]] | None = None):
     """Redact every string leaf of a parsed JSON structure, reporting where each one was.
 
     Returns the rewritten structure and a list of `Located`. Containers are rebuilt rather
@@ -703,9 +704,16 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
     `payload_keys` names subtrees that hold content rather than structure, such as a tool
     call's `input`. Below one of them `skip_keys` no longer applies, so a field that happens
     to be called `id` inside a tool's arguments is screened like any other value.
+
+    `payload_by_type` does the same for a field of a block with a given `type`: a
+    `tool_result` block's `content` is what the tool returned, while that block's own `id`
+    and `tool_use_id` stay structural.
     """
+    payload_by_type = payload_by_type or {}
     if isinstance(node, dict):
         out, found = {}, []
+        block_payload = payload_by_type.get(node.get("type"), frozenset()) \
+            if isinstance(node.get("type"), str) else frozenset()
         for name, value in node.items():
             if isinstance(value, str) and str(name) in skip_keys:
                 out[name] = value
@@ -713,8 +721,9 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
             child, child_found = redact_tree(
                 value, categories=categories, key=key, key_name=str(name),
                 path=f"{path}/{_escape_token(str(name))}",
-                skip_keys=frozenset() if str(name) in payload_keys else skip_keys,
-                payload_keys=payload_keys,
+                skip_keys=(frozenset() if str(name) in payload_keys or str(name) in block_payload
+                           else skip_keys),
+                payload_keys=payload_keys, payload_by_type=payload_by_type,
             )
             out[name] = child
             found.extend(child_found)
@@ -726,6 +735,7 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
             child, child_found = redact_tree(
                 value, categories=categories, key=key, key_name=key_name,
                 path=f"{path}/{index}", skip_keys=skip_keys, payload_keys=payload_keys,
+                payload_by_type=payload_by_type,
             )
             out_list.append(child)
             found.extend(child_found)

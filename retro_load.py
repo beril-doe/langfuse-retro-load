@@ -111,7 +111,10 @@ def valid_marker(prior) -> bool:
     """The shape write_marker() produces: an object with an integer turn count, a tag list and
     a `redacted` that is a dict (screened load) or null (--no-redact). Anything else is corrupt
     and every caller treats it as no marker."""
-    return (isinstance(prior, dict) and isinstance(prior.get("turns_emitted"), int)
+    turns = prior.get("turns_emitted") if isinstance(prior, dict) else None
+    # bool is an int in Python, and write_marker() never writes a negative count.
+    return (isinstance(prior, dict) and isinstance(turns, int) and not isinstance(turns, bool)
+            and turns >= 0
             and isinstance(prior.get("tags"), list)
             and (prior.get("redacted") is None or isinstance(prior.get("redacted"), dict)))
 

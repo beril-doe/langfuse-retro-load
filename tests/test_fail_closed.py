@@ -414,3 +414,33 @@ def test_the_manifest_dry_run_survives_a_malformed_marker(retro_load, monkeypatc
     monkeypatch.setattr(run_manifest, "already_loaded", lambda p: {"host": "https://a.test"})
     monkeypatch.setattr(sys, "argv", ["run_manifest.py", "--manifest", str(manifest), "--dry-run"])
     assert run_manifest.main() == 0
+
+
+# --- eleventh Copilot review ---------------------------------------------------------------
+
+def test_a_credential_under_id_in_tool_result_content_is_screened():
+    record = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1",
+         "content": [{"type": "text", "id": FAKE, "text": "output"}]}]}}
+    clean, found = redaction.redact_tree(
+        record, key=KEY, skip_keys=inventory.STRUCTURAL_KEYS,
+        payload_keys=inventory.PAYLOAD_KEYS, payload_by_type=inventory.PAYLOAD_BY_TYPE)
+    assert FAKE not in json.dumps(clean)
+    assert clean["message"]["content"][0]["tool_use_id"] == "toolu_1"
+    assert [f.finding.pattern for f in found] == ["github_pat"]
+
+
+def test_the_tool_use_blocks_own_id_stays_structural():
+    record = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": FAKE, "input": {"q": "x"}}]}}
+    clean, found = redaction.redact_tree(
+        record, key=KEY, skip_keys=inventory.STRUCTURAL_KEYS,
+        payload_keys=inventory.PAYLOAD_KEYS, payload_by_type=inventory.PAYLOAD_BY_TYPE)
+    assert clean == record and found == []
+
+
+@pytest.mark.parametrize("turns", [True, False, -1])
+def test_a_boolean_or_negative_turn_count_is_malformed(retro_load, turns):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
+             "turns_emitted": turns, "tags": [], "redacted": {}}
+    assert retro_load.valid_marker(prior) is False

@@ -156,7 +156,8 @@ def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
             # The loader's own policy, so the report says what a load would screen.
             _, found = redaction.redact_tree(record, categories=REPORT_ONLY,
                                              key=redactor.key, skip_keys=STRUCTURAL_KEYS,
-                                             payload_keys=PAYLOAD_KEYS)
+                                             payload_keys=PAYLOAD_KEYS,
+            payload_by_type=PAYLOAD_BY_TYPE)
             rows.extend(_rows_from(found, subject, "transcript", index,
                                    uuid if isinstance(uuid, str) else None))
             index += 1
@@ -392,6 +393,10 @@ STRUCTURAL_KEYS: frozenset[str] = frozenset({
 #: stops at their boundary.
 PAYLOAD_KEYS: frozenset[str] = frozenset({"input", "toolUseResult"})
 
+#: The same by block type: what a tool returned sits in a `tool_result` block's `content`,
+#: which the vendored hook serialises into the tool observation.
+PAYLOAD_BY_TYPE: dict[str, frozenset[str]] = {"tool_result": frozenset({"content"})}
+
 
 def redact_records(records: list, redactor: redaction.Redactor, *, subject: str,
                    categories: frozenset[str] = redaction.DEFAULT_REDACT):
@@ -410,7 +415,8 @@ def redact_records(records: list, redactor: redaction.Redactor, *, subject: str,
     for index, record in enumerate(records):
         clean, found = redaction.redact_tree(
             record, categories=categories, key=redactor.key, skip_keys=STRUCTURAL_KEYS,
-            payload_keys=PAYLOAD_KEYS)
+            payload_keys=PAYLOAD_KEYS,
+            payload_by_type=PAYLOAD_BY_TYPE)
         out.append(clean)
         uuid = record.get("uuid") if isinstance(record, dict) else None
         rows.extend(_rows_from(found, subject, "transcript", index,
