@@ -247,16 +247,3 @@ open-findings FILE="inventory.jsonl" CLEARED="clearances.jsonl":
             and (c.pattern is null or c.pattern=f.pattern) \
             and (c.path is null or c.path=f.path)) \
         order by f.subject, f.record;"
-
-# What scores a load would attach, printed, talking to nothing
-score-dry FILE:
-    @{{PY}} scores.py --transcript {{quote(FILE)}} --dry-run
-
-# WRITES TO LANGFUSE. Needs BERIL_LANGFUSE_PUBLIC_KEY, BERIL_LANGFUSE_SECRET_KEY and
-# BERIL_LANGFUSE_BASE_URL in .env (scores.py --prefix; unprefixed keys are not used),
-# and needs the session to be in Langfuse already: it matches traces by session id
-# and by the loader's own trace names.
-
-# WRITES TO LANGFUSE: attach sensitivity scores to one loaded session's traces
-score FILE:
-    @{{PY}} scores.py --transcript {{quote(FILE)}}

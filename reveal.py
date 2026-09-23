@@ -112,7 +112,7 @@ def main() -> int:
                          "parsed records, so blank and unparseable lines are not counted "
                          "(repeatable)")
     ap.add_argument("--pointer", action="append", default=[],
-                    help="JSON pointer, as the inventory or a score's metadata gives it")
+                    help="JSON pointer, as the inventory gives it")
     ap.add_argument("--pattern", action="append", default=[],
                     help="only this pattern, e.g. keyed_value (repeatable)")
     ap.add_argument("--all-categories", action="store_true",

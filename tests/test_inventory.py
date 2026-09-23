@@ -240,52 +240,6 @@ def test_a_missing_gitleaks_is_reported_as_no_rows_not_as_a_crash(tmp_path, monk
     assert inventory.gitleaks_rows([tmp_path / "s.jsonl"], kind="transcript", key=KEY) == []
 
 
-def test_a_trace_with_only_advisory_findings_gets_no_score():
-    """The first version wrote four scores on every trace and produced 1,040 of them for one real
-    session, almost all reading `secret=0, person=0, kind=account_path`. Home paths are in 64.5% of
-    records, so scoring them is scoring the background."""
-    import scores
-    only_advisory = [inventory.TurnFindings(turn=1, secret=0, person=0, advisory=27,
-                                            worst="account_path", pointers=("/cwd",))]
-    assert scores.plan_scores(only_advisory, {}) == []
-
-
-def test_a_trace_with_a_secret_gets_a_count_a_kind_and_a_review_state():
-    import scores
-    found = [inventory.TurnFindings(turn=7, secret=2, person=1, advisory=9,
-                                    worst="keyed_value", pointers=("/toolUseResult/stdout",))]
-    plans = scores.plan_scores(found, {7: "trace-abc"})
-    assert {(p.name, p.value) for p in plans} == {
-        ("sensitivity.secret", 2), ("sensitivity.person", 1),
-        ("sensitivity.kind", "keyed_value"), ("sensitivity.review", "open")}
-    assert {p.trace_id for p in plans} == {"trace-abc"}
-
-
-def test_a_cleared_turn_says_so():
-    import scores
-    found = [inventory.TurnFindings(turn=7, secret=1, person=0, advisory=0,
-                                    worst="private_key_block", pointers=())]
-    plans = scores.plan_scores(found, {}, any_cleared={7: True})
-    assert ("sensitivity.review", "cleared") in {(p.name, p.value) for p in plans}
-
-
-@pytest.mark.parametrize("clearance,cleared", [
-    ({"subject": "s", "pattern": "keyed_value"}, True),
-    ({"subject": "s", "pattern": "jwt"}, False),
-    ({"subject": "other", "pattern": None}, False),
-    ({"subject": None, "fingerprint": "abcd1234"}, True),
-    ({"subject": "s", "path": "/toolUseResult/stdout"}, True),
-    ({"subject": "s", "path": "/somewhere/else"}, False),
-])
-def test_a_clearance_narrows_only_by_the_fields_it_names(clearance, cleared):
-    import scores
-    row = inventory.Row(subject="s", kind="transcript", record=2, record_uuid="u2",
-                        path="/toolUseResult/stdout", detector="redaction",
-                        pattern="keyed_value", category=redaction.SECRET,
-                        fingerprint="abcd1234", length=38, masked=False, whole_value=False)
-    assert scores.is_cleared(row, [clearance]) is cleared
-
-
 @pytest.mark.parametrize("text,flagged", [
     ("git remote set-url origin git@github.com:kbaseincubator/repo.git", False),
     ("noreply@github.com", False),

@@ -160,26 +160,6 @@ def test_gitleaks_finding_leaks_is_not_a_failure(monkeypatch, tmp_path):
     assert [r.pattern for r in rows] == [inventory.GITLEAKS_PREFIX + "github-pat"]
 
 
-# --- scores.py ----------------------------------------------------------------------------
-
-def test_scores_never_mixes_prefixed_and_unprefixed_keys(monkeypatch):
-    pytest.importorskip("langfuse")
-    import langfuse_admin
-    import scores
-    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (
-        {"BERIL_LANGFUSE_PUBLIC_KEY": "pk-beril", "LANGFUSE_SECRET_KEY": "sk-other",
-         "LANGFUSE_HOST": "https://other.test"}, None))
-    assert scores.client_for("BERIL") is None
-
-
-def test_scores_without_a_transcript_is_a_usage_error(monkeypatch):
-    import scores
-    monkeypatch.setattr(sys, "argv", ["scores.py"])
-    with pytest.raises(SystemExit) as exit_info:
-        scores.main()
-    assert exit_info.value.code == 2
-
-
 def test_an_unterminated_key_in_raw_jsonl_is_not_cut_at_an_escaped_newline():
     body = "MIIEfakekeybody" + "AbCdEf" * 4
     raw = '{"stdout": "-----BEGIN RSA PRIVATE KEY-----\\n' + body + '\\n' + body + '"}'
