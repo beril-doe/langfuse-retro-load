@@ -561,3 +561,20 @@ def test_skip_reason_fails_closed_on_a_bad_idle_value(retro_load):
     now = datetime(2026, 9, 22, tzinfo=timezone.utc)
     assert retro_load.skip_reason(last_seen=now, now=now, min_idle_days=float("nan"),
                                   existing=0, allow_existing=False)
+
+
+# --- seventeenth Copilot review ------------------------------------------------------------
+
+@pytest.mark.parametrize("node", [
+    {"token": {"value": "s3cret"}},
+    {"credentials": {"github": {"pat": "s3cret-value"}}},
+])
+def test_a_secret_nested_under_a_credential_key_is_redacted(node):
+    clean, found = redaction.redact_tree(node, key=KEY)
+    assert "s3cret" not in json.dumps(clean) and found
+
+
+def test_a_marker_with_non_string_tags_never_matches(retro_load):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
+             "turns_emitted": 3, "tags": [1], "redacted": {}}
+    assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False

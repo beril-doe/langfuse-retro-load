@@ -750,8 +750,12 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
             if isinstance(value, str) and str(name) in skip_keys:
                 out[name] = value
                 continue
+            # Under a credential key, a nested mapping is still the credential: keep the
+            # parent's name so `{"token": {"value": "s3cret"}}` is caught like `{"token": ...}`.
+            inherited = key_name if key_name is not None and is_credential_key(key_name) \
+                else str(name)
             child, child_found = redact_tree(
-                value, categories=categories, key=key, key_name=str(name),
+                value, categories=categories, key=key, key_name=inherited,
                 path=f"{path}/{_escape_token(str(name))}",
                 skip_keys=(frozenset() if str(name) in payload_keys or str(name) in block_payload
                            else skip_keys),
