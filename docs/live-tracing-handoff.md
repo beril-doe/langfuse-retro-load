@@ -3,8 +3,8 @@
 Checked **2026-09-23** against this repository's main `2eb1724` and BERIL main
 `00537fc`. [Issue #30](https://github.com/beril-doe/langfuse-retro-load/issues/30)
 tracks actions in both directions. The detailed, versioned component inventory
-is maintained in [langfuse-notes](https://github.com/turbomam/langfuse-notes/blob/dd93a327322b96a9ce6463eed42af06b5b925a5b/docs/beril-live-and-retro-reuse.md)
-(the reviewed accounting snapshot; its documentation PR remains open).
+is maintained in [langfuse-notes](https://github.com/turbomam/langfuse-notes/blob/efcf862109de2e239906619a5e02135287e31b77/docs/beril-live-and-retro-reuse.md)
+(an immutable snapshot proposed in [notes PR #2](https://github.com/turbomam/langfuse-notes/pull/2)).
 
 ## What already exists
 
@@ -66,6 +66,7 @@ These are concrete examples of reuse already completed in both directions.
 | Plan/apply/reveal workflow (#27) | Open PR, not this main revision; #29 separately tracks binding the reviewed rows to what is applied |
 | Post-load scoring/reveal (#26), custom categories (#28) | Open follow-ups; not blanket capabilities of main |
 | Destination agreement (#31) | Open, concrete lesson from BERIL |
+| Just screening entry points | `scan`/`scan-detail` still reference the retired #6 scanner; refreshing them for the merged inventory is tracked in #30 |
 | Live adapter, relay-backed backfill, artifact and identity reconciliation (#30) | Tracked proposals; not deployed integrations |
 
 External references are [BERIL #431](https://github.com/beril-doe/BERIL-research-observatory/issues/431)

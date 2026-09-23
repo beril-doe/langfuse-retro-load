@@ -168,7 +168,7 @@ anything, through `presence.py`:
   record their destination.
   `--allow-existing` sends anyway.
 - **Still in use.** A session whose last record is newer than `--min-idle-days` (default 7) is
-  skipped, because resuming it with live tracing on would re-send every earlier turn.
+  skipped, because resuming it without corresponding live-hook state can re-send earlier turns.
 - **Could not tell.** A failed check stops the send. A skipped session can be loaded later; a
   duplicate can only be removed by deleting whole traces.
 
