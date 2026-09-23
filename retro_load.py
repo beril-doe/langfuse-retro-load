@@ -30,7 +30,7 @@ off it):
 
     export LANGFUSE_PUBLIC_KEY=pk-lf-...
     export LANGFUSE_SECRET_KEY=sk-lf-...
-    export LANGFUSE_HOST=https://us.cloud.langfuse.com
+    export LANGFUSE_BASE_URL=https://us.cloud.langfuse.com   # LANGFUSE_HOST also works
     python3 retro_load.py --dry-run /path/to/session.jsonl
     python3 retro_load.py --tag beril-hackathon-2026-05-07 /path/to/session.jsonl
 """
@@ -212,6 +212,32 @@ def _uuid_of(msgs, record):
     return uuid if isinstance(uuid, str) else None
 
 
+#: Langfuse Cloud's default, the same one the SDK falls back to.
+DEFAULT_DESTINATION = "https://cloud.langfuse.com"
+
+
+def resolve_destination(environ=None) -> str:
+    """The one Langfuse destination this run uses, for the presence check, the marker and
+    the client alike.
+
+    Resolved in the SDK's own order, LANGFUSE_BASE_URL before LANGFUSE_HOST, and then handed
+    to the client explicitly as base_url. The loader used to check LANGFUSE_HOST first and
+    pass it as `host`, which the SDK ranks below the LANGFUSE_BASE_URL variable, so with both
+    set the presence check and marker named one project while traces went to another
+    (https://github.com/beril-doe/langfuse-retro-load/issues/31).
+    """
+    environ = os.environ if environ is None else environ
+    value = environ.get("LANGFUSE_BASE_URL") or environ.get("LANGFUSE_HOST") or DEFAULT_DESTINATION
+    return value.rstrip("/")
+
+
+def make_client(public_key: str, secret_key: str, destination: str, **kwargs):
+    """A Langfuse client pinned to `destination`. An explicit base_url outranks every
+    environment variable in the SDK, so the client can't drift from what was checked."""
+    from langfuse import Langfuse
+    return Langfuse(public_key=public_key, secret_key=secret_key, base_url=destination, **kwargs)
+
+
 def last_activity(msgs) -> "datetime | None":
     """The latest timestamp on any record: when this session was last touched."""
     stamps = []
@@ -309,7 +335,7 @@ def main() -> int:
 
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
     secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+    host = resolve_destination()
 
     prior = already_loaded(transcript_path)
     if marker_matches(prior, host, public_key, session_id, screened=args.redact,
@@ -435,9 +461,9 @@ def main() -> int:
         print("(dry run — nothing sent to Langfuse)")
         return 0
 
-    from langfuse import Langfuse, propagate_attributes  # noqa: E402  (import after env check)
+    from langfuse import propagate_attributes  # noqa: E402  (import after env check)
 
-    langfuse = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+    langfuse = make_client(public_key, secret_key, host)
 
     # emit_turn() itself sets tags=["claude-code"] via propagate_attributes; wrap in our own
     # propagate_attributes with the full tag set (and user_id, if given) so ours take effect

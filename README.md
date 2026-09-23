@@ -253,7 +253,7 @@ python3 build_manifest.py
 python3 run_manifest.py --dry-run
 
 # 3. Credentials -- .env next to these scripts, LANGFUSE_PUBLIC_KEY /
-#    LANGFUSE_SECRET_KEY / LANGFUSE_HOST, for whichever Langfuse project
+#    LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL (LANGFUSE_HOST is also read), for whichever Langfuse project
 #    should receive this load. Never paste real key values through a chat
 #    session -- set this up directly in a pod terminal.
 
@@ -268,9 +268,9 @@ nohup python3 run_manifest.py --plan plan.jsonl > full_load_run.txt 2>&1 &
 #    ignores a ?tag= parameter and is removed from Langfuse Cloud on 2026-11-16.
 #    curl does not read .env: the three variables must already be exported in
 #    this shell. The host is resolved in the same order as retro_load.py
-#    (LANGFUSE_HOST, then LANGFUSE_BASE_URL), so this counts the project the
+#    (LANGFUSE_BASE_URL, then LANGFUSE_HOST), so this counts the project the
 #    load wrote to.
-curl -s -G "${LANGFUSE_HOST:-$LANGFUSE_BASE_URL}/api/public/v2/metrics" \
+curl -s -G "${LANGFUSE_BASE_URL:-$LANGFUSE_HOST}/api/public/v2/metrics" \
   -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
   --data-urlencode 'query={"view":"observations","metrics":[{"measure":"count","aggregation":"count"}],"filters":[{"column":"tags","operator":"any of","value":["<your-batch-tag>"],"type":"arrayOptions"}],"fromTimestamp":"2000-01-01T00:00:00Z","toTimestamp":"2100-01-01T00:00:00Z"}' \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['count_count'])"
