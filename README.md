@@ -268,9 +268,10 @@ nohup python3 run_manifest.py --plan plan.jsonl > full_load_run.txt 2>&1 &
 #    ignores a ?tag= parameter and is removed from Langfuse Cloud on 2026-11-16.
 #    curl does not read .env: the three variables must already be exported in
 #    this shell. The host is resolved in the same order as retro_load.py
-#    (LANGFUSE_BASE_URL, then LANGFUSE_HOST), so this counts the project the
-#    load wrote to.
-curl -s -G "${LANGFUSE_BASE_URL:-$LANGFUSE_HOST}/api/public/v2/metrics" \
+#    (LANGFUSE_BASE_URL, then LANGFUSE_HOST, then Langfuse Cloud, trailing slash
+#    dropped), so this counts the project the load wrote to.
+LF_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}"
+curl -s -G "${LF_URL%/}/api/public/v2/metrics" \
   -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
   --data-urlencode 'query={"view":"observations","metrics":[{"measure":"count","aggregation":"count"}],"filters":[{"column":"tags","operator":"any of","value":["<your-batch-tag>"],"type":"arrayOptions"}],"fromTimestamp":"2000-01-01T00:00:00Z","toTimestamp":"2100-01-01T00:00:00Z"}' \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['count_count'])"
