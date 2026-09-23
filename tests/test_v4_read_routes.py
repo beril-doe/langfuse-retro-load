@@ -211,3 +211,41 @@ def test_tag_alone_is_a_selector(monkeypatch, capsys):
     wired(monkeypatch, FakeLangfuse([]))
     assert langfuse_admin.cmd_delete(delete_args(tag=["retro-load"])) == 0
     assert "give --name" not in capsys.readouterr().err
+
+
+class DeletingFake(FakeLangfuse):
+    """FakeLangfuse that also accepts the bulk DELETE, for the --record path."""
+
+    def __call__(self, path, header, host, data=None, method="GET"):
+        if method == "DELETE":
+            self.paths.append(("DELETE", path, data))
+            return 200, {"message": "accepted"}
+        return super().__call__(path, header, host, data, method)
+
+
+def test_the_record_carries_tags_and_the_score_count(monkeypatch, tmp_path):
+    fake = DeletingFake([tagged(1, "a", ["retro-load", "batch-1", "claude-code"]),
+                         tagged(2, "b", ["retro-load", "batch-1"]),
+                         tagged(3, "c", ["retro-load"])],
+                        scores=[{"id": "s1"}, {"id": "s2"}, {"id": "s3"}])
+    wired(monkeypatch, fake)
+    record = tmp_path / "deleted.json"
+    code = langfuse_admin.cmd_delete(delete_args(tag=["retro-load", "batch-1"], dry_run=False,
+                                                 yes=True, record=str(record)))
+    assert code == 0
+    written = json.loads(record.read_text())
+    assert written["match"] == {"tags": ["retro-load", "batch-1"]}
+    assert written["scores_deleted_with_them"] == 3
+    assert {t["id"]: t["tags"] for t in written["traces"]} == {
+        "a": ["batch-1", "claude-code", "retro-load"], "b": ["batch-1", "retro-load"]}
+    deletes = [p for p in fake.paths if isinstance(p, tuple)]
+    assert deletes and sorted(deletes[0][2]["traceIds"]) == ["a", "b"], "c lacks batch-1"
+
+
+def test_scores_are_looked_up_for_all_targets_in_one_comma_separated_filter(monkeypatch):
+    """v3/scores documents traceId as "Comma-separated list of trace IDs to filter by"."""
+    fake = FakeLangfuse([], scores=[])
+    monkeypatch.setattr(langfuse_admin, "api", fake)
+    langfuse_admin.count_trace_scores(["a", "b", "c"], "h", "x")
+    params = dict(urllib.parse.parse_qsl(fake.paths[0].partition("?")[2]))
+    assert params["traceId"] == "a,b,c"
