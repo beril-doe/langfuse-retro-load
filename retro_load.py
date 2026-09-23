@@ -107,6 +107,15 @@ def already_loaded(transcript_path: Path) -> dict | None:
         return None
 
 
+def valid_marker(prior) -> bool:
+    """The shape write_marker() produces: an object with an integer turn count, a tag list and
+    a `redacted` that is a dict (screened load) or null (--no-redact). Anything else is corrupt
+    and every caller treats it as no marker."""
+    return (isinstance(prior, dict) and isinstance(prior.get("turns_emitted"), int)
+            and isinstance(prior.get("tags"), list)
+            and (prior.get("redacted") is None or isinstance(prior.get("redacted"), dict)))
+
+
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
                    session_id: str, *, screened: bool = True) -> bool:
     """True only for a marker written by a load of this session into this host and project.
@@ -117,8 +126,7 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
     """
     # A marker that is not an object, or lacks what the early return prints, is treated as
     # absent, which sends the session to the presence check rather than raising.
-    if not isinstance(prior, dict) or not isinstance(prior.get("turns_emitted"), int) \
-            or not isinstance(prior.get("tags"), list):
+    if not valid_marker(prior):
         return False
     # A --no-redact load records redacted=None. It is not a completion a screened run can
     # rely on: what went out was never screened.

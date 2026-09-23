@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from retro_load import EXIT_SKIPPED, already_loaded  # noqa: E402
+from retro_load import EXIT_SKIPPED, already_loaded, valid_marker  # noqa: E402
 
 
 def resolve_path(find_root: str, session_id: str) -> Path | None:
@@ -95,6 +95,7 @@ def main() -> int:
 
         if args.dry_run:
             prior = already_loaded(path)
+            prior = prior if valid_marker(prior) else None
             # A marker is not proof the file is in this run's project, so say only what it is.
             status = (f"marker from an earlier load ({prior['turns_emitted']} turns, "
                       f"target {prior.get('host') or 'not recorded'})") if prior else "no marker"

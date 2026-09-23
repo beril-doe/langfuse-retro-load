@@ -393,3 +393,24 @@ def test_a_timestamp_without_a_zone_makes_last_activity_unknown(retro_load):
 ])
 def test_a_malformed_marker_never_matches(retro_load, prior):
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False
+
+
+# --- tenth Copilot review: one marker validity check, used everywhere ---------------------
+
+@pytest.mark.parametrize("redacted", ["screened", ["x"], 0])
+def test_a_marker_with_a_malformed_redacted_field_never_matches(retro_load, redacted):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
+             "turns_emitted": 3, "tags": [], "redacted": redacted}
+    assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False
+
+
+def test_the_manifest_dry_run_survives_a_malformed_marker(retro_load, monkeypatch, tmp_path):
+    import run_manifest
+    path = _transcript(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{"session_id": "s-1", "user_id": "u", "event_day": False,
+                                     "source": "test", "find_root": str(tmp_path)}]))
+    monkeypatch.setattr(run_manifest, "resolve_path", lambda root, sid: path)
+    monkeypatch.setattr(run_manifest, "already_loaded", lambda p: {"host": "https://a.test"})
+    monkeypatch.setattr(sys, "argv", ["run_manifest.py", "--manifest", str(manifest), "--dry-run"])
+    assert run_manifest.main() == 0
