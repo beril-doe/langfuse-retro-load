@@ -105,7 +105,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # merged in https://github.com/beril-doe/BERIL-research-observatory/pull/420, so the two
     # filter points agree on headers.
     "auth_header": re.compile(
-        r"(?i)\b(?:proxy-)?authorization[\"']?[ \t]*[:=][ \t]*[\"']?(?:basic|token)[ \t]+"
+        r"(?i)\b(?:proxy-)?authorization(?:\\{1,2})?[\"']?[ \t]*[:=][ \t]*(?:\\{1,2})?[\"']?"
+        r"(?:basic|token)[ \t]+"
         r"(?P<value>[A-Za-z0-9._~+/=-]{8,})"
     ),
     # Only a URI that actually carries credentials. A bare mongodb://host:port is a
@@ -283,7 +284,7 @@ def is_masked(value: str) -> bool:
 #: character that cannot be inside a value. An imprecise pattern over-redacts instead of
 #: under-redacting. Over-redaction costs a reader some context and is visible in the record;
 #: under-redaction ships the secret and says it did not.
-_VALUE_TERMINATORS = frozenset(' \t\r\n"\'\\,}]<>|')
+_VALUE_TERMINATORS = frozenset(' \t\r\n"\'\\,;}]<>|')
 
 #: A private key is the exception: its body contains newlines, so the terminator set above
 #: would cut it at the first one. It ends at its end marker, or failing that at the end of
@@ -317,12 +318,23 @@ def _through_closing_quote(text: str, span: tuple[int, int]) -> tuple[int, int]:
     quote = text[start - 1] if start > 0 else ""
     if quote not in ("\"", "'"):
         return span
+    # The opening quote's escape level decides which quote closes it: a bare quote closes a
+    # bare one, and `\\"` closes `\\"` in JSON nested inside a JSONL line. A quote escaped
+    # differently is content, so `password="abc\\"def"` keeps going past `\\"`.
+    level = _backslashes_before(text, start - 1)
     close = text.find(quote, start)
+    while close != -1 and _backslashes_before(text, close) != level:
+        close = text.find(quote, close + 1)
     if close == -1:
         return span
-    while close > start and text[close - 1] == "\\":
-        close -= 1
-    return start, max(end, close)
+    return start, max(end, close - level)
+
+
+def _backslashes_before(text: str, index: int) -> int:
+    count = 0
+    while index - count - 1 >= 0 and text[index - count - 1] == "\\":
+        count += 1
+    return count
 
 
 class _Boundaries:
@@ -430,6 +442,15 @@ def _overlaps(span: tuple[int, int], regions: list[tuple[int, int]]) -> bool:
     return any(span[0] < b and a < span[1] for a, b in regions)
 
 
+def _overlaps_sorted(span: tuple[int, int], starts: list[int],
+                     regions: list[tuple[int, int]]) -> bool:
+    """_overlaps for non-overlapping regions sorted by start: only the two neighbours of the
+    insertion point can collide."""
+    i = bisect.bisect_left(starts, span[0])
+    return any(span[0] < b and a < span[1]
+               for a, b in regions[max(0, i - 1):i + 1])
+
+
 #: Which finding wins when two overlap. A secret must never lose to a person pattern:
 #: `name_beside_email` and `keyed_value` both match a directory dump that also holds a
 #: token, and rewriting only the name would leave the token in place while the record
@@ -469,13 +490,18 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
     # earliest, then the name, so the result does not depend on dict iteration order.
     candidates.sort()
+    # Accepted spans never overlap, so kept sorted by start, a new span can only collide
+    # with its neighbours. Checking every accepted span made many small findings quadratic.
+    taken_starts: list[int] = []
     taken: list[tuple[int, int]] = []
     findings = []
     for _rank, neg_len, start, name, value in candidates:
         span = (start, start - neg_len)
-        if _overlaps(span, taken):
+        if _overlaps_sorted(span, taken_starts, taken):
             continue
-        taken.append(span)
+        position = bisect.bisect_left(taken_starts, span[0])
+        taken_starts.insert(position, span[0])
+        taken.insert(position, span)
         findings.append(Finding(pattern=name, category=CATEGORY[name], start=span[0],
                                 end=span[1], length=span[1] - span[0],
                                 fingerprint=fingerprint(value, key),

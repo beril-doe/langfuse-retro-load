@@ -521,6 +521,13 @@ def main() -> int:
     ap.add_argument("--no-gitleaks", action="store_true",
                     help="skip the gitleaks half of the union")
     args = ap.parse_args()
+    if args.report and args.report.expanduser().resolve() == args.out.expanduser().resolve():
+        ap.error("--out and --report name the same file; the report would replace the inventory")
+    inputs = {p.expanduser().resolve() for p in args.paths}
+    for name, out in (("--out", args.out), ("--report", args.report)):
+        # Both are opened with "w", so naming an input here would destroy the transcript.
+        if out is not None and out.expanduser().resolve() in inputs:
+            ap.error(f"{name} names one of the inputs; refusing to overwrite it")
 
     kind = "asset" if args.asset_root else "transcript"
     redactor = redaction.Redactor()
