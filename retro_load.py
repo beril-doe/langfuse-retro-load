@@ -117,6 +117,7 @@ def valid_marker(prior) -> bool:
     return (isinstance(prior, dict) and isinstance(turns, int) and not isinstance(turns, bool)
             and turns >= 0
             and isinstance(prior.get("tags"), list)
+            and all(isinstance(tag, str) for tag in prior["tags"])
             and (prior.get("redacted") is None or isinstance(prior.get("redacted"), dict)))
 
 
