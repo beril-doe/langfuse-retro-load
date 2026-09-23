@@ -71,7 +71,10 @@ def session_observation_count(host: str, public_key: str, secret_key: str, sessi
         rows = body["data"]
         if not isinstance(rows, list):
             raise TypeError("data is not a list")
-        count = int(rows[0]["count_count"]) if rows else 0
+        raw = rows[0]["count_count"] if rows else 0
+        if isinstance(raw, bool):
+            raise TypeError("count is a boolean")
+        count = int(raw)
         if count < 0:
             raise ValueError(f"negative count {count}")
         return count

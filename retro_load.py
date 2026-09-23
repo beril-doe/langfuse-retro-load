@@ -242,6 +242,10 @@ def main() -> int:
     if not transcript_path.exists():
         print(f"transcript not found: {transcript_path}", file=sys.stderr)
         return 1
+    if args.inventory and args.inventory.expanduser().resolve() == transcript_path:
+        # write_inventory() opens with "w", so this would replace the transcript itself.
+        print("--inventory names the transcript; refusing to overwrite it", file=sys.stderr)
+        return 1
 
     session_id = args.session_id or transcript_path.stem
     tags = ["claude-code", "retro-load"] + args.tag

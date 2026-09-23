@@ -451,3 +451,19 @@ def test_a_negative_count_is_a_presence_error(monkeypatch):
     monkeypatch.setattr(presence, "_get", lambda *a, **k: {"data": [{"count_count": "-1"}]})
     with pytest.raises(presence.PresenceError):
         presence.session_observation_count("https://x.test", "pk", "sk", "s-1")
+
+
+# --- fourteenth Copilot review -------------------------------------------------------------
+
+def test_the_inventory_path_cannot_be_the_transcript(retro_load, monkeypatch, tmp_path):
+    path = _transcript(tmp_path)
+    before = path.read_bytes()
+    assert _run(retro_load, monkeypatch, "--dry-run", "--inventory", str(path), str(path)) == 1
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("count", [False, True])
+def test_a_boolean_count_is_a_presence_error(monkeypatch, count):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: {"data": [{"count_count": count}]})
+    with pytest.raises(presence.PresenceError):
+        presence.session_observation_count("https://x.test", "pk", "sk", "s-1")
