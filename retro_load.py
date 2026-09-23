@@ -37,6 +37,7 @@ off it):
 
 import argparse
 import hashlib
+import io
 import math
 import json
 import os
@@ -72,16 +73,23 @@ except SystemExit:
 
 
 def load_all_jsonl(transcript_path: Path):
+    return parse_jsonl(transcript_path.read_bytes())
+
+
+def parse_jsonl(data: bytes) -> list:
+    """Parsed records from a transcript's bytes, skipping blank and unparseable lines."""
+    # StringIO with universal newlines splits exactly as open() does, which is how plan.py and
+    # the inventory number records. str.splitlines() would also split on U+2028, which JSON
+    # allows unescaped inside a string, and shift every record number after it.
     msgs = []
-    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msgs.append(json.loads(line))
-            except Exception as e:
-                print(f"  ! skipping unparseable line: {e}", file=sys.stderr)
+    for line in io.StringIO(data.decode("utf-8", errors="replace"), newline=None):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msgs.append(json.loads(line))
+        except Exception as e:
+            print(f"  ! skipping unparseable line: {e}", file=sys.stderr)
     return msgs
 
 
@@ -198,6 +206,12 @@ def _idle_days(text: str) -> float:
 EXIT_SKIPPED = 3
 
 
+def _uuid_of(msgs, record):
+    rec = msgs[record] if isinstance(record, int) and 0 <= record < len(msgs) else None
+    uuid = rec.get("uuid") if isinstance(rec, dict) else None
+    return uuid if isinstance(uuid, str) else None
+
+
 def last_activity(msgs) -> "datetime | None":
     """The latest timestamp on any record: when this session was last touched."""
     stamps = []
@@ -306,7 +320,10 @@ def main() -> int:
               f"into {host}; pass --force to reload. marker: {marker_path(transcript_path)}")
         return 0 if args.dry_run else EXIT_SKIPPED
 
-    msgs = load_all_jsonl(transcript_path)
+    # One read: the plan's hash is checked against these bytes, and these are what get parsed
+    # and rewritten, so the file changing underneath can't split the two.
+    raw = transcript_path.read_bytes()
+    msgs = parse_jsonl(raw)
 
     # Ask the project, not the local marker, whether this session is already there. The
     # marker cannot say which project a session went to. "Could not tell" stops the send.
@@ -344,7 +361,7 @@ def main() -> int:
     header = None
     if args.plan:
         try:
-            header, masks = plan.load(args.plan, transcript_path)
+            header, masks = plan.load(args.plan, transcript_path, data=raw)
             if "gitleaks" not in header.detectors and not args.allow_plan_without_gitleaks:
                 raise plan.PlanError("its plan was built without gitleaks; rebuild it with "
                                      "gitleaks, or pass --allow-plan-without-gitleaks")
@@ -381,7 +398,8 @@ def main() -> int:
         # What the load rewrote is the plan, so the inventory, the summary and the marker
         # record its masks as well as whatever report-only rows the check found.
         rows = [inventory.Row(subject=session_id, kind="transcript", record=m.record,
-                              record_uuid=None, path=m.pointer or "", detector=m.detector,
+                              record_uuid=_uuid_of(msgs, m.record), path=m.pointer or "",
+                              detector=m.detector,
                               pattern=m.pattern, category=m.category, fingerprint=m.fingerprint,
                               length=(m.end - m.start) if m.pointer else 0, masked=False,
                               whole_value=False)

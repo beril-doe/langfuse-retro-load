@@ -153,6 +153,28 @@ def _all_keys(node):
             yield from _all_keys(value)
 
 
+#: The fields a clearance may name. A row naming none of them would match every finding.
+SELECTORS = ("subject", "record", "pointer", "pattern", "fingerprint")
+
+
+def validate_clearances(clearances: list) -> None:
+    """Each clearance must be an object naming at least one selector and nothing else.
+
+    `{}` or a typo such as `{"patern": ...}` would otherwise clear every finding, gitleaks
+    ones included, and produce a loadable plan that sends them.
+    """
+    for number, row in enumerate(clearances, 1):
+        if not isinstance(row, dict):
+            raise PlanError(f"clearance {number} is not an object")
+        unknown = sorted(set(row) - set(SELECTORS))
+        if unknown:
+            raise PlanError(f"clearance {number} has unknown field(s) {unknown}; allowed: "
+                            f"{', '.join(SELECTORS)}")
+        if all(row.get(k) is None for k in SELECTORS):
+            raise PlanError(f"clearance {number} names no selector, so it would clear "
+                            f"everything")
+
+
 def is_cleared(mask: Mask, clearances: list[dict]) -> bool:
     """A clearance names any of subject, record, pointer, pattern and fingerprint; a missing
     or null field matches anything, so `{"subject": s, "pattern": "orcid"}` clears that pattern
@@ -201,6 +223,7 @@ def build(path: Path, *, clearances: list[dict] | None = None,
             masks.extend(_place_gitleaks(finding, records, numbers, subject, key))
 
     clearances = clearances or []
+    validate_clearances(clearances)
     masks = [replace(m, cleared=True) if is_cleared(m, clearances) else m for m in masks]
     return Header(subject=subject, transcript_sha256=digest, records=len(records),
                   detectors=tuple(detectors), masks=len(masks)), masks
@@ -281,14 +304,19 @@ def for_transcript(plan_path: Path, transcript: Path) -> list[Mask]:
     return load(plan_path, transcript)[1]
 
 
-def load(plan_path: Path, transcript: Path) -> tuple[Header, list[Mask]]:
-    """for_transcript(), with the header, so a caller can check which detectors built it."""
+def load(plan_path: Path, transcript: Path, *, data: bytes | None = None) -> tuple[Header, list[Mask]]:
+    """for_transcript(), with the header, so a caller can check which detectors built it.
+
+    Pass `data`, the bytes the caller parsed, so the hash is checked against exactly what
+    will be rewritten rather than against the file as it is now.
+    """
     headers, masks = read(plan_path)
     subject = inventory._subject_for(transcript)
     header = headers.get(subject)
     if header is None:
         raise PlanError(f"{plan_path.name} has no entry for {subject}; build a plan for it first")
-    if header.transcript_sha256 != sha256_of(transcript):
+    digest = hashlib.sha256(data).hexdigest() if data is not None else sha256_of(transcript)
+    if header.transcript_sha256 != digest:
         raise PlanError(f"{subject} changed after its plan was built; rebuild the plan")
     rows = masks.get(subject, [])
     if header.masks != len(rows):
@@ -386,6 +414,10 @@ def main() -> int:
     if args.clearances:
         clearances = [json.loads(line) for line in args.clearances.read_text().splitlines()
                       if line.strip()]
+        try:
+            validate_clearances(clearances)
+        except PlanError as e:
+            ap.error(f"{args.clearances.name}: {e}")
     if args.out.expanduser().resolve() in inputs:
         ap.error("--out names one of the transcripts; refusing to overwrite it")
     subjects = [inventory._subject_for(p) for p in args.paths]

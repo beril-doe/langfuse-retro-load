@@ -178,9 +178,9 @@ def show_plan(args, records) -> int:
         leaf = resolve(records[mask.record], mask.pointer)
         # Every other planned span in this field is hidden before the context is cut, so
         # reading about one mask never prints another, including gitleaks-only ones.
+        # Cleared ones too: a clearance decides what the load masks, not what this view shows.
         siblings = [m for m in subject_masks
-                    if m is not mask and m.record == mask.record and m.pointer == mask.pointer
-                    and not m.cleared]
+                    if m is not mask and m.record == mask.record and m.pointer == mask.pointer]
         shown_leaf, start, end = hide_others(leaf, mask, siblings)
         label = "  CLEARED, will not be masked" if mask.cleared else ""
         print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")

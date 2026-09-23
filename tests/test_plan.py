@@ -522,3 +522,57 @@ def test_reveal_refuses_a_plan_cut_short_after_its_header(monkeypatch, tmp_path)
     out.write_text(out.read_text().splitlines()[0] + "\n")
     monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
     assert reveal.main() == 1
+
+
+# --- sixth Copilot review of PR 27 ------------------------------------------------------------
+
+@pytest.mark.parametrize("clearance", [{}, {"patern": "email_personal"}, {"pattern": None}, "x"])
+def test_a_clearance_that_names_nothing_is_rejected(tmp_path, clearance):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    with pytest.raises(plan.PlanError):
+        plan.build(path, use_gitleaks=False, clearances=[clearance])
+
+
+def test_the_hash_is_checked_against_the_bytes_that_are_applied(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    parsed_earlier = path.read_bytes()
+    path.write_text(json.dumps({"message": {"content": "different"}}) + "\n")
+    assert plan.load(out, path, data=parsed_earlier)[1]          # the bytes that were parsed
+    with pytest.raises(plan.PlanError, match="changed"):
+        plan.load(out, path)                                     # the file as it is now
+
+
+def test_records_split_the_same_way_in_the_loader_and_the_plan(loader, tmp_path):
+    text = json.dumps({"a": "line separator"}, ensure_ascii=False) + "\n" + json.dumps({"b": 2}) + "\n"
+    path = tmp_path / "s-1.jsonl"
+    path.write_text(text, encoding="utf-8")
+    assert loader.parse_jsonl(path.read_bytes()) == plan._records(path)
+
+
+def test_reveal_hides_cleared_neighbours_too(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import reveal
+    other = "Qw" + "7rTy3Up" * 3
+    path = _session(tmp_path, "token=" + FAKE + " and " + other + " end")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": other, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, clearances=[{"pattern": "gitleaks:x"}])])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out),
+                                      "--pattern", "github_pat"])
+    assert reveal.main() == 0
+    assert other not in capsys.readouterr().out
+
+
+def test_planned_inventory_rows_keep_the_record_uuid(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "token=" + FAKE)
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    inv = tmp_path / "load-inv.jsonl"
+    monkeypatch.setattr(loader, "build_turns", lambda msgs: [])
+    assert _run(loader, monkeypatch, "--dry-run", "--allow-plan-without-gitleaks", "--plan", str(out),
+                "--inventory", str(inv), str(path)) == 0
+    rows = [json.loads(line) for line in inv.read_text().splitlines()]
+    assert rows and all(r["record_uuid"] == "u-1" for r in rows if r["category"] == "secret")
