@@ -118,7 +118,15 @@ def valid_marker(prior) -> bool:
             and turns >= 0
             and isinstance(prior.get("tags"), list)
             and all(isinstance(tag, str) for tag in prior["tags"])
-            and (prior.get("redacted") is None or isinstance(prior.get("redacted"), dict)))
+            and (prior.get("redacted") is None or _valid_summary(prior.get("redacted"))))
+
+
+def _valid_summary(summary) -> bool:
+    """What write_marker() writes for a screened load: category name to a non-negative count."""
+    return isinstance(summary, dict) and all(
+        k in (redaction.SECRET, redaction.PERSON, redaction.ADVISORY)
+        and isinstance(v, int) and not isinstance(v, bool) and v >= 0
+        for k, v in summary.items())
 
 
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
