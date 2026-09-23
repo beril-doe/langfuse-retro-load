@@ -199,3 +199,51 @@ lint:
 
 # What CI runs, in the order CI runs it.
 check: lint test
+
+# ---------------------------------------------------------------------------
+# Screening, and browsing what it found.
+#
+# inventory.py writes one row per finding. Nothing below sends anything to
+# Langfuse except `score`, which is the last recipe and says so.
+#
+# duckdb reads the JSONL directly, so there is no ingest step and no database
+# to keep in step with the file. It is not a dependency of this repo: these
+# recipes check for it and say so rather than failing with "command not found".
+# ---------------------------------------------------------------------------
+
+# Screen transcripts and write a row per finding (no Langfuse calls)
+inventory OUT="inventory.jsonl" REPORT="inventory-report.md" *PATHS:
+    @{{PY}} inventory.py --out {{quote(OUT)}} --report {{quote(REPORT)}} {{PATHS}}
+
+# The worst offenders: sessions ranked by how many records carry a secret
+worst FILE="inventory.jsonl" LIMIT="10":
+    @command -v duckdb >/dev/null || (echo "duckdb is not installed; brew install duckdb" >&2; exit 2)
+    @duckdb -c "select subject, count(distinct record) records, count(*) matches, \
+        count(distinct fingerprint) distinct_values from read_json_auto({{quote(FILE)}}) \
+        where category='secret' group by 1 order by records desc, matches desc limit {{LIMIT}};"
+
+# What kinds of thing are in there, by category and pattern
+kinds FILE="inventory.jsonl":
+    @command -v duckdb >/dev/null || (echo "duckdb is not installed; brew install duckdb" >&2; exit 2)
+    @duckdb -c "select category, pattern, count(*) matches, count(distinct fingerprint) distinct_values, \
+        count(distinct subject) sessions from read_json_auto({{quote(FILE)}}) \
+        group by 1,2 order by 1, matches desc;"
+
+# A clearance names a subject and narrows by fingerprint, pattern or pointer;
+# a null field narrows nothing. The join happens here rather than in the
+# inventory, so the inventory stays a record of what the detector saw and the
+# clearances stay a record of what a person decided.
+
+# Every secret finding a person has not yet cleared
+open-findings FILE="inventory.jsonl" CLEARED="clearances.jsonl":
+    @command -v duckdb >/dev/null || (echo "duckdb is not installed; brew install duckdb" >&2; exit 2)
+    @test -f {{quote(CLEARED)}} || (echo "no clearance file at {{CLEARED}}; every finding is open" >&2; exit 2)
+    @duckdb -c "create view f as select * from read_json_auto({{quote(FILE)}}); \
+        create view c as select * from read_json_auto({{quote(CLEARED)}}); \
+        select f.subject, f.record, f.path, f.pattern, f.fingerprint from f \
+        where f.category='secret' and not exists ( \
+          select 1 from c where (c.subject is null or c.subject=f.subject) \
+            and (c.fingerprint is null or c.fingerprint=f.fingerprint) \
+            and (c.pattern is null or c.pattern=f.pattern) \
+            and (c.path is null or c.path=f.path)) \
+        order by f.subject, f.record;"

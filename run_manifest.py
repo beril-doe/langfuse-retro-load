@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from retro_load import already_loaded  # noqa: E402
+from retro_load import EXIT_SKIPPED, already_loaded, valid_marker  # noqa: E402
 
 
 def resolve_path(find_root: str, session_id: str) -> Path | None:
@@ -68,6 +68,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--allow-existing", action="store_true",
+                    help="passed to retro_load.py: send sessions the project already holds")
+    ap.add_argument("--min-idle-days", type=float, default=None,
+                    help="passed to retro_load.py: skip sessions touched more recently than this")
     ap.add_argument("--batch-tag", default="full-load-2026-08-20",
                      help="tag identifying this run as a batch, so it's filterable/auditable later "
                           "(default matches the 2026-08-20 full load; override for any later run)")
@@ -77,7 +81,7 @@ def main() -> int:
     if args.limit is not None:
         manifest = manifest[: args.limit]
 
-    not_found, already, planned, files_emitted, failed = [], [], [], 0, []
+    not_found, planned, files_emitted, failed, skipped = [], [], 0, [], []
 
     for entry in manifest:
         sid = entry["session_id"]
@@ -91,16 +95,18 @@ def main() -> int:
 
         if args.dry_run:
             prior = already_loaded(path)
-            status = f"ALREADY LOADED ({prior['turns_emitted']} turns)" if prior else "would load"
+            prior = prior if valid_marker(prior) else None
+            # A marker is not proof the file is in this run's project, so say only what it is.
+            status = (f"marker from an earlier load ({prior['turns_emitted']} turns, "
+                      f"target {prior.get('host') or 'not recorded'})") if prior else "no marker"
             # retro_load.py prepends claude-code/retro-load itself; show the real full set.
             print(f"{sid}: {status} | user_id={user_id} | tags={['claude-code', 'retro-load'] + tags}")
             planned.append(sid)
             continue
 
-        prior = already_loaded(path)
-        if prior and not args.force:
-            already.append(sid)
-            continue
+        # No marker short circuit here: a marker is keyed by the source path and cannot say
+        # which project a file went to. retro_load.py checks its marker against the target
+        # and asks the project, and reports either as a skip.
 
         # Delegate the actual emission to retro_load.py as a subprocess, reusing
         # its exact CLI (credentials, propagate_attributes, marker-writing) rather
@@ -111,10 +117,20 @@ def main() -> int:
             cmd += ["--tag", t]
         if args.force:
             cmd.append("--force")
+        if args.allow_existing:
+            cmd.append("--allow-existing")
+        if args.min_idle_days is not None:
+            cmd += ["--min-idle-days", str(args.min_idle_days)]
         cmd.append(str(path))
         # check=False: a failed load is collected into `failed` and reported with its
         # own stdout and stderr at the end. Raising here would abandon the rest of the run.
         r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if r.returncode == EXIT_SKIPPED:
+            # Last line of stdout is retro_load.py's "skipped, <reason>".
+            why = (r.stdout.strip().splitlines() or ["skipped"])[-1]
+            print(f"{sid}: SKIPPED")
+            skipped.append((sid, why))
+            continue
         ok = r.returncode == 0
         print(f"{sid}: {'OK' if ok else 'FAILED'}")
         if not ok:
@@ -127,8 +143,12 @@ def main() -> int:
     if args.dry_run:
         print(f"  {len(planned)} resolved and would run, {len(not_found)} not found on disk")
     else:
-        print(f"  {files_emitted} files emitted, {len(already)} already loaded (skipped), "
+        print(f"  {files_emitted} files emitted, {len(skipped)} skipped, "
               f"{len(not_found)} not found, {len(failed)} failed")
+    if skipped:
+        print("  SKIPPED:")
+        for sid, why in skipped:
+            print(f"    {sid}: {why}")
     if not_found:
         print("  NOT FOUND:", not_found)
     if failed:

@@ -14,7 +14,7 @@ directly from wherever it runs; it never needs to move a transcript
 anywhere. Push these files to the pod (`labctl pod put`, or however you
 transfer files there) and run everything from a pod terminal.
 
-## The four pieces
+## The pieces
 
 - **`langfuse_hook_official.py`**: Langfuse's own official Claude Code
   integration hook, vendored unmodified from
@@ -39,6 +39,101 @@ transfer files there) and run everything from a pod terminal.
   counts and tags automatically, writing `manifest.json`. `run_manifest.py`
   reads that manifest and drives the real loads. This replaces hand-typing
   `--tag` flags per file, which doesn't scale and is easy to get wrong.
+
+- **`redaction.py`**: detection and redaction of sensitive spans, as a pure
+  function. No file handling, no Langfuse, no clock. The same logic has to run
+  at three filter points that share nothing else, and this is the only copy.
+- **`inventory.py`**: the screening pass. Writes one row per finding, says
+  where each one is, and gives `retro_load.py` the means to leave out a value
+  rather than a session. See the next section.
+
+## Screening what goes out
+
+`retro_load.py` screens by default. Every record still goes out; the values
+that carry a secret or someone's personal details are replaced in place, one
+value at a time, and `--no-redact` turns that off.
+
+That is the whole design decision. The scanner proposed in
+[#6](https://github.com/beril-doe/langfuse-retro-load/pull/6) answers one
+question per file, as an exit status, which leaves a loader with two options:
+send all of it or send none of it. Langfuse observations are immutable once
+ingested and the only delete removes an entire trace, so "none of it" is the
+one that gets used, and a session's research is dropped because a tool result
+forty turns in printed an environment variable.
+
+```
+# Screen only: no Langfuse calls, writes the inventory and a report
+python3 inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.jsonl
+
+# Screen a project snapshot before attaching it as Langfuse media
+python3 inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
+
+# Load, screening as it goes, keeping the record of what was rewritten. A separate
+# file: the load writes only its own findings and would overwrite the preflight one.
+python3 retro_load.py --inventory load-inv.jsonl session.jsonl
+```
+
+Each row is addressed by session id, record number, and an RFC 6901 JSON
+pointer to the exact value, so a caller can rewrite one value, drop one
+observation, or drop one record, and still emit everything around it.
+`inventory.excluded_paths()` returns those pointers grouped by record.
+
+**No row carries matched text, a value, an absolute path, or the fingerprint
+key.** A fingerprint is HMAC-SHA256 under a key that is random per run and
+never stored, so equal fingerprints mean the same value appeared twice and
+nothing else. One token in 41 records is one thing to rotate; 41 unrelated
+findings is a different afternoon. It also means the inventory needs no
+special file permissions, unlike the `--detail` file in
+[#6](https://github.com/beril-doe/langfuse-retro-load/pull/6), whose whole
+purpose is to hold the material being looked for.
+
+Two detectors, union, per
+https://github.com/beril-doe/langfuse-retro-load/issues/10, **in the inventory step
+only**: `inventory.py` runs both, while `retro_load.py` rewrites with the local
+patterns and does not run gitleaks at load time yet. Run `inventory.py` on a batch
+before loading it. The local
+patterns are keyword and shape anchored and can also use the key a value sits
+under, so `{"KBASE_AUTH_TOKEN": "s3cret"}` is caught on six characters.
+gitleaks knows about 150 provider shapes and gates on entropy near 3.5, so it
+catches what nobody here wrote a rule for and misses the low-entropy ones: the
+three real tokens in the September corpus scored 4.351, 3.531 and 3.328.
+Neither substitutes for the other. gitleaks reports a file line, which the
+inventory converts to a record number. A record number counts parsed records only,
+the same way the loader does, so a blank or unparseable line has none.
+
+What this does not do, stated plainly:
+
+- **It bounds over-redaction, it does not remove it.** An unterminated
+  `BEGIN ... PRIVATE KEY` still takes the rest of the value it sits in. Walking
+  the parsed structure makes that one JSON value instead of everything after it
+  in the file. An asset read as one string is one value, so nothing is bounded
+  there.
+- **It cannot help a trace that is already loaded.** The remedy there is
+  deleting the whole trace, which is the thing this exists to avoid.
+- **It is about secrets and personal details, not consent.** Whether a session
+  should be loaded at all is a different question, answered by `people.json`
+  and by [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
+
+## Not sending a session twice
+
+Langfuse has no create-time dedupe, so `retro_load.py` asks the target project before sending
+anything, through `presence.py`:
+
+- **Already there.** If the project holds any observations for the session id, the session is
+  skipped. This covers a second run of this loader and a session live tracing already sent. The
+  local marker cannot answer this, because it does not record which project a session went to.
+  `--allow-existing` sends anyway.
+- **Still in use.** A session whose last record is newer than `--min-idle-days` (default 7) is
+  skipped, because resuming it with live tracing on would re-send every earlier turn.
+- **Could not tell.** A failed check stops the send. A skipped session can be loaded later; a
+  duplicate can only be removed by deleting whole traces.
+
+A skip exits with status 3, and `run_manifest.py` lists skipped sessions separately.
+
+`presence.covered_through()` returns the latest start time the project holds for a session. It
+is not used here. It is for whatever forwards live traces (in BERIL, the relay), which could drop
+re-sent turns that start at or before it. `presence.py` uses only the standard library and the
+read routes that survive 2026-11-16, so it can be copied as is.
 
 ## Adding a person or a new source
 
@@ -74,6 +169,36 @@ where that doesn't apply (e.g. someone's own ongoing pod-home work).
 `user_id` is deliberately the pod account name, never a real name. Langfuse
 Sessions/Users views are a re-identification surface, and consent was
 tracked pseudonymously. Don't change that without a real reason.
+
+## This repository is public, and two of its files are about people
+
+`people.json` and `manifest.json` are committed, and the repository is public. So
+everything in them is published, including the part that is a judgment about a
+person rather than a mechanism.
+
+- **A `consent_bin` is a decision someone made about a named account.** Putting it
+  here publishes it. The account name, the employer group and the consent status sit
+  in one record, and the person it describes has not necessarily been asked whether
+  that is fine.
+- **`manifest.json` is one row per session**, and `build_manifest.py` rewrites it
+  from `people.json`. Step 1 of "Running it" below regenerates it, so following the
+  instructions and committing the result publishes a fresh roster of session ids per
+  person. It is derived, so tracking it buys nothing that one command does not.
+- **A `pod-live` source is someone's ordinary work, not workshop data.** Its
+  `find_root` is `~/.claude/projects` on the pod, which is everything they have ever
+  done there. One such source currently contributes 60 of the 111 manifest entries.
+  Adding one publishes those session ids and sends that work to Langfuse.
+- **`consent_bin: null` means nobody checked**, which is not the same as consent.
+  Nothing in the code treats it as a reason not to load.
+- **This scales badly on purpose.** The frozen corpus holds 82 participant
+  directories. The file grows one entry per person and the manifest one row per
+  session, so loading the corpus as the repo stands today would publish 82 named
+  accounts with their consent decisions.
+
+The care already taken over `user_id` is the reason to care here: it is the pod
+account name rather than a real name because Langfuse's Sessions and Users views make
+re-identification easy. That reasoning stops at the Langfuse boundary and needs to
+reach the repository too.
 
 ## Running it
 

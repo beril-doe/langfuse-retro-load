@@ -37,15 +37,21 @@ off it):
 
 import argparse
 import hashlib
+import math
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")  # must run before langfuse is imported anywhere
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+import inventory  # noqa: E402  (after the sys.path insert, like the hook import below)
+import presence  # noqa: E402
+import redaction  # noqa: E402
 try:
     from langfuse_hook_official import (  # noqa: E402
         build_turns,
@@ -102,13 +108,66 @@ def already_loaded(transcript_path: Path) -> dict | None:
         return None
 
 
-def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str]) -> None:
+def valid_marker(prior) -> bool:
+    """The shape write_marker() produces: an object with an integer turn count, a tag list and
+    a `redacted` that is a dict (screened load) or null (--no-redact). Anything else is corrupt
+    and every caller treats it as no marker."""
+    turns = prior.get("turns_emitted") if isinstance(prior, dict) else None
+    # bool is an int in Python, and write_marker() never writes a negative count.
+    return (isinstance(prior, dict) and isinstance(turns, int) and not isinstance(turns, bool)
+            and turns >= 0
+            and isinstance(prior.get("tags"), list)
+            and all(isinstance(tag, str) for tag in prior["tags"])
+            and (prior.get("redacted") is None or _valid_summary(prior.get("redacted"))))
+
+
+def _valid_summary(summary) -> bool:
+    """What write_marker() writes for a screened load: category name to a non-negative count."""
+    return isinstance(summary, dict) and all(
+        k in (redaction.SECRET, redaction.PERSON, redaction.ADVISORY)
+        and isinstance(v, int) and not isinstance(v, bool) and v >= 0
+        for k, v in summary.items())
+
+
+def marker_matches(prior: dict | None, host: str, public_key: str | None,
+                   session_id: str, *, screened: bool = True) -> bool:
+    """True only for a marker written by a load of this session into this host and project.
+
+    A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
+    not that it is in the project this run targets. Markers from before the destination was
+    recorded carry neither field and never match, so the project is asked instead.
+    """
+    # A marker that is not an object, or lacks what the early return prints, is treated as
+    # absent, which sends the session to the presence check rather than raising.
+    if not valid_marker(prior):
+        return False
+    # A --no-redact load records redacted=None. It is not a completion a screened run can
+    # rely on: what went out was never screened.
+    if screened and prior.get("redacted") is None:
+        return False
+    return bool(prior) and prior.get("host") == host and bool(public_key) \
+        and prior.get("public_key") == public_key and prior.get("session_id") == session_id
+
+
+def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
+                 redaction_summary: dict | None = None, *, host: str | None = None,
+                 public_key: str | None = None) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
                 "session_id": session_id,
+                # The destination, so a later run can tell "loaded here" from "loaded
+                # somewhere". The public key names a project and is not a secret.
+                "host": host,
+                "public_key": public_key,
                 "turns_emitted": turn_count,
                 "tags": tags,
+                # What was rewritten before this went out, by category. A marker that says
+                # a file was loaded and not whether it was screened leaves the next reader
+                # unable to tell a clean session from an unscreened one, and the answer
+                # stops being recoverable once Langfuse has the copy: observations are
+                # immutable and the only delete takes the whole trace with it.
+                "redacted": redaction_summary,
                 "loaded_at_utc": None,  # not stamped from the script's own clock: it says nothing
                                          # about when the underlying conversation happened, which
                                          # is the whole point of a marker for a *retroactive* load
@@ -116,6 +175,64 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
             indent=2,
         )
     )
+
+
+def _idle_days(text: str) -> float:
+    """argparse type: a finite, non-negative number of days. Only 0 turns the check off."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from exc
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"must be finite and non-negative, not {text!r}")
+    return value
+
+
+#: Exit status for "deliberately not sent", so run_manifest.py can count it apart from a load.
+EXIT_SKIPPED = 3
+
+
+def last_activity(msgs) -> "datetime | None":
+    """The latest timestamp on any record: when this session was last touched."""
+    stamps = []
+    for m in msgs:
+        raw = m.get("timestamp") if isinstance(m, dict) else None
+        if raw is None:
+            continue
+        parsed = parse_ts(m)
+        if parsed is None or parsed.tzinfo is None:
+            # A time with no zone can't be compared with now without guessing one.
+            # One unreadable timestamp could be the newest, so the maximum of the rest is not
+            # the last activity. Unknown makes the idle check skip rather than guess.
+            return None
+        stamps.append(parsed)
+    return max(stamps) if stamps else None
+
+
+def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
+                allow_existing: bool) -> str | None:
+    """Why this session should not be sent now, or None if it should.
+
+    Kept free of I/O so the decision is testable on its own. `existing` is the number of
+    observations the target project already holds for this session id.
+    """
+    if existing and not allow_existing:
+        return (f"the project already holds {existing} observations for this session and "
+                f"this loader has no record of completing it there: live tracing sent it, or "
+                f"an earlier load failed partway. Sending would duplicate what is there; "
+                f"check it first, and pass --allow-existing only to send anyway")
+    if not math.isfinite(min_idle_days) or min_idle_days < 0:
+        return f"--min-idle-days {min_idle_days!r} is not a finite, non-negative number"
+    if min_idle_days > 0:
+        if last_seen is None:
+            return ("no record carries a timestamp, so there is no way to tell whether the "
+                    "session is still in use. Pass --min-idle-days 0 to send anyway")
+        idle_days = (now - last_seen).total_seconds() / 86400
+        if idle_days < min_idle_days:
+            return (f"last activity {last_seen.isoformat()} is {idle_days:.1f} days ago, under "
+                    f"--min-idle-days {min_idle_days:g}. A session still in use could be resumed "
+                    f"with live tracing on and sent twice")
+    return None
 
 
 def main() -> int:
@@ -128,25 +245,98 @@ def main() -> int:
                                        "Langfuse's Sessions/Users views are a re-identification surface")
     ap.add_argument("--dry-run", action="store_true", help="parse and print turn summary, do not call Langfuse")
     ap.add_argument("--force", action="store_true", help="ignore an existing marker in ~/.retro_load_markers/")
+    ap.add_argument("--no-redact", dest="redact", action="store_false", default=True,
+                    help="send values verbatim. The default rewrites secrets and personal "
+                         "details in place, one value at a time, keeping every record")
+    ap.add_argument("--allow-existing", action="store_true",
+                    help="send even when the target project already holds observations for "
+                         "this session id. Without it the session is skipped, since Langfuse "
+                         "has no create-time dedupe")
+    ap.add_argument("--min-idle-days", type=_idle_days, default=7.0,
+                    help="skip a session whose last record is newer than this many days, so "
+                         "one still in use is not backfilled and then re-sent by live tracing "
+                         "when resumed (default 7; 0 turns the check off)")
+    ap.add_argument("--inventory", type=Path, default=None,
+                    help="write a JSONL row per finding here: what kind, which record, "
+                         "which JSON pointer. Carries no matched text and no values")
     args = ap.parse_args()
 
     transcript_path = args.transcript.expanduser().resolve()
     if not transcript_path.exists():
         print(f"transcript not found: {transcript_path}", file=sys.stderr)
         return 1
+    if args.inventory and args.inventory.expanduser().resolve() == transcript_path:
+        # write_inventory() opens with "w", so this would replace the transcript itself.
+        print("--inventory names the transcript; refusing to overwrite it", file=sys.stderr)
+        return 1
 
     session_id = args.session_id or transcript_path.stem
     tags = ["claude-code", "retro-load"] + args.tag
 
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+
     prior = already_loaded(transcript_path)
-    if prior and not args.force:
-        print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}); "
-              f"pass --force to reload. marker: {marker_path(transcript_path)}")
-        return 0
+    if marker_matches(prior, host, public_key, session_id, screened=args.redact) and not args.force:
+        # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
+        # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
+        print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
+              f"into {host}; pass --force to reload. marker: {marker_path(transcript_path)}")
+        return 0 if args.dry_run else EXIT_SKIPPED
 
     msgs = load_all_jsonl(transcript_path)
+
+    # Ask the project, not the local marker, whether this session is already there. The
+    # marker cannot say which project a session went to. "Could not tell" stops the send.
+    # --dry-run never calls Langfuse, so it does not ask either. --allow-existing covers a
+    # project that answered "yes, it is here", never one that could not answer.
+    existing = 0
+    if args.dry_run:
+        print("  presence not checked: --dry-run does not call Langfuse")
+    elif not (public_key and secret_key):
+        print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set in environment", file=sys.stderr)
+        return 1
+    else:
+        try:
+            existing = presence.session_observation_count(host, public_key, secret_key, session_id)
+        except presence.PresenceError as e:
+            print(f"could not check {host} for session {session_id}, not sending: {e}",
+                  file=sys.stderr)
+            return 1
+
+    reason = skip_reason(last_seen=last_activity(msgs), now=datetime.now(timezone.utc),
+                         min_idle_days=args.min_idle_days, existing=existing,
+                         allow_existing=args.allow_existing)
+    if reason and not args.dry_run:
+        print(f"{transcript_path.name}: skipped, {reason}")
+        return EXIT_SKIPPED
+    if reason:
+        # A dry run reports the decision and still prints its summary: build_manifest.py
+        # reads the turn count from it and treats a nonzero exit as a failed entry.
+        print(f"  would skip: {reason}")
+
+    # Screen before assembling turns, so everything the assembler reads is already
+    # rewritten and the vendored hook needs no changes. The unit left out is one value at
+    # one pointer: no record, turn or session is dropped for carrying one.
+    rows: list[inventory.Row] = []
+    if args.redact:
+        redactor = redaction.Redactor()
+        msgs, rows = inventory.redact_records(msgs, redactor, subject=session_id)
+    summary = {}
+    for row in rows:
+        summary[row.category] = summary.get(row.category, 0) + 1
+    if args.inventory:
+        inventory.write_inventory(rows, args.inventory)
+
     turns = build_turns(msgs)
     print(f"{transcript_path.name}: {len(msgs)} jsonl lines -> {len(turns)} turns")
+    if args.redact:
+        found = ", ".join(f"{k}={v}" for k, v in sorted(summary.items())) or "nothing"
+        print(f"  screened: {found}"
+              + (f"; inventory written to {args.inventory}" if args.inventory else ""))
+    else:
+        print("  NOT screened: --no-redact was passed, values go out verbatim")
 
     if args.dry_run:
         for i, t in enumerate(turns, 1):
@@ -155,13 +345,6 @@ def main() -> int:
                   f"assistant_msgs={len(t.assistant_msgs)}")
         print("(dry run — nothing sent to Langfuse)")
         return 0
-
-    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
-    if not public_key or not secret_key:
-        print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set in environment", file=sys.stderr)
-        return 1
 
     from langfuse import Langfuse, propagate_attributes  # noqa: E402  (import after env check)
 
@@ -201,7 +384,9 @@ def main() -> int:
               f"dedupe), it does not retry only the missing ones.", file=sys.stderr)
         return 1
 
-    write_marker(transcript_path, session_id, emitted, tags)
+    write_marker(transcript_path, session_id, emitted, tags,
+                 redaction_summary=(summary if args.redact else None),
+                 host=host, public_key=public_key)
     print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0
