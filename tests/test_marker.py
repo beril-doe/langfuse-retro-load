@@ -9,6 +9,7 @@ session in the corpus. Nobody noticed for three weeks.
 The cause is visible in `marker_path`: the key is a hash of the source path and
 nothing else. A marker records that a file was loaded, never where it went.
 """
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -72,8 +73,17 @@ def test_two_destinations_get_two_markers(tmp_path):
 
     Written as a strict expected failure instead. The assertion says what safety looks like,
     it fails today for the reason above, and the day it starts passing the suite says so.
+
+    The signature is checked first, and that matters. Calling `marker_path(path, "a")` on
+    today's one-argument function raises `TypeError`, which satisfies an expected failure just
+    as well as a failed assertion does, so the test was passing for a reason that had nothing
+    to do with destinations. An expected failure has to fail for the stated reason or it is
+    only recording that something went wrong.
     """
     path = tmp_path / "s.jsonl"
+    accepts_destination = len(inspect.signature(retro_load.marker_path).parameters) > 1
+    assert accepts_destination, (
+        "marker_path takes only the source path, so no marker can record where its load went")
     assert retro_load.marker_path(path, "project-a") != retro_load.marker_path(path, "project-b")
 
 
