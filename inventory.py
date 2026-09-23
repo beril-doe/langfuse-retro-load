@@ -263,6 +263,9 @@ def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
         except ValueError as exc:
             raise GitleaksFailed(f"gitleaks wrote an unreadable report for {path.name}; its "
                                  f"findings for this file are missing") from exc
+        if not isinstance(findings, list) or not all(isinstance(f, dict) for f in findings):
+            raise GitleaksFailed(f"gitleaks wrote a report for {path.name} that is not a list "
+                                 f"of findings")
         if result.returncode == 2 and not findings:
             raise GitleaksFailed(f"gitleaks reported findings on {path.name} but listed none")
         subject = _subject_for(path) if kind == "transcript" else (
