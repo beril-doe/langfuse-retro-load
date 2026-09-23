@@ -4,6 +4,10 @@ Loads already-completed Claude Code sessions into BERIL's Langfuse org,
 backdating each step to when the conversation actually happened instead of
 only capturing new sessions going forward.
 
+For how this work and Dileep's BERIL live tracing benefit each other, see the
+[reuse accounting and handoff](docs/live-tracing-handoff.md) and
+[implementation tracker #30](https://github.com/beril-doe/langfuse-retro-load/issues/30).
+
 ## Before anything else: this has to run on the pod, not your laptop
 
 The source transcripts live on the BERDL pod, and some of them (the frozen
@@ -41,8 +45,9 @@ transfer files there) and run everything from a pod terminal.
   `--tag` flags per file, which doesn't scale and is easy to get wrong.
 
 - **`redaction.py`**: detection and redaction of sensitive spans, as a pure
-  function. No file handling, no Langfuse, no clock. The same logic has to run
-  at three filter points that share nothing else, and this is the only copy.
+  function. No file handling, no Langfuse, no clock. This is the reusable
+  engine for this repository; adapting it to BERIL's live masking policy and
+  other filtering points remains tracked in #30.
 - **`plan.py`**: builds the redaction plan a load applies, and applies it. See "The
   redaction plan" below.
 - **`inventory.py`**: the screening pass. Writes one row per finding, says
@@ -159,7 +164,8 @@ anything, through `presence.py`:
 
 - **Already there.** If the project holds any observations for the session id, the session is
   skipped. This covers a second run of this loader and a session live tracing already sent. The
-  local marker cannot answer this, because it does not record which project a session went to.
+  local marker cannot detect a session sent by another client, even though current markers
+  record their destination.
   `--allow-existing` sends anyway.
 - **Still in use.** A session whose last record is newer than `--min-idle-days` (default 7) is
   skipped, because resuming it with live tracing on would re-send every earlier turn.
@@ -168,10 +174,12 @@ anything, through `presence.py`:
 
 A skip exits with status 3, and `run_manifest.py` lists skipped sessions separately.
 
-`presence.covered_through()` returns the latest start time the project holds for a session. It
-is not used here. It is for whatever forwards live traces (in BERIL, the relay), which could drop
-re-sent turns that start at or before it. `presence.py` uses only the standard library and the
-read routes that survive 2026-11-16, so it can be copied as is.
+`presence.covered_through()` returns the greatest observation start time held for a
+session. It is not used by this loader or integrated into BERIL's relay. Reuse is
+tracked in #30, but this value is not a completeness watermark: partial uploads,
+equal timestamps and late arrivals can leave gaps before it. A live adapter needs
+those cases tested before dropping earlier spans. The helper also requires read
+access that the write-only relay does not expose to clients.
 
 ## Adding a person or a new source
 
