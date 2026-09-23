@@ -138,3 +138,23 @@ def test_enumeration_puts_the_bound_and_the_name_inside_the_filter(monkeypatch):
     assert {"type": "string", "column": "traceName", "operator": "=",
             "value": "my trace"} in conditions
     assert "trace_context" in params["fields"], "traceName is only returned in trace_context"
+
+
+def test_the_earliest_start_is_chosen_by_time_not_by_string(monkeypatch):
+    """As strings, "...00.5Z" sorts before "...00Z", although it is later."""
+    fake = FakeLangfuse([obs(1, "a", None, "2026-03-01T00:00:00.500Z"),
+                         obs(2, "a", None, "2026-03-01T00:00:00Z")])
+    monkeypatch.setattr(langfuse_admin, "api", fake)
+    [trace] = langfuse_admin.enumerate_traces("h", "x", None)
+    assert trace["timestamp"] == "2026-03-01T00:00:00Z"
+
+
+def test_a_dry_run_with_no_timestamps_still_reports(monkeypatch, capsys):
+    fake = FakeLangfuse([obs(1, "a", "s", start=None)])
+    monkeypatch.setattr(langfuse_admin, "api", fake)
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("h", "https://x"))
+    monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "O / P")
+    args = type("A", (), dict(project="p", type="trace", name=None, all=True,
+                              dry_run=True, yes=False, record=None))()
+    assert langfuse_admin.cmd_delete(args) == 0
+    assert "unknown, no target has a timestamp" in capsys.readouterr().out

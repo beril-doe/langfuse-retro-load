@@ -289,6 +289,21 @@ def count_scores(header: str, host: str) -> tuple[object, str | None]:
         return None, f"{_failure(exc)} walking v3/scores"
 
 
+def instant(stamp) -> datetime.datetime | None:
+    """Parse an ISO 8601 timestamp to an aware datetime, or None if it is not one.
+
+    Comparing the strings is wrong once precision or offset varies: "...00.5Z" sorts
+    before "...00Z" although it is half a second later.
+    """
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
 def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
     """Every trace with at least one observation, optionally narrowed to one trace name.
 
@@ -315,7 +330,8 @@ def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
         trace["sessionId"] = trace["sessionId"] or obs.get("sessionId")
         trace["userId"] = trace["userId"] or obs.get("userId")
         start = obs.get("startTime")
-        if start and (trace["timestamp"] is None or start < trace["timestamp"]):
+        if instant(start) and (trace["timestamp"] is None
+                               or instant(start) < instant(trace["timestamp"])):
             trace["timestamp"] = start
     return list(traces.values())
 
@@ -440,10 +456,13 @@ def cmd_delete(args) -> int:
     print("  (found through their observations; a trace with none is not listed)")
     if not targets:
         return 0
-    stamps = sorted(t["timestamp"] for t in targets if t.get("timestamp"))
+    stamps = sorted(i for i in (instant(t.get("timestamp")) for t in targets) if i)
     sessions = {t.get("sessionId") for t in targets if t.get("sessionId")}
     print(f"  sessions touched: {len(sessions)}")
-    print(f"  date range      : {stamps[0][:19]} to {stamps[-1][:19]}")
+    if stamps:
+        print(f"  date range      : {stamps[0].isoformat()[:19]} to {stamps[-1].isoformat()[:19]}")
+    else:
+        print("  date range      : unknown, no target has a timestamp")
     if args.dry_run:
         print("dry run, nothing sent")
         return 0
