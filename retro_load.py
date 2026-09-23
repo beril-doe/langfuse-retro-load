@@ -457,7 +457,11 @@ def main() -> int:
 
     write_marker(transcript_path, session_id, emitted, tags,
                  redaction_summary=(summary if args.redact else None),
-                 host=host, public_key=public_key, planned=bool(args.plan))
+                 host=host, public_key=public_key,
+                 # Fully planned only with gitleaks in the plan: a local-only plan loaded with
+                 # --allow-plan-without-gitleaks must not satisfy a later normal planned run.
+                 planned=bool(args.plan) and header is not None
+                 and "gitleaks" in header.detectors)
     print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0

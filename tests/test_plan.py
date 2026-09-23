@@ -480,3 +480,45 @@ def test_a_gitleaks_match_under_a_credential_keys_structural_name_is_placed(monk
     _, masks = plan.build(path)
     placed = [m for m in masks if m.detector == "gitleaks"]
     assert placed and all(m.pointer == "/message/content/token/id" for m in placed)
+
+
+# --- fifth Copilot review of PR 27 ------------------------------------------------------------
+
+def test_writing_a_plan_never_touches_an_input_named_like_the_staging_file(tmp_path):
+    path = _transcript(tmp_path, [{"x": 1}])
+    decoy = tmp_path / "plan.jsonl.partial"
+    decoy.write_text("an input transcript\n")
+    plan.write(tmp_path / "plan.jsonl", [plan.build(path, use_gitleaks=False)])
+    assert decoy.read_text() == "an input transcript\n"
+    assert not list(tmp_path.glob(".plan.jsonl.*.partial"))
+
+
+def test_a_local_only_plan_does_not_mark_the_load_fully_planned(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "hi")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    written = {}
+    monkeypatch.setattr(loader, "write_marker", lambda *a, **k: written.update(k))
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr(loader.presence, "session_observation_count", lambda *a, **k: 0)
+    monkeypatch.setattr(loader, "build_turns", lambda msgs: [])
+    import types
+    fake = types.ModuleType("langfuse")
+    fake.Langfuse = lambda **k: types.SimpleNamespace(flush=lambda: None, shutdown=lambda: None)
+    fake.propagate_attributes = lambda **k: __import__("contextlib").nullcontext()
+    monkeypatch.setitem(sys.modules, "langfuse", fake)
+    assert _run(loader, monkeypatch, "--min-idle-days", "0", "--allow-plan-without-gitleaks",
+                "--plan", str(out), str(path)) == 0
+    assert written.get("planned") is False
+
+
+def test_reveal_refuses_a_plan_cut_short_after_its_header(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "token=" + FAKE)
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    out.write_text(out.read_text().splitlines()[0] + "\n")
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 1

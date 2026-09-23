@@ -150,6 +150,11 @@ def show_plan(args, records) -> int:
         print(f"{subject} changed after its plan was built; this view would not match what a "
               f"load does. Rebuild the plan.", file=sys.stderr)
         return 1
+    if header.masks != len(masks.get(subject, [])):
+        print(f"{args.plan.name} is incomplete for {subject}: its header lists {header.masks} "
+              f"mask(s) and {len(masks.get(subject, []))} follow. The load refuses it; rebuild "
+              f"the plan.", file=sys.stderr)
+        return 1
     print(f"{subject}: plan from {', '.join(header.detectors)}, {header.records} records")
     shown = unplaceable = 0
     subject_masks = masks.get(subject, [])

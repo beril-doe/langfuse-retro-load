@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -240,8 +241,11 @@ def _place_gitleaks(finding: dict, records: list, numbers: dict[int, int], subje
 def write(out: Path, entries: list[tuple[Header, list[Mask]]]) -> None:
     """Write to a temporary file beside `out` and rename it into place, so a reader sees the
     whole plan or none of it."""
-    tmp = out.with_name(out.name + ".partial")
-    with tmp.open("w", encoding="utf-8") as handle:
+    # A unique name in the same directory, so the rename is atomic and can never land on an
+    # existing file such as an input transcript.
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".partial", dir=out.parent)
+    tmp = Path(tmp_name)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
         for header, masks in entries:
             header = replace(header, masks=len(masks))
             handle.write(json.dumps(asdict(header), sort_keys=True) + "\n")
