@@ -632,3 +632,11 @@ def test_a_marker_with_a_malformed_summary_never_matches(retro_load, summary):
     prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
              "turns_emitted": 3, "tags": [], "redacted": summary}
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False
+
+
+# --- twentieth Copilot review --------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ['password="abcdefgh,ijklmnop', "token='abcdefgh ijklmnop"])
+def test_an_unterminated_quoted_value_is_redacted_to_the_end(text):
+    clean, findings = redaction.redact(text, key=KEY)
+    assert "ijklmnop" not in clean and findings

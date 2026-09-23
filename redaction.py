@@ -311,7 +311,7 @@ def _through_closing_quote(text: str, span: tuple[int, int]) -> tuple[int, int]:
     """Widen a quoted value to its closing quote, so a comma or space inside it is content.
 
     `password="abcdefgh,ijklmnop"` used to end at the comma and leave `,ijklmnop` behind. Only
-    ever widens: with no closing quote the terminator-based end stands. A closing quote
+    ever widens: with no closing quote the value runs to the end of the text. A closing quote
     escaped as `\\"` inside a JSONL line ends before its backslashes, like the value rule.
     """
     start, end = span
@@ -326,7 +326,9 @@ def _through_closing_quote(text: str, span: tuple[int, int]) -> tuple[int, int]:
     while close != -1 and _backslashes_before(text, close) != level:
         close = text.find(quote, close + 1)
     if close == -1:
-        return span
+        # No matching close: the delimiter is unknown, so the value runs to the end of the
+        # text. Over-redacting a field beats leaving the rest of a credential behind.
+        return start, len(text)
     return start, max(end, close - level)
 
 
