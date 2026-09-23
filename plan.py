@@ -119,6 +119,18 @@ def _leaves(node, path: str = "", *, in_payload: bool = False, key: str | None =
         yield path, node
 
 
+def _all_leaves(node, path: str = ""):
+    """Every string leaf, structural fields included."""
+    if isinstance(node, dict):
+        for name, value in node.items():
+            yield from _all_leaves(value, f"{path}/{redaction._escape_token(str(name))}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _all_leaves(value, f"{path}/{index}")
+    elif isinstance(node, str):
+        yield path, node
+
+
 def is_cleared(mask: Mask, clearances: list[dict]) -> bool:
     """A clearance names any of subject, record, pointer, pattern and fingerprint; a missing
     or null field matches anything, so `{"subject": s, "pattern": "orcid"}` clears that pattern
@@ -185,8 +197,15 @@ def _place_gitleaks(finding: dict, records: list, numbers: dict[int, int], subje
                        fingerprint=fp)
     if record is None or not secret:
         return [unplaceable]
+    # A copy in a field the load won't rewrite (a structural identifier) would go out
+    # whatever the plan does elsewhere, so it blocks the load. gitleaks' columns are for the
+    # raw line, not the parsed field, so every copy counts rather than one guessed occurrence.
+    eligible = dict(_leaves(records[record]))
+    if any(secret in leaf for pointer, leaf in _all_leaves(records[record])
+           if pointer not in eligible):
+        return [unplaceable]
     placed = []
-    for pointer, leaf in _leaves(records[record]):
+    for pointer, leaf in eligible.items():
         start = leaf.find(secret)
         while start != -1:
             placed.append(Mask(subject=subject, record=record, pointer=pointer, start=start,
@@ -325,11 +344,14 @@ def main() -> int:
                         "loader refuses such a plan unless --allow-plan-without-gitleaks")
     args = ap.parse_args()
 
+    inputs = {p.expanduser().resolve() for p in args.paths}
+    if args.clearances and args.clearances.expanduser().resolve() in inputs:
+        # Its records would read as clearances, and a missing field matches anything.
+        ap.error("--clearances names one of the transcripts")
     clearances = []
     if args.clearances:
         clearances = [json.loads(line) for line in args.clearances.read_text().splitlines()
                       if line.strip()]
-    inputs = {p.expanduser().resolve() for p in args.paths}
     if args.out.expanduser().resolve() in inputs:
         ap.error("--out names one of the transcripts; refusing to overwrite it")
     subjects = [inventory._subject_for(p) for p in args.paths]

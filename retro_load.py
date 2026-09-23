@@ -266,6 +266,8 @@ def main() -> int:
 
     if args.plan and not args.redact:
         ap.error("--plan and --no-redact contradict each other: the plan is the screening")
+    if args.plan and args.without_plan:
+        ap.error("--plan and --without-plan contradict each other")
     transcript_path = args.transcript.expanduser().resolve()
     if not transcript_path.exists():
         print(f"transcript not found: {transcript_path}", file=sys.stderr)
@@ -325,6 +327,7 @@ def main() -> int:
     # findings, which the local patterns below can't rewrite on their own. A real load
     # without one is refused unless --without-plan says so on purpose.
     masks: list = []
+    header = None
     if args.plan:
         try:
             header, masks = plan.load(args.plan, transcript_path)
@@ -352,15 +355,17 @@ def main() -> int:
         # With a plan, the second pass checks rather than rewrites: the plan is what was
         # reviewed, so a reviewer's clearance must hold. Anything the local patterns still
         # find that the plan neither masked nor cleared means the plan missed it.
-        redactor = redaction.Redactor()
+        # The plan's own key, so fingerprints match the plan's and two values of the same
+        # kind in one field are told apart.
+        redactor = redaction.Redactor(key=bytes.fromhex(header.transcript_sha256))
         _, rows = inventory.redact_records(msgs, redactor, subject=session_id,
                                            categories=inventory.REPORT_ONLY)
-        cleared = {(m.record, m.pointer, m.pattern) for m in masks if m.cleared}
-        missed = sorted({(r.record, r.path, r.pattern) for r in rows
+        cleared = {(m.record, m.pointer, m.pattern, m.fingerprint) for m in masks if m.cleared}
+        missed = sorted({(r.record, r.path, r.pattern, r.fingerprint) for r in rows
                          if r.category in plan.ACTIONABLE
-                         and (r.record, r.path, r.pattern) not in cleared}, key=str)
+                         and (r.record, r.path, r.pattern, r.fingerprint) not in cleared}, key=str)
         if missed:
-            shown = "; ".join(f"record {r} {p} {k}" for r, p, k in missed[:5])
+            shown = "; ".join(f"record {r} {p} {k}" for r, p, k, _ in missed[:5])
             print(f"{transcript_path.name}: not sending, {len(missed)} finding(s) the plan "
                   f"neither masked nor cleared ({shown}); rebuild the plan", file=sys.stderr)
             return 1

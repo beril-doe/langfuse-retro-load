@@ -328,3 +328,68 @@ def test_the_manifest_passes_the_plan_to_each_load(loader, monkeypatch, tmp_path
                                       "--plan", str(tmp_path / "plan.jsonl")])
     run_manifest.main()
     assert "--plan" in calls[0] and str(tmp_path / "plan.jsonl") in calls[0]
+
+
+# --- second Copilot review of PR 27 -----------------------------------------------------------
+
+def test_a_gitleaks_value_also_in_a_structural_field_blocks(monkeypatch, tmp_path):
+    record = {"type": "user", "uuid": SHAPELESS, "message": {"content": "key " + SHAPELESS}}
+    path = _transcript(tmp_path, [record])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": SHAPELESS, "StartLine": 1}])
+    _, masks = plan.build(path)
+    assert [(m.pointer, m.detector) for m in masks] == [(None, "gitleaks")]
+
+
+def test_clearances_cannot_be_a_transcript(monkeypatch, tmp_path):
+    path = _transcript(tmp_path, [{"x": 1}])
+    with pytest.raises(SystemExit):
+        _cli(monkeypatch, "build", "--no-gitleaks", "--clearances", str(path),
+             "--out", str(tmp_path / "p.jsonl"), str(path))
+
+
+def test_a_second_uncleared_value_of_the_same_kind_in_the_field_blocks(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "mail a.b@gmail.com and c.d@gmail.com")
+    header, masks = plan.build(path, use_gitleaks=False)
+    first = next(m for m in masks if m.pattern == "email_personal")
+    # Clear only the first address by fingerprint, and drop the second from the plan.
+    kept = [plan.replace(first, cleared=True)]
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [(header, kept)])
+    assert _run(loader, monkeypatch, "--dry-run", "--allow-plan-without-gitleaks",
+                "--plan", str(out), str(path)) == 1
+
+
+def test_plan_and_without_plan_together_are_refused(loader, monkeypatch, tmp_path):
+    with pytest.raises(SystemExit):
+        _run(loader, monkeypatch, "--dry-run", "--plan", str(tmp_path / "p"), "--without-plan",
+             str(_session(tmp_path, "hi")))
+
+
+def test_reveal_shows_a_cleared_unplaceable_row_as_cleared(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "nothing")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": "absent", "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, clearances=[{"pattern": "gitleaks:x"}])])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert "CLEARED" in printed and "will refuse" not in printed
+
+
+def test_reveal_never_prints_a_neighbouring_planned_value(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import reveal
+    other = "Qw" + "7rTy3Up" * 3        # gitleaks-only, no local pattern knows it
+    path = _session(tmp_path, "token=" + FAKE + " and " + other + " end")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": other, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert other not in printed and FAKE not in printed and "[another planned mask]" in printed
