@@ -19,6 +19,7 @@ Usage:
     python3 langfuse_admin.py count  --project cmt1obua000uhad0dxp5tyu49
     python3 langfuse_admin.py delete --project <id> --type trace --all --dry-run
     python3 langfuse_admin.py delete --project <id> --type trace --name beril.artifact_snapshot --yes
+    python3 langfuse_admin.py delete --project <id> --type trace --tag retro-load --dry-run
     python3 langfuse_admin.py projects --org BERIL          # needs an organization key
 
 The project id is always explicit. A tool that deletes should never infer its own target
@@ -39,6 +40,7 @@ key for the project named, because this script does not mint one.
 """
 import argparse
 import base64
+import collections
 import datetime
 import json
 import os
@@ -304,8 +306,10 @@ def instant(stamp) -> datetime.datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
 
 
-def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
-    """Every trace with at least one observation, optionally narrowed to one trace name.
+def enumerate_traces(header: str, host: str, name: str | None,
+                     tags: list[str] | None = None) -> list[dict]:
+    """Every trace with at least one observation, optionally narrowed to one trace name
+    or to traces carrying every tag in ``tags``.
 
     Built from v2/observations, grouped by traceId. A trace's timestamp is its earliest
     observation's startTime. A trace with no observations cannot be seen this way.
@@ -317,6 +321,9 @@ def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
     if name:
         conditions.append({"type": "string", "column": "traceName", "operator": "=",
                            "value": name})
+    if tags:
+        conditions.append({"type": "arrayOptions", "column": "tags", "operator": "all of",
+                           "value": list(tags)})
     params = {"limit": OBSERVATIONS_PAGE, "fields": "core,basic,trace_context",
               "filter": json.dumps(conditions)}
     traces: dict[str, dict] = {}
@@ -326,7 +333,8 @@ def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
             continue
         trace = traces.setdefault(trace_id, {"id": trace_id, "name": obs.get("traceName"),
                                              "sessionId": None, "userId": None,
-                                             "timestamp": None})
+                                             "timestamp": None, "tags": set()})
+        trace["tags"].update(obs.get("tags") or ())
         trace["sessionId"] = trace["sessionId"] or obs.get("sessionId")
         trace["userId"] = trace["userId"] or obs.get("userId")
         start = obs.get("startTime")
@@ -334,6 +342,24 @@ def enumerate_traces(header: str, host: str, name: str | None) -> list[dict]:
                                or instant(start) < instant(trace["timestamp"])):
             trace["timestamp"] = start
     return list(traces.values())
+
+
+def count_trace_scores(trace_ids: list[str], header: str, host: str) -> int | None:
+    """Scores attached to these traces, which Langfuse deletes along with them.
+
+    https://langfuse.com/docs/administration/data-deletion: "all trace deletions will
+    delete related entities like scores and observations". None if the lookup fails.
+    """
+    total_scores = 0
+    try:
+        for i in range(0, len(trace_ids), 50):
+            batch = ",".join(trace_ids[i:i + 50])
+            total_scores += sum(1 for _ in walk("/api/public/v3/scores",
+                                                {"limit": SCORES_PAGE, "traceId": batch},
+                                                header, host))
+    except (urllib.error.HTTPError, OSError):
+        return None
+    return total_scores
 
 
 def confirm_project(project_id: str, header: str, host: str) -> str:
@@ -433,25 +459,31 @@ def cmd_delete(args) -> int:
         return 2
     # Checked here rather than by argparse, so an undeletable type reaches its
     # explanation above instead of dying on a missing selector.
-    if not args.name and not args.all:
-        print("give --name to match a trace name, or --all to mean every trace",
+    tags = getattr(args, "tag", None) or []
+    if not args.name and not args.all and not tags:
+        print("give --name to match a trace name, --tag to match traces carrying a tag, "
+              "or --all to mean every trace",
               file=sys.stderr)
         return 2
     header, host = auth_for_project(args.project)
     where = confirm_project(args.project, header, host)
 
-    # Filter server-side for --name, so a narrow deletion does not page the whole project.
+    # Filter server-side, so a narrow deletion does not page the whole project.
     try:
-        traces = enumerate_traces(header, host, args.name)
+        traces = enumerate_traces(header, host, args.name, tags)
     except (urllib.error.HTTPError, OSError) as exc:
         print(f"could not enumerate traces: {_failure(exc)} from v2/observations; "
               "nothing deleted", file=sys.stderr)
         return 1
     # Still filtered locally as well: the server filter is a narrowing optimisation,
     # not the authority on what gets deleted.
-    targets = traces if args.all else [t for t in traces if t.get("name") == args.name]
-
-    scope = "in project" if args.all else f"matching {args.name!r}"
+    if args.all:
+        targets, scope = traces, "in project"
+    elif tags:
+        targets = [t for t in traces if set(tags) <= t.get("tags", set())]
+        scope = f"tagged {' + '.join(tags)}"
+    else:
+        targets, scope = [t for t in traces if t.get("name") == args.name], f"matching {args.name!r}"
     print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
     print("  (found through their observations; a trace with none is not listed)")
     if not targets:
@@ -459,6 +491,10 @@ def cmd_delete(args) -> int:
     stamps = sorted(i for i in (instant(t.get("timestamp")) for t in targets) if i)
     sessions = {t.get("sessionId") for t in targets if t.get("sessionId")}
     print(f"  sessions touched: {len(sessions)}")
+    users = collections.Counter(t.get("userId") or "(none)" for t in targets)
+    print("  users           : " + ", ".join(f"{u} ({n})" for u, n in users.most_common()))
+    scores = count_trace_scores([t["id"] for t in targets], header, host)
+    print(f"  scores deleted with them: {'unknown, lookup failed' if scores is None else scores}")
     if stamps:
         print(f"  date range      : {stamps[0].isoformat()[:19]} to {stamps[-1].isoformat()[:19]}")
     else:
@@ -493,11 +529,13 @@ def cmd_delete(args) -> int:
             # outcome is appended after the loop.
             "planned_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "project": args.project, "where": where, "host": host,
-            "match": "all" if args.all else args.name,
+            "match": "all" if args.all else {"tags": tags} if tags else args.name,
             "count": len(targets),
             "traces": [{"id": t["id"], "sessionId": t.get("sessionId"),
                         "userId": t.get("userId"), "name": t.get("name"),
+                        "tags": sorted(t.get("tags", ())),
                         "timestamp": t.get("timestamp")} for t in targets],
+            "scores_deleted_with_them": scores,
             }, indent=2) + "\n")
         print(f"recorded to {args.record}")
 
@@ -579,6 +617,8 @@ def main() -> int:
     selector = d.add_mutually_exclusive_group(required=False)
     selector.add_argument("--name", help="match traces with this exact name")
     selector.add_argument("--all", action="store_true", help="every trace in the project")
+    selector.add_argument("--tag", action="append",
+                          help="match traces carrying this tag; repeat to require several")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--yes", action="store_true", help="required for a real delete")
     d.add_argument("--record", help="write a manifest of what is deleted to this path")

@@ -158,3 +158,94 @@ def test_a_dry_run_with_no_timestamps_still_reports(monkeypatch, capsys):
                               dry_run=True, yes=False, record=None))()
     assert langfuse_admin.cmd_delete(args) == 0
     assert "unknown, no target has a timestamp" in capsys.readouterr().out
+
+
+def tagged(i, trace, tags, user="u"):
+    o = obs(i, trace)
+    o["tags"], o["userId"] = list(tags), user
+    return o
+
+
+def test_tag_filter_goes_to_the_server_as_all_of(monkeypatch):
+    fake = FakeLangfuse([])
+    monkeypatch.setattr(langfuse_admin, "api", fake)
+    langfuse_admin.enumerate_traces("h", "x", None, ["retro-load", "batch-1"])
+    params = dict(urllib.parse.parse_qsl(fake.paths[0].partition("?")[2]))
+    assert {"type": "arrayOptions", "column": "tags", "operator": "all of",
+            "value": ["retro-load", "batch-1"]} in json.loads(params["filter"])
+
+
+def delete_args(**kw):
+    base = dict(project="p", type="trace", name=None, all=False, tag=None,
+                dry_run=True, yes=False, record=None)
+    base.update(kw)
+    return type("A", (), base)()
+
+
+def wired(monkeypatch, fake):
+    monkeypatch.setattr(langfuse_admin, "api", fake)
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("h", "https://x"))
+    monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "O / P")
+
+
+def test_tag_selection_is_checked_locally_too(monkeypatch, capsys):
+    """The server filter narrows; the local check decides. A trace the server returned
+    without the tag must not become a target."""
+    wired(monkeypatch, FakeLangfuse([tagged(1, "a", ["claude-code", "retro-load"], "mamillerpa"),
+                                     tagged(2, "b", ["claude-code"], "hub-smoke-test")]))
+    assert langfuse_admin.cmd_delete(delete_args(tag=["retro-load"])) == 0
+    out = capsys.readouterr().out
+    assert "2 traces tagged retro-load, 1 to delete" in out
+    assert "mamillerpa (1)" in out and "hub-smoke-test" not in out
+
+
+def test_the_dry_run_counts_the_scores_that_go_with_the_traces(monkeypatch, capsys):
+    wired(monkeypatch, FakeLangfuse([tagged(1, "a", ["retro-load"])],
+                                    scores=[{"id": "s1"}, {"id": "s2"}]))
+    langfuse_admin.cmd_delete(delete_args(tag=["retro-load"]))
+    assert "scores deleted with them: 2" in capsys.readouterr().out
+
+
+def test_tag_alone_is_a_selector(monkeypatch, capsys):
+    """Without this, --tag would be refused as 'no selector' before enumerating."""
+    wired(monkeypatch, FakeLangfuse([]))
+    assert langfuse_admin.cmd_delete(delete_args(tag=["retro-load"])) == 0
+    assert "give --name" not in capsys.readouterr().err
+
+
+class DeletingFake(FakeLangfuse):
+    """FakeLangfuse that also accepts the bulk DELETE, for the --record path."""
+
+    def __call__(self, path, header, host, data=None, method="GET"):
+        if method == "DELETE":
+            self.paths.append(("DELETE", path, data))
+            return 200, {"message": "accepted"}
+        return super().__call__(path, header, host, data, method)
+
+
+def test_the_record_carries_tags_and_the_score_count(monkeypatch, tmp_path):
+    fake = DeletingFake([tagged(1, "a", ["retro-load", "batch-1", "claude-code"]),
+                         tagged(2, "b", ["retro-load", "batch-1"]),
+                         tagged(3, "c", ["retro-load"])],
+                        scores=[{"id": "s1"}, {"id": "s2"}, {"id": "s3"}])
+    wired(monkeypatch, fake)
+    record = tmp_path / "deleted.json"
+    code = langfuse_admin.cmd_delete(delete_args(tag=["retro-load", "batch-1"], dry_run=False,
+                                                 yes=True, record=str(record)))
+    assert code == 0
+    written = json.loads(record.read_text())
+    assert written["match"] == {"tags": ["retro-load", "batch-1"]}
+    assert written["scores_deleted_with_them"] == 3
+    assert {t["id"]: t["tags"] for t in written["traces"]} == {
+        "a": ["batch-1", "claude-code", "retro-load"], "b": ["batch-1", "retro-load"]}
+    deletes = [p for p in fake.paths if isinstance(p, tuple)]
+    assert deletes and sorted(deletes[0][2]["traceIds"]) == ["a", "b"], "c lacks batch-1"
+
+
+def test_scores_are_looked_up_for_all_targets_in_one_comma_separated_filter(monkeypatch):
+    """v3/scores documents traceId as "Comma-separated list of trace IDs to filter by"."""
+    fake = FakeLangfuse([], scores=[])
+    monkeypatch.setattr(langfuse_admin, "api", fake)
+    langfuse_admin.count_trace_scores(["a", "b", "c"], "h", "x")
+    params = dict(urllib.parse.parse_qsl(fake.paths[0].partition("?")[2]))
+    assert params["traceId"] == "a,b,c"
