@@ -1,9 +1,9 @@
 # Reuse with BERIL live tracing
 
-Checked **2026-09-23** against this repository's main `2eb1724` and BERIL main
+Checked **2026-09-23** against this repository's main `92278d8` (PR #27 merged) and BERIL main
 `00537fc`. [Issue #30](https://github.com/beril-doe/langfuse-retro-load/issues/30)
 tracks actions in both directions. The detailed, versioned component inventory
-is maintained in [langfuse-notes](https://github.com/turbomam/langfuse-notes/blob/efcf862109de2e239906619a5e02135287e31b77/docs/beril-live-and-retro-reuse.md)
+is maintained in [langfuse-notes](https://github.com/turbomam/langfuse-notes/blob/3968c26fe7a164c581129e53899793d2390d97d8/docs/beril-live-and-retro-reuse.md)
 (an immutable snapshot proposed in [notes PR #2](https://github.com/turbomam/langfuse-notes/pull/2)).
 
 ## What already exists
@@ -62,10 +62,11 @@ These are concrete examples of reuse already completed in both directions.
 | --- | --- |
 | Pure detector (#13), tests and CI (#14) | Implementations merged via #19/#25; acceptance evidence is linked in those issues |
 | Variable-reference and key-name corruption (#23) | Fixed; issue closed |
-| Detector union (#10) and reviewed redaction (#11) | Inventory union exists; main loader uses local rules only. Reviewed application is pending in #27 |
-| Plan/apply/reveal workflow (#27) | Open PR, not this main revision; #29 separately tracks binding the reviewed rows to what is applied |
+| Detector union (#10) and reviewed redaction (#11) | #27 merged: plans record local and gitleaks masks, reveal shows them, and the loader applies them; plan integrity remains in #29 |
+| Plan/apply/reveal workflow (#27) | Merged at `92278d8`; real loads require a plan unless explicitly bypassed. Transcript hash and row count checks do not authenticate review; #29 remains open |
 | Post-load scoring/reveal (#26), custom categories (#28) | Open follow-ups; not blanket capabilities of main |
-| Destination agreement (#31) | Open, concrete lesson from BERIL |
+| Destination agreement (#31) | Open; Claude owns the separate implementation after #27 |
+| Plan staging cleanup (#33) | Open; a failed write can leave its temporary file behind |
 | Just screening entry points | `scan`/`scan-detail` still reference the retired #6 scanner; refreshing them for the merged inventory is tracked in #30 |
 | Live adapter, relay-backed backfill, artifact and identity reconciliation (#30) | Tracked proposals; not deployed integrations |
 

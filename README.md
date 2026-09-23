@@ -58,7 +58,8 @@ transfer files there) and run everything from a pod terminal.
 
 `retro_load.py` screens by default. Every record still goes out; the values
 that carry a secret or someone's personal details are replaced in place, one
-value at a time, and `--no-redact` turns that off.
+value at a time. A real load requires `--plan` unless explicitly bypassed with
+`--without-plan`; `--no-redact` is incompatible with a plan.
 
 That is the whole design decision. The scanner proposed in
 [#6](https://github.com/beril-doe/langfuse-retro-load/pull/6) answers one
@@ -75,9 +76,9 @@ python3 inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.j
 # Screen a project snapshot before attaching it as Langfuse media
 python3 inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
 
-# Load, screening as it goes, keeping the record of what was rewritten. A separate
-# file: the load writes only its own findings and would overwrite the preflight one.
-python3 retro_load.py --inventory load-inv.jsonl session.jsonl
+# Build and review a plan first (see the next section), then load it. Keep the
+# load inventory separate: the loader would overwrite the preflight inventory.
+python3 retro_load.py --plan plan.jsonl --inventory load-inv.jsonl session.jsonl
 ```
 
 Each row is addressed by session id, record number, and an RFC 6901 JSON
@@ -86,9 +87,11 @@ observation, or drop one record, and still emit everything around it.
 `inventory.excluded_paths()` returns those pointers grouped by record.
 
 **No row carries matched text, a value, an absolute path, or the fingerprint
-key.** A fingerprint is HMAC-SHA256 under a key that is random per run and
-never stored, so equal fingerprints mean the same value appeared twice and
-nothing else. One token in 41 records is one thing to rotate; 41 unrelated
+key.** Standalone inventory fingerprints use HMAC-SHA256 with a random,
+unstored key per run. Plan fingerprints instead use the transcript hash as
+the key so clearances remain stable for the same transcript. Matching
+fingerprints group findings within that key scope; they do not authenticate
+a reviewer. One token in 41 records is one thing to rotate; 41 unrelated
 findings is a different afternoon. It also means the inventory needs no
 special file permissions, unlike the `--detail` file in
 [#6](https://github.com/beril-doe/langfuse-retro-load/pull/6), whose whole
@@ -123,8 +126,10 @@ What this does not do, stated plainly:
 
 ## The redaction plan: scan, review, then load
 
-A load applies a **redaction plan** built and reviewed beforehand, not whatever its own
-patterns happen to catch. On the pod:
+A real load normally requires a **redaction plan** built before sending. The
+operator reviews its masks using `reveal.py --plan`; the loader applies them
+and checks for remaining local findings that were neither masked nor cleared.
+On the pod:
 
 ```
 # 1. Scan: both detectors, one row per value to mask, no values in the file
@@ -133,7 +138,7 @@ python3 plan.py build --out plan.jsonl [--clearances clearances.jsonl] SESSION.j
 # 2. Review: every planned mask in context, value hidden unless --show-values in a terminal
 python3 reveal.py --transcript SESSION.jsonl --plan plan.jsonl
 
-# 3. Load: applies exactly that plan, then runs the local patterns as a second pass
+# 3. Load: applies the plan, then checks for uncleared local findings
 python3 retro_load.py --plan plan.jsonl SESSION.jsonl
 ```
 
@@ -155,7 +160,13 @@ What the plan guarantees:
   fingerprint keeps working when the plan is rebuilt.
 
 A real load without `--plan` is refused. `--without-plan` loads with the local patterns only
-and says so; it is for tests, not backfill.
+and says so; it is for tests, not backfill. A plan built with `--no-gitleaks`
+also needs explicit `--allow-plan-without-gitleaks` at load time.
+
+The transcript hash and mask count check source consistency and truncation;
+they do not prove that a person reviewed the plan or that its mask rows have
+not been edited since review. That remaining contract is tracked in
+[issue #29](https://github.com/beril-doe/langfuse-retro-load/issues/29).
 
 ## Not sending a session twice
 
