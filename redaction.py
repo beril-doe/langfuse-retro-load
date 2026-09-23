@@ -374,7 +374,12 @@ class _Boundaries:
 
 #: What this module writes in place of a match, and how it recognises its own work on a
 #: second pass. The two must stay in step, which is what test_idempotent checks.
-PLACEHOLDER_RE = re.compile(r"\[REDACTED:[a-z_]+:[0-9a-f]{8}\]")
+#: Only this module's own pattern names, so a value that merely looks like a placeholder,
+#: such as `[REDACTED:made_up:deadbeef]`, is still screened. `credential_key` is written by
+#: the key-based whole-value rule further down.
+PLACEHOLDER_RE = re.compile(
+    r"\[REDACTED:(?:" + "|".join(sorted(re.escape(n) for n in [*PATTERNS, "credential_key"]))
+    + r"):[0-9a-f]{8}\]")
 
 
 def _placeholder(pattern: str, fingerprint: str) -> str:

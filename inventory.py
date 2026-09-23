@@ -167,6 +167,9 @@ def scan_transcript(path: Path, redactor: redaction.Redactor) -> list[Row]:
 #: Pattern name for an asset over MAX_ASSET_BYTES, which was never read.
 UNSCANNED_TOO_LARGE = "unscanned_too_large"
 
+#: Pattern name for a .json or .ipynb asset that would not parse.
+UNSCANNED_UNPARSEABLE = "unscanned_unparseable"
+
 
 class GitleaksFailed(RuntimeError):
     """gitleaks ran and failed, so its half of the union is missing, not empty."""
@@ -196,15 +199,22 @@ def scan_asset(path: Path, redactor: redaction.Redactor, *, root: Path | None = 
                     category=redaction.SECRET, fingerprint="", length=size, masked=False,
                     whole_value=True)]
     text = path.read_text(encoding="utf-8", errors="replace")
+    blocked: list[Row] = []
     if path.suffix in {".json", ".ipynb"}:
         try:
             parsed = json.loads(text)
         except ValueError:
+            # Scanned as text, but without the key-based rule a short value under `TOKEN`
+            # goes unseen, so the file is also blocked rather than reported clean.
             parsed = text
+            blocked.append(Row(subject=relative, kind="asset", record=None, record_uuid=None,
+                               path="", detector="redaction", pattern=UNSCANNED_UNPARSEABLE,
+                               category=redaction.SECRET, fingerprint="", length=size,
+                               masked=False, whole_value=True))
     else:
         parsed = text
     _, found = redaction.redact_tree(parsed, categories=REPORT_ONLY, key=redactor.key)
-    return _rows_from(found, relative, "asset", None, None)
+    return blocked + _rows_from(found, relative, "asset", None, None)
 
 
 def _rows_from(found: list[redaction.Located], subject: str, kind: str,

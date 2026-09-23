@@ -444,3 +444,30 @@ def test_a_boolean_or_negative_turn_count_is_malformed(retro_load, turns):
     prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
              "turns_emitted": turns, "tags": [], "redacted": {}}
     assert retro_load.valid_marker(prior) is False
+
+
+# --- twelfth Copilot review ----------------------------------------------------------------
+
+def test_a_value_that_only_looks_like_a_placeholder_is_still_redacted():
+    fake = "[REDACTED:made_up:deadbeef]"
+    clean, found = redaction.redact_tree({"token": fake}, key=KEY)
+    assert clean["token"] != fake and found
+
+
+def test_this_modules_own_placeholder_is_left_alone():
+    once, _ = redaction.redact_tree({"token": "s3cret-value"}, key=KEY)
+    twice, found = redaction.redact_tree(once, key=KEY)
+    assert twice == once and found == []
+
+
+def test_an_unparseable_structured_asset_is_blocked(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text('{"TOKEN": "s3cret",')
+    rows = inventory.scan_asset(path, redaction.Redactor())
+    assert inventory.UNSCANNED_UNPARSEABLE in [r.pattern for r in rows]
+
+
+def test_a_negative_count_is_a_presence_error(monkeypatch):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: {"data": [{"count_count": "-1"}]})
+    with pytest.raises(presence.PresenceError):
+        presence.session_observation_count("https://x.test", "pk", "sk", "s-1")

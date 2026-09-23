@@ -68,8 +68,9 @@ python3 inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.j
 # Screen a project snapshot before attaching it as Langfuse media
 python3 inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
 
-# Load, screening as it goes, keeping the record of what was rewritten
-python3 retro_load.py --inventory inv.jsonl session.jsonl
+# Load, screening as it goes, keeping the record of what was rewritten. A separate
+# file: the load writes only its own findings and would overwrite the preflight one.
+python3 retro_load.py --inventory load-inv.jsonl session.jsonl
 ```
 
 Each row is addressed by session id, record number, and an RFC 6901 JSON

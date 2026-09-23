@@ -71,7 +71,10 @@ def session_observation_count(host: str, public_key: str, secret_key: str, sessi
         rows = body["data"]
         if not isinstance(rows, list):
             raise TypeError("data is not a list")
-        return int(rows[0]["count_count"]) if rows else 0
+        count = int(rows[0]["count_count"]) if rows else 0
+        if count < 0:
+            raise ValueError(f"negative count {count}")
+        return count
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         raise PresenceError(f"unexpected v2/metrics response: {str(body)[:200]}") from exc
 
