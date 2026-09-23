@@ -100,15 +100,15 @@ load-dry:
 # Backgrounded with nohup, as README.md has always said: a terminal or browser
 # hiccup should not kill a load partway through. Watch full_load_run.txt.
 
-# Load for real, in the background
-load FORCE="" TAG="":
-    nohup {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }} > full_load_run.txt 2>&1 &
+# Load for real, in the background. PLAN is the redaction plan from plan.py build
+load PLAN FORCE="" TAG="":
+    nohup {{PY}} run_manifest.py --plan {{quote(PLAN)}} {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }} > full_load_run.txt 2>&1 &
     @echo "started; follow with: tail -f full_load_run.txt"
 
 # Needs --session on run_manifest.py, which is in pull request #6.
 
 # Load only named sessions. Unknown ids are a hard error
-load-sessions FORCE="" TAG="" +IDS="":
+load-sessions PLAN FORCE="" TAG="" +IDS="":
     #!/usr/bin/env bash
     set -euo pipefail
     # IDS has an empty default so FORCE and TAG can be optional, and run_manifest.py
@@ -123,7 +123,7 @@ load-sessions FORCE="" TAG="" +IDS="":
     # Without --force this silently does nothing for exactly the sessions you would
     # want it for: --session filters the manifest, it does not override a marker.
     [ -n "{{FORCE}}" ] || echo "note: no FORCE given, so any session with a marker will be skipped" >&2
-    {{PY}} run_manifest.py {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }} {{ prepend("--session ", IDS) }}
+    {{PY}} run_manifest.py --plan {{quote(PLAN)}} {{FORCE}} {{ if TAG != "" { "--batch-tag " + quote(TAG) } else { "" } }} {{ prepend("--session ", IDS) }}
 
 # Needs langfuse_admin.py, which is not on main yet: see pull request #9.
 # The web interface defaults to a short time window and this corpus is

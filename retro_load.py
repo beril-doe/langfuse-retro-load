@@ -37,6 +37,7 @@ off it):
 
 import argparse
 import hashlib
+import io
 import math
 import json
 import os
@@ -50,6 +51,7 @@ load_dotenv(Path(__file__).parent / ".env")  # must run before langfuse is impor
 sys.path.insert(0, str(Path(__file__).parent))
 
 import inventory  # noqa: E402  (after the sys.path insert, like the hook import below)
+import plan  # noqa: E402
 import presence  # noqa: E402
 import redaction  # noqa: E402
 try:
@@ -71,16 +73,23 @@ except SystemExit:
 
 
 def load_all_jsonl(transcript_path: Path):
+    return parse_jsonl(transcript_path.read_bytes())
+
+
+def parse_jsonl(data: bytes) -> list:
+    """Parsed records from a transcript's bytes, skipping blank and unparseable lines."""
+    # StringIO with universal newlines splits exactly as open() does, which is how plan.py and
+    # the inventory number records. str.splitlines() would also split on U+2028, which JSON
+    # allows unescaped inside a string, and shift every record number after it.
     msgs = []
-    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msgs.append(json.loads(line))
-            except Exception as e:
-                print(f"  ! skipping unparseable line: {e}", file=sys.stderr)
+    for line in io.StringIO(data.decode("utf-8", errors="replace"), newline=None):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msgs.append(json.loads(line))
+        except Exception as e:
+            print(f"  ! skipping unparseable line: {e}", file=sys.stderr)
     return msgs
 
 
@@ -130,7 +139,7 @@ def _valid_summary(summary) -> bool:
 
 
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
-                   session_id: str, *, screened: bool = True) -> bool:
+                   session_id: str, *, screened: bool = True, planned: bool = False) -> bool:
     """True only for a marker written by a load of this session into this host and project.
 
     A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
@@ -140,6 +149,8 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
     # A marker that is not an object, or lacks what the early return prints, is treated as
     # absent, which sends the session to the presence check rather than raising.
     if not valid_marker(prior):
+        return False
+    if planned and prior.get("planned") is not True:
         return False
     # A --no-redact load records redacted=None. It is not a completion a screened run can
     # rely on: what went out was never screened.
@@ -151,7 +162,7 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
 
 def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
                  redaction_summary: dict | None = None, *, host: str | None = None,
-                 public_key: str | None = None) -> None:
+                 public_key: str | None = None, planned: bool = False) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
@@ -160,6 +171,9 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
                 # somewhere". The public key names a project and is not a secret.
                 "host": host,
                 "public_key": public_key,
+                # Whether a reviewed redaction plan was applied. A --without-plan load never
+                # satisfies a later planned run.
+                "planned": planned,
                 "turns_emitted": turn_count,
                 "tags": tags,
                 # What was rewritten before this went out, by category. A marker that says
@@ -190,6 +204,12 @@ def _idle_days(text: str) -> float:
 
 #: Exit status for "deliberately not sent", so run_manifest.py can count it apart from a load.
 EXIT_SKIPPED = 3
+
+
+def _uuid_of(msgs, record):
+    rec = msgs[record] if isinstance(record, int) and 0 <= record < len(msgs) else None
+    uuid = rec.get("uuid") if isinstance(rec, dict) else None
+    return uuid if isinstance(uuid, str) else None
 
 
 def last_activity(msgs) -> "datetime | None":
@@ -256,11 +276,25 @@ def main() -> int:
                     help="skip a session whose last record is newer than this many days, so "
                          "one still in use is not backfilled and then re-sent by live tracing "
                          "when resumed (default 7; 0 turns the check off)")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="the redaction plan from `plan.py build`. A real load requires one: it is "
+                         "what was reviewed, gitleaks included, and it must have been built from "
+                         "this transcript's exact bytes")
+    ap.add_argument("--allow-plan-without-gitleaks", action="store_true",
+                    help="accept a plan built with --no-gitleaks. Without this the load refuses "
+                         "it, since a secret only gitleaks recognises would go out")
+    ap.add_argument("--without-plan", action="store_true",
+                    help="load with the local patterns only and no reviewed plan. Says so in the "
+                         "output; meant for tests and emergencies, not for backfill")
     ap.add_argument("--inventory", type=Path, default=None,
                     help="write a JSONL row per finding here: what kind, which record, "
                          "which JSON pointer. Carries no matched text and no values")
     args = ap.parse_args()
 
+    if args.plan and not args.redact:
+        ap.error("--plan and --no-redact contradict each other: the plan is the screening")
+    if args.plan and args.without_plan:
+        ap.error("--plan and --without-plan contradict each other")
     transcript_path = args.transcript.expanduser().resolve()
     if not transcript_path.exists():
         print(f"transcript not found: {transcript_path}", file=sys.stderr)
@@ -278,14 +312,18 @@ def main() -> int:
     host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
 
     prior = already_loaded(transcript_path)
-    if marker_matches(prior, host, public_key, session_id, screened=args.redact) and not args.force:
+    if marker_matches(prior, host, public_key, session_id, screened=args.redact,
+                      planned=bool(args.plan)) and not args.force:
         # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
         # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
         print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
               f"into {host}; pass --force to reload. marker: {marker_path(transcript_path)}")
         return 0 if args.dry_run else EXIT_SKIPPED
 
-    msgs = load_all_jsonl(transcript_path)
+    # One read: the plan's hash is checked against these bytes, and these are what get parsed
+    # and rewritten, so the file changing underneath can't split the two.
+    raw = transcript_path.read_bytes()
+    msgs = parse_jsonl(raw)
 
     # Ask the project, not the local marker, whether this session is already there. The
     # marker cannot say which project a session went to. "Could not tell" stops the send.
@@ -316,11 +354,62 @@ def main() -> int:
         # reads the turn count from it and treats a nonzero exit as a failed entry.
         print(f"  would skip: {reason}")
 
+    # Apply the reviewed plan first: it is what a person looked at, and it carries gitleaks'
+    # findings, which the local patterns below can't rewrite on their own. A real load
+    # without one is refused unless --without-plan says so on purpose.
+    masks: list = []
+    header = None
+    if args.plan:
+        try:
+            header, masks = plan.load(args.plan, transcript_path, data=raw)
+            if "gitleaks" not in header.detectors and not args.allow_plan_without_gitleaks:
+                raise plan.PlanError("its plan was built without gitleaks; rebuild it with "
+                                     "gitleaks, or pass --allow-plan-without-gitleaks")
+            msgs = plan.apply(msgs, masks)
+        except plan.PlanError as e:
+            print(f"{transcript_path.name}: not sending, {e}", file=sys.stderr)
+            return 1
+        print(f"  plan applied: {sum(1 for m in masks if not m.cleared)} mask(s), "
+              f"{sum(1 for m in masks if m.cleared)} cleared, from {args.plan.name}")
+    elif not args.dry_run and not args.without_plan:
+        print(f"{transcript_path.name}: not sending without a redaction plan; build one with "
+              f"`plan.py build`, or pass --without-plan", file=sys.stderr)
+        return 1
+    elif args.without_plan:
+        print("  NO PLAN: --without-plan, so only the local patterns screen this load")
+
     # Screen before assembling turns, so everything the assembler reads is already
     # rewritten and the vendored hook needs no changes. The unit left out is one value at
     # one pointer: no record, turn or session is dropped for carrying one.
     rows: list[inventory.Row] = []
-    if args.redact:
+    if args.redact and args.plan:
+        # With a plan, the second pass checks rather than rewrites: the plan is what was
+        # reviewed, so a reviewer's clearance must hold. Anything the local patterns still
+        # find that the plan neither masked nor cleared means the plan missed it.
+        # The plan's own key, so fingerprints match the plan's and two values of the same
+        # kind in one field are told apart.
+        redactor = redaction.Redactor(key=bytes.fromhex(header.transcript_sha256))
+        _, rows = inventory.redact_records(msgs, redactor, subject=session_id,
+                                           categories=inventory.REPORT_ONLY)
+        cleared = {(m.record, m.pointer, m.pattern, m.fingerprint) for m in masks if m.cleared}
+        missed = sorted({(r.record, r.path, r.pattern, r.fingerprint) for r in rows
+                         if r.category in plan.ACTIONABLE
+                         and (r.record, r.path, r.pattern, r.fingerprint) not in cleared}, key=str)
+        # What the load rewrote is the plan, so the inventory, the summary and the marker
+        # record its masks as well as whatever report-only rows the check found.
+        rows = [inventory.Row(subject=session_id, kind="transcript", record=m.record,
+                              record_uuid=_uuid_of(msgs, m.record), path=m.pointer or "",
+                              detector=m.detector,
+                              pattern=m.pattern, category=m.category, fingerprint=m.fingerprint,
+                              length=(m.end - m.start) if m.pointer else 0, masked=False,
+                              whole_value=False)
+                for m in masks if not m.cleared] + rows
+        if missed:
+            shown = "; ".join(f"record {r} {p} {k}" for r, p, k, _ in missed[:5])
+            print(f"{transcript_path.name}: not sending, {len(missed)} finding(s) the plan "
+                  f"neither masked nor cleared ({shown}); rebuild the plan", file=sys.stderr)
+            return 1
+    elif args.redact:
         redactor = redaction.Redactor()
         msgs, rows = inventory.redact_records(msgs, redactor, subject=session_id)
     summary = {}
@@ -386,7 +475,11 @@ def main() -> int:
 
     write_marker(transcript_path, session_id, emitted, tags,
                  redaction_summary=(summary if args.redact else None),
-                 host=host, public_key=public_key)
+                 host=host, public_key=public_key,
+                 # Fully planned only with gitleaks in the plan: a local-only plan loaded with
+                 # --allow-plan-without-gitleaks must not satisfy a later normal planned run.
+                 planned=bool(args.plan) and header is not None
+                 and "gitleaks" in header.detectors)
     print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0

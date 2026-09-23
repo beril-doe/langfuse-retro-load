@@ -36,9 +36,11 @@ Usage, from ~/langfuse-retro-load on the pod:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -101,6 +103,96 @@ def context_for(leaf: str, start: int, end: int, *, show_values: bool) -> str:
     return (before + middle + after).replace("\n", " ⏎ ")
 
 
+#: What a neighbouring planned span shows as in context.
+OTHER_MASK = "[another planned mask]"
+
+
+def hide_others(leaf: str, target, others) -> tuple[str, int, int]:
+    """The field with every other planned span replaced, and the target's new offsets.
+
+    A span overlapping the target is part of the same value: the target grows to cover it,
+    so a wider gitleaks span around a narrower local one is hidden in full.
+    """
+    lo, hi = target.start, target.end
+    grown = True
+    while grown:
+        grown = False
+        for other in others:
+            if other.start < hi and lo < other.end and (other.start < lo or other.end > hi):
+                lo, hi, grown = min(lo, other.start), max(hi, other.end), True
+    target = SimpleNamespace(start=lo, end=hi)
+    spans = []
+    for other in sorted(others, key=lambda m: (m.start, m.end)):
+        if other.end <= target.start or other.start >= target.end:
+            if spans and other.start < spans[-1][1]:
+                spans[-1][1] = max(spans[-1][1], other.end)
+            else:
+                spans.append([other.start, other.end])
+    text, pos, shift = "", 0, 0
+    for start, end in spans:
+        text += leaf[pos:start] + OTHER_MASK
+        if end <= target.start:
+            shift += len(OTHER_MASK) - (end - start)
+        pos = end
+    text += leaf[pos:]
+    return text, target.start + shift, target.end + shift
+
+
+def show_plan(args, records, data: bytes) -> int:
+    """Print each mask the plan holds for this transcript, as the load will apply it."""
+    import plan
+    headers, masks = plan.read(args.plan)
+    subject = inventory._subject_for(args.transcript)
+    header = headers.get(subject)
+    if header is None:
+        print(f"{args.plan.name} has no entry for {subject}", file=sys.stderr)
+        return 1
+    if header.transcript_sha256 != hashlib.sha256(data).hexdigest():
+        print(f"{subject} changed after its plan was built; this view would not match what a "
+              f"load does. Rebuild the plan.", file=sys.stderr)
+        return 1
+    if header.masks != len(masks.get(subject, [])):
+        print(f"{args.plan.name} is incomplete for {subject}: its header lists {header.masks} "
+              f"mask(s) and {len(masks.get(subject, []))} follow. The load refuses it; rebuild "
+              f"the plan.", file=sys.stderr)
+        return 1
+    print(f"{subject}: plan from {', '.join(header.detectors)}, {header.records} records")
+    shown = unplaceable = 0
+    subject_masks = masks.get(subject, [])
+    for mask in subject_masks:
+        if args.record and mask.record not in args.record:
+            continue
+        if args.pointer and mask.pointer not in args.pointer:
+            continue
+        if args.pattern and mask.pattern not in args.pattern:
+            continue
+        where = f"record {mask.record}"
+        if mask.pointer is None:
+            if mask.cleared:
+                print(f"{where}  (no field)  {mask.pattern}: CLEARED; not pinned to a field, "
+                      f"which the load accepts because a reviewer cleared it")
+                continue
+            print(f"{where}  (no field)  {mask.pattern}: found by {mask.detector} but not pinned "
+                  f"to a field; the load will refuse this plan until it is cleared or fixed")
+            unplaceable += 1
+            continue
+        leaf = resolve(records[mask.record], mask.pointer)
+        # Every other planned span in this field is hidden before the context is cut, so
+        # reading about one mask never prints another, including gitleaks-only ones.
+        # Cleared ones too: a clearance decides what the load masks, not what this view shows.
+        siblings = [m for m in subject_masks
+                    if m is not mask and m.record == mask.record and m.pointer == mask.pointer]
+        shown_leaf, start, end = hide_others(leaf, mask, siblings)
+        label = "  CLEARED, will not be masked" if mask.cleared else ""
+        print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")
+        print(f"    {context_for(shown_leaf, start, end, show_values=args.show_values)}")
+        shown += 1
+    print(f"\n{shown} planned mask(s)" + (f", {unplaceable} not pinned" if unplaceable else "")
+          + ("" if args.show_values else ". No value was printed; pass --show-values in a "
+                                         "terminal to see the text itself."))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -117,6 +209,9 @@ def main() -> int:
                     help="only this pattern, e.g. keyed_value (repeatable)")
     ap.add_argument("--all-categories", action="store_true",
                     help="include advisory findings, which are home paths and ORCIDs")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="show what this redaction plan will mask, in context, instead of "
+                         "scanning. The same spans the load will rewrite")
     ap.add_argument("--show-values", action="store_true",
                     help="print the raw matched text. Refuses when output is not a terminal")
     args = ap.parse_args()
@@ -127,6 +222,15 @@ def main() -> int:
         return 2
 
     import retro_load
+    if args.plan:
+        if args.turn:
+            print("--turn isn't supported with --plan; use --record, --pointer or --pattern",
+                  file=sys.stderr)
+            return 2
+        # One read, used for both the hash check and the records shown, as the loader does.
+        data = args.transcript.read_bytes()
+        return show_plan(args, retro_load.parse_jsonl(data), data)
+
     records = retro_load.load_all_jsonl(args.transcript)
 
     turn_of: dict[int, int] = {}

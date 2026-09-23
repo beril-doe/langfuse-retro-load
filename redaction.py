@@ -390,9 +390,10 @@ class _Boundaries:
 #: second pass. The two must stay in step, which is what test_idempotent checks.
 #: Only this module's own pattern names, so a value that merely looks like a placeholder,
 #: such as `[REDACTED:made_up:deadbeef]`, is still screened. `credential_key` is written by
-#: the key-based whole-value rule further down.
+#: the key-based whole-value rule further down, and `gitleaks` by plan.py for gitleaks' matches.
 PLACEHOLDER_RE = re.compile(
-    r"\[REDACTED:(?:" + "|".join(sorted(re.escape(n) for n in [*PATTERNS, "credential_key"]))
+    r"\[REDACTED:(?:" + "|".join(sorted(re.escape(n) for n in [*PATTERNS, "credential_key",
+                                                                 "gitleaks"]))
     + r"):[0-9a-f]{8}\]")
 
 

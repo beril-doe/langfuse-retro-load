@@ -43,6 +43,8 @@ transfer files there) and run everything from a pod terminal.
 - **`redaction.py`**: detection and redaction of sensitive spans, as a pure
   function. No file handling, no Langfuse, no clock. The same logic has to run
   at three filter points that share nothing else, and this is the only copy.
+- **`plan.py`**: builds the redaction plan a load applies, and applies it. See "The
+  redaction plan" below.
 - **`inventory.py`**: the screening pass. Writes one row per finding, says
   where each one is, and gives `retro_load.py` the means to leave out a value
   rather than a session. See the next section.
@@ -88,10 +90,10 @@ special file permissions, unlike the `--detail` file in
 purpose is to hold the material being looked for.
 
 Two detectors, union, per
-https://github.com/beril-doe/langfuse-retro-load/issues/10, **in the inventory step
-only**: `inventory.py` runs both, while `retro_load.py` rewrites with the local
-patterns and does not run gitleaks at load time yet. Run `inventory.py` on a batch
-before loading it. The local
+https://github.com/beril-doe/langfuse-retro-load/issues/10. Both run at scan time, in
+`inventory.py` and in `plan.py build`. `retro_load.py` never invokes gitleaks itself, but
+with `--plan` it applies gitleaks' findings as the plan recorded them (see "The redaction
+plan" below); without a plan it has only the local patterns. The local
 patterns are keyword and shape anchored and can also use the key a value sits
 under, so `{"KBASE_AUTH_TOKEN": "s3cret"}` is caught on six characters.
 gitleaks knows about 150 provider shapes and gates on entropy near 3.5, so it
@@ -113,6 +115,42 @@ What this does not do, stated plainly:
 - **It is about secrets and personal details, not consent.** Whether a session
   should be loaded at all is a different question, answered by `people.json`
   and by [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
+
+## The redaction plan: scan, review, then load
+
+A load applies a **redaction plan** built and reviewed beforehand, not whatever its own
+patterns happen to catch. On the pod:
+
+```
+# 1. Scan: both detectors, one row per value to mask, no values in the file
+python3 plan.py build --out plan.jsonl [--clearances clearances.jsonl] SESSION.jsonl
+
+# 2. Review: every planned mask in context, value hidden unless --show-values in a terminal
+python3 reveal.py --transcript SESSION.jsonl --plan plan.jsonl
+
+# 3. Load: applies exactly that plan, then runs the local patterns as a second pass
+python3 retro_load.py --plan plan.jsonl SESSION.jsonl
+```
+
+Three files, three jobs. The **inventory** (`inventory.py`) is everything a scan found,
+report-only items included. **Clearances** are findings a reviewer decided are not secrets;
+each row names any of `subject`, `record`, `pointer`, `pattern`, `fingerprint`, and a missing
+field matches anything. The **redaction plan** is the actionable findings minus clearances.
+
+What the plan guarantees:
+
+- **gitleaks is part of it.** gitleaks reports a line and the matched text; the plan finds the
+  field of that record holding the text and records its pointer and offsets. A match it can't
+  place is kept as an unplaceable row, and the load refuses the plan until it is cleared.
+- **It holds no values.** Each row is a record number, a JSON pointer, character offsets,
+  the pattern and a fingerprint.
+- **It fits only the transcript it was built from.** Each transcript's header carries its
+  SHA-256, and the load refuses a plan for a transcript that has changed since.
+- **Fingerprints are stable** for the same value in the same transcript, so a clearance by
+  fingerprint keeps working when the plan is rebuilt.
+
+A real load without `--plan` is refused. `--without-plan` loads with the local patterns only
+and says so; it is for tests, not backfill.
 
 ## Not sending a session twice
 
@@ -221,7 +259,8 @@ python3 run_manifest.py --dry-run
 
 # 4. The real thing. Backgrounded, since a browser/terminal hiccup shouldn't
 #    kill a run partway through -- it's resumable via the markers either way.
-nohup python3 run_manifest.py > full_load_run.txt 2>&1 &
+python3 plan.py build --out plan.jsonl <the manifest's transcripts>   # then review with reveal.py
+nohup python3 run_manifest.py --plan plan.jsonl > full_load_run.txt 2>&1 &
 
 # 5. Verify independently against Langfuse's own API, not just this
 #    script's own "OK" output. Count the observations carrying your batch tag.
