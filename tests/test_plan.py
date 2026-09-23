@@ -1,0 +1,235 @@
+"""The redaction plan: built at scan time, checked against the transcript, applied at load."""
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import inventory  # noqa: E402
+import plan  # noqa: E402
+import redaction  # noqa: E402
+
+FAKE = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+SHAPELESS = "Zq" + "9vLm2Tx8" * 3   # a token no local pattern recognises
+
+
+def _transcript(tmp_path, records, name="s-1.jsonl") -> Path:
+    path = tmp_path / name
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return path
+
+
+def test_a_local_finding_is_planned_with_offsets_and_applied_to_just_that_span(tmp_path):
+    record = {"type": "user", "message": {"content": "before token=" + FAKE + " after"}}
+    path = _transcript(tmp_path, [record])
+    header, masks = plan.build(path, use_gitleaks=False)
+    assert header.subject == "s-1" and header.records == 1
+    assert [(m.record, m.pointer, m.pattern) for m in masks] == [(0, "/message/content", "github_pat")]
+    out = plan.apply([record], masks)[0]["message"]["content"]
+    assert FAKE not in out and out.startswith("before token=") and out.endswith(" after")
+
+
+def test_the_plan_holds_no_values(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    assert FAKE not in out.read_text()
+
+
+def test_a_gitleaks_only_match_is_pinned_to_its_field(monkeypatch, tmp_path):
+    record = {"type": "user", "message": {"content": "deploy key " + SHAPELESS + " ok"}}
+    path = _transcript(tmp_path, [{"type": "summary"}, record])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "generic-api-key", "Secret": SHAPELESS, "StartLine": 2}])
+    header, masks = plan.build(path)
+    assert "gitleaks" in header.detectors
+    assert [(m.record, m.pointer, m.detector) for m in masks] == [(1, "/message/content", "gitleaks")]
+    out = plan.apply([{"type": "summary"}, record], masks)[1]["message"]["content"]
+    assert SHAPELESS not in out and out.endswith(" ok")
+
+
+def test_a_gitleaks_match_it_cannot_find_is_kept_and_refused(monkeypatch, tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "nothing here"}}])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": "not-in-the-record", "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    with pytest.raises(plan.PlanError, match="could not be pinned"):
+        plan.for_transcript(out, path)
+
+
+def test_a_transcript_that_changed_after_planning_is_refused(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    path.write_text(path.read_text() + json.dumps({"message": {"content": "later"}}) + "\n")
+    with pytest.raises(plan.PlanError, match="changed after its plan"):
+        plan.for_transcript(out, path)
+
+
+def test_a_transcript_with_no_plan_entry_is_refused(tmp_path):
+    a = _transcript(tmp_path, [{"x": 1}], "a.jsonl")
+    b = _transcript(tmp_path, [{"x": 2}], "b.jsonl")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(a, use_gitleaks=False)])
+    with pytest.raises(plan.PlanError, match="no entry"):
+        plan.for_transcript(out, b)
+
+
+def test_a_clean_transcript_still_has_a_header(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "nothing to see"}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    assert plan.for_transcript(out, path) == []
+
+
+def test_a_clearance_removes_exactly_what_it_names(tmp_path):
+    record = {"message": {"content": "token=" + FAKE + " mail a.b@gmail.com"}}
+    path = _transcript(tmp_path, [record])
+    _, masks = plan.build(path, use_gitleaks=False, clearances=[{"pattern": "email_personal"}])
+    assert [m.pattern for m in masks] == ["github_pat"]
+
+
+def test_fingerprints_are_stable_across_scans_of_the_same_transcript(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    _, first = plan.build(path, use_gitleaks=False)
+    _, second = plan.build(path, use_gitleaks=False)
+    assert [m.fingerprint for m in first] == [m.fingerprint for m in second]
+
+
+def test_overlapping_spans_from_both_detectors_are_merged(tmp_path):
+    record = {"m": "x " + FAKE + " y"}
+    start = record["m"].index(FAKE)
+    local = plan.Mask("s", 0, "/m", start, start + len(FAKE), "github_pat", "secret", "redaction", "aaaa")
+    wider = plan.Mask("s", 0, "/m", start - 2, start + len(FAKE), "gitleaks:x", "secret", "gitleaks", "bbbb")
+    out = plan.apply([record], [local, wider])[0]["m"]
+    assert FAKE not in out and out.count("[REDACTED:") == 1 and out.endswith(" y")
+
+
+def test_a_second_redaction_pass_leaves_plan_placeholders_alone(tmp_path):
+    record = {"message": {"content": "key " + SHAPELESS}}
+    start = record["message"]["content"].index(SHAPELESS)
+    mask = plan.Mask("s", 0, "/message/content", start, start + len(SHAPELESS),
+                     "gitleaks:x", "secret", "gitleaks", "cafebabe")
+    once = plan.apply([record], [mask])[0]
+    twice, found = redaction.redact_tree(once, key=b"k")
+    assert twice == once and found == []
+
+
+@pytest.mark.parametrize("mask", [
+    plan.Mask("s", 0, "/nope", 0, 3, "p", "secret", "redaction", "f"),
+    plan.Mask("s", 0, "/m", 0, 999, "p", "secret", "redaction", "f"),
+    plan.Mask("s", 5, "/m", 0, 1, "p", "secret", "redaction", "f"),
+])
+def test_a_mask_that_does_not_fit_raises(mask):
+    with pytest.raises(plan.PlanError):
+        plan.apply([{"m": "short"}], [mask])
+
+
+def test_a_malformed_plan_line_is_a_plan_error(tmp_path):
+    out = tmp_path / "plan.jsonl"
+    out.write_text('{"kind": "mask", "subject": "s"}\n')
+    with pytest.raises(plan.PlanError):
+        plan.read(out)
+
+
+def test_build_uses_real_gitleaks_when_installed(tmp_path):
+    """End to end with the real binary, skipped where it is not installed."""
+    import shutil
+    if shutil.which("gitleaks") is None:
+        pytest.skip("gitleaks not installed")
+    record = {"message": {"content": "export GITHUB_TOKEN=" + FAKE}}
+    path = _transcript(tmp_path, [record])
+    header, masks = plan.build(path)
+    assert "gitleaks" in header.detectors
+    assert {m.detector for m in masks} == {"redaction", "gitleaks"}
+    out = plan.apply([record], masks)[0]["message"]["content"]
+    assert FAKE not in out
+
+
+# --- the loader's side ---------------------------------------------------------------------
+
+@pytest.fixture
+def loader(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import retro_load
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "markers")
+    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    return retro_load
+
+
+def _run(module, monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", *argv])
+    return module.main()
+
+
+def _session(tmp_path, content) -> Path:
+    return _transcript(tmp_path, [{"type": "user", "uuid": "u-1",
+                                   "timestamp": "2026-01-01T00:00:00Z",
+                                   "message": {"role": "user", "content": content}}])
+
+
+def test_a_real_load_without_a_plan_is_refused(loader, monkeypatch, tmp_path):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr(loader.presence, "session_observation_count", lambda *a, **k: 0)
+    assert _run(loader, monkeypatch, str(_session(tmp_path, "hi"))) == 1
+
+
+def test_a_plan_for_a_changed_transcript_is_refused(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "hi")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    path.write_text(path.read_text().replace("hi", "hello"))
+    assert _run(loader, monkeypatch, "--dry-run", "--plan", str(out), str(path)) == 1
+
+
+def test_the_plan_removes_a_secret_only_gitleaks_found(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "deploy key " + SHAPELESS)
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "generic-api-key", "Secret": SHAPELESS, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    seen = []
+    monkeypatch.setattr(loader, "build_turns", lambda msgs: seen.extend(msgs) or [])
+    assert _run(loader, monkeypatch, "--dry-run", "--plan", str(out), str(path)) == 0
+    assert SHAPELESS not in json.dumps(seen)
+
+
+def test_without_a_plan_the_same_secret_would_go_out(loader, monkeypatch, tmp_path):
+    """The control: our own patterns don't know this shape, which is why the plan exists."""
+    path = _session(tmp_path, "deploy key " + SHAPELESS)
+    seen = []
+    monkeypatch.setattr(loader, "build_turns", lambda msgs: seen.extend(msgs) or [])
+    assert _run(loader, monkeypatch, "--dry-run", str(path)) == 0
+    assert SHAPELESS in json.dumps(seen)
+
+
+# --- the viewer ------------------------------------------------------------------------------
+
+def test_reveal_shows_the_plan_without_printing_the_value(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "deploy key " + SHAPELESS + " end")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "generic-api-key", "Secret": SHAPELESS, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert "record 0  /message/content  gitleaks:generic-api-key" in printed
+    assert SHAPELESS not in printed and "deploy key" in printed
+
+
+def test_reveal_refuses_a_stale_plan(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "hi")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    path.write_text(path.read_text().replace("hi", "hello"))
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 1

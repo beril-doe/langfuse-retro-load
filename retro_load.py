@@ -49,6 +49,7 @@ load_dotenv(Path(__file__).parent / ".env")  # must run before langfuse is impor
 sys.path.insert(0, str(Path(__file__).parent))
 
 import inventory  # noqa: E402  (after the sys.path insert, like the hook import below)
+import plan  # noqa: E402
 import presence  # noqa: E402
 import redaction  # noqa: E402
 try:
@@ -233,6 +234,13 @@ def main() -> int:
                     help="skip a session whose last record is newer than this many days, so "
                          "one still in use is not backfilled and then re-sent by live tracing "
                          "when resumed (default 7; 0 turns the check off)")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="the redaction plan from `plan.py build`. A real load requires one: it is "
+                         "what was reviewed, gitleaks included, and it must have been built from "
+                         "this transcript's exact bytes")
+    ap.add_argument("--without-plan", action="store_true",
+                    help="load with the local patterns only and no reviewed plan. Says so in the "
+                         "output; meant for tests and emergencies, not for backfill")
     ap.add_argument("--inventory", type=Path, default=None,
                     help="write a JSONL row per finding here: what kind, which record, "
                          "which JSON pointer. Carries no matched text and no values")
@@ -292,6 +300,24 @@ def main() -> int:
         # A dry run reports the decision and still prints its summary: build_manifest.py
         # reads the turn count from it and treats a nonzero exit as a failed entry.
         print(f"  would skip: {reason}")
+
+    # Apply the reviewed plan first: it is what a person looked at, and it carries gitleaks'
+    # findings, which the local patterns below can't rewrite on their own. A real load
+    # without one is refused unless --without-plan says so on purpose.
+    if args.plan:
+        try:
+            masks = plan.for_transcript(args.plan, transcript_path)
+        except plan.PlanError as e:
+            print(f"{transcript_path.name}: not sending, {e}", file=sys.stderr)
+            return 1
+        msgs = plan.apply(msgs, masks)
+        print(f"  plan applied: {len(masks)} mask(s) from {args.plan.name}")
+    elif not args.dry_run and not args.without_plan:
+        print(f"{transcript_path.name}: not sending without a redaction plan; build one with "
+              f"`plan.py build`, or pass --without-plan", file=sys.stderr)
+        return 1
+    elif args.without_plan:
+        print("  NO PLAN: --without-plan, so only the local patterns screen this load")
 
     # Screen before assembling turns, so everything the assembler reads is already
     # rewritten and the vendored hook needs no changes. The unit left out is one value at

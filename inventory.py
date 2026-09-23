@@ -229,6 +229,41 @@ def _rows_from(found: list[redaction.Located], subject: str, kind: str,
     ]
 
 
+def gitleaks_findings(path: Path) -> list[dict] | None:
+    """gitleaks' raw findings for one file, or None when gitleaks is not installed.
+
+    Each finding holds the matched text under "Secret". Callers keep it in memory only for as
+    long as it takes to locate or fingerprint it, and never write it anywhere. A gitleaks run
+    that fails, or reports findings it doesn't list, raises GitleaksFailed.
+    """
+    try:
+        result = subprocess.run(
+            # --exit-code 2 separates "found something" from "failed": gitleaks exits 1
+            # for both by default, and a failure read as no output looks clean.
+            ["gitleaks", "detect", "--no-git", "--no-banner", "--exit-code", "2",
+             "--report-format", "json", "--report-path", "-", "--source", str(path)],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode not in (0, 2):
+        raise GitleaksFailed(f"gitleaks exited {result.returncode} on {path.name}; "
+                             f"its findings for this file are missing, not empty")
+    if not result.stdout.strip():
+        if result.returncode == 2:
+            raise GitleaksFailed(f"gitleaks reported findings on {path.name} but wrote no "
+                                 f"report; its findings for this file are missing")
+        return []
+    try:
+        findings = json.loads(result.stdout)
+    except ValueError as exc:
+        raise GitleaksFailed(f"gitleaks wrote an unreadable report for {path.name}; its "
+                             f"findings for this file are missing") from exc
+    if not isinstance(findings, list) or (result.returncode == 2 and not findings):
+        raise GitleaksFailed(f"gitleaks reported findings on {path.name} but listed none")
+    return findings
+
+
 def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
                   root: Path | None = None) -> list[Row]:
     """gitleaks' findings for the same files, as rows in the same inventory.
@@ -240,31 +275,11 @@ def gitleaks_rows(paths: list[Path], *, kind: str, key: bytes,
     """
     rows: list[Row] = []
     for path in paths:
-        try:
-            result = subprocess.run(
-                # --exit-code 2 separates "found something" from "failed": gitleaks exits 1
-                # for both by default, and a failure read as no output looks clean.
-                ["gitleaks", "detect", "--no-git", "--no-banner", "--exit-code", "2",
-                 "--report-format", "json", "--report-path", "-", "--source", str(path)],
-                capture_output=True, text=True, check=False,
-            )
-        except FileNotFoundError:
+        findings = gitleaks_findings(path)
+        if findings is None:
             return []
-        if result.returncode not in (0, 2):
-            raise GitleaksFailed(f"gitleaks exited {result.returncode} on {path.name}; "
-                                 f"its findings for this file are missing, not empty")
-        if not result.stdout.strip():
-            if result.returncode == 2:
-                raise GitleaksFailed(f"gitleaks reported findings on {path.name} but wrote no "
-                                     f"report; its findings for this file are missing")
+        if not findings:
             continue
-        try:
-            findings = json.loads(result.stdout)
-        except ValueError as exc:
-            raise GitleaksFailed(f"gitleaks wrote an unreadable report for {path.name}; its "
-                                 f"findings for this file are missing") from exc
-        if result.returncode == 2 and not findings:
-            raise GitleaksFailed(f"gitleaks reported findings on {path.name} but listed none")
         subject = _subject_for(path) if kind == "transcript" else (
             str(path.relative_to(root)) if root else path.name)
         # gitleaks reports file lines; a transcript row's record is its parsed-record number.

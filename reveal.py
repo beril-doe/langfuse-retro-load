@@ -101,6 +101,44 @@ def context_for(leaf: str, start: int, end: int, *, show_values: bool) -> str:
     return (before + middle + after).replace("\n", " ⏎ ")
 
 
+def show_plan(args, records) -> int:
+    """Print each mask the plan holds for this transcript, as the load will apply it."""
+    import plan
+    headers, masks = plan.read(args.plan)
+    subject = inventory._subject_for(args.transcript)
+    header = headers.get(subject)
+    if header is None:
+        print(f"{args.plan.name} has no entry for {subject}", file=sys.stderr)
+        return 1
+    if header.transcript_sha256 != plan.sha256_of(args.transcript):
+        print(f"{subject} changed after its plan was built; this view would not match what a "
+              f"load does. Rebuild the plan.", file=sys.stderr)
+        return 1
+    print(f"{subject}: plan from {', '.join(header.detectors)}, {header.records} records")
+    shown = unplaceable = 0
+    for mask in masks.get(subject, []):
+        if args.record and mask.record not in args.record:
+            continue
+        if args.pointer and mask.pointer not in args.pointer:
+            continue
+        if args.pattern and mask.pattern not in args.pattern:
+            continue
+        where = f"record {mask.record}"
+        if mask.pointer is None:
+            print(f"{where}  (no field)  {mask.pattern}: found by {mask.detector} but not pinned "
+                  f"to a field; the load will refuse this plan until it is cleared or fixed")
+            unplaceable += 1
+            continue
+        leaf = resolve(records[mask.record], mask.pointer)
+        print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector})")
+        print(f"    {context_for(leaf, mask.start, mask.end, show_values=args.show_values)}")
+        shown += 1
+    print(f"\n{shown} planned mask(s)" + (f", {unplaceable} not pinned" if unplaceable else "")
+          + ("" if args.show_values else ". No value was printed; pass --show-values in a "
+                                         "terminal to see the text itself."))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -117,6 +155,9 @@ def main() -> int:
                     help="only this pattern, e.g. keyed_value (repeatable)")
     ap.add_argument("--all-categories", action="store_true",
                     help="include advisory findings, which are home paths and ORCIDs")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="show what this redaction plan will mask, in context, instead of "
+                         "scanning. The same spans the load will rewrite")
     ap.add_argument("--show-values", action="store_true",
                     help="print the raw matched text. Refuses when output is not a terminal")
     args = ap.parse_args()
@@ -128,6 +169,9 @@ def main() -> int:
 
     import retro_load
     records = retro_load.load_all_jsonl(args.transcript)
+
+    if args.plan:
+        return show_plan(args, records)
 
     turn_of: dict[int, int] = {}
     if args.turn:
