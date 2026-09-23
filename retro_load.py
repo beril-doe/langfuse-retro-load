@@ -364,6 +364,14 @@ def main() -> int:
         missed = sorted({(r.record, r.path, r.pattern, r.fingerprint) for r in rows
                          if r.category in plan.ACTIONABLE
                          and (r.record, r.path, r.pattern, r.fingerprint) not in cleared}, key=str)
+        # What the load rewrote is the plan, so the inventory, the summary and the marker
+        # record its masks as well as whatever report-only rows the check found.
+        rows = [inventory.Row(subject=session_id, kind="transcript", record=m.record,
+                              record_uuid=None, path=m.pointer or "", detector=m.detector,
+                              pattern=m.pattern, category=m.category, fingerprint=m.fingerprint,
+                              length=(m.end - m.start) if m.pointer else 0, masked=False,
+                              whole_value=False)
+                for m in masks if not m.cleared] + rows
         if missed:
             shown = "; ".join(f"record {r} {p} {k}" for r, p, k, _ in missed[:5])
             print(f"{transcript_path.name}: not sending, {len(missed)} finding(s) the plan "

@@ -131,6 +131,17 @@ def _all_leaves(node, path: str = ""):
         yield path, node
 
 
+def _all_keys(node):
+    """Every object key, at every depth."""
+    if isinstance(node, dict):
+        for name, value in node.items():
+            yield str(name)
+            yield from _all_keys(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _all_keys(value)
+
+
 def is_cleared(mask: Mask, clearances: list[dict]) -> bool:
     """A clearance names any of subject, record, pointer, pattern and fingerprint; a missing
     or null field matches anything, so `{"subject": s, "pattern": "orcid"}` clears that pattern
@@ -202,7 +213,8 @@ def _place_gitleaks(finding: dict, records: list, numbers: dict[int, int], subje
     # raw line, not the parsed field, so every copy counts rather than one guessed occurrence.
     eligible = dict(_leaves(records[record]))
     if any(secret in leaf for pointer, leaf in _all_leaves(records[record])
-           if pointer not in eligible):
+           if pointer not in eligible) or any(secret in k for k in _all_keys(records[record])):
+        # A copy in an object key can't be masked either: the plan rewrites values only.
         return [unplaceable]
     placed = []
     for pointer, leaf in eligible.items():

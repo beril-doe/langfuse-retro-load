@@ -393,3 +393,39 @@ def test_reveal_never_prints_a_neighbouring_planned_value(monkeypatch, tmp_path,
     assert reveal.main() == 0
     printed = capsys.readouterr().out
     assert other not in printed and FAKE not in printed and "[another planned mask]" in printed
+
+
+# --- third Copilot review of PR 27 ------------------------------------------------------------
+
+def test_a_gitleaks_value_that_is_also_an_object_key_blocks(monkeypatch, tmp_path):
+    record = {"type": "user", "message": {"content": "key " + SHAPELESS, "meta": {SHAPELESS: 1}}}
+    path = _transcript(tmp_path, [record])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": SHAPELESS, "StartLine": 1}])
+    _, masks = plan.build(path)
+    assert [(m.pointer, m.detector) for m in masks] == [(None, "gitleaks")]
+
+
+def test_the_manifest_refuses_a_real_run_without_a_plan(monkeypatch, tmp_path):
+    import run_manifest
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("[]")
+    monkeypatch.setattr(sys, "argv", ["run_manifest.py", "--manifest", str(manifest)])
+    with pytest.raises(SystemExit):
+        run_manifest.main()
+
+
+def test_the_inventory_records_what_the_plan_masked(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "deploy key " + SHAPELESS)
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "generic-api-key", "Secret": SHAPELESS, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    inv = tmp_path / "load-inv.jsonl"
+    monkeypatch.setattr(loader, "build_turns", lambda msgs: [])
+    assert _run(loader, monkeypatch, "--dry-run", "--plan", str(out), "--inventory", str(inv),
+                str(path)) == 0
+    rows = [json.loads(line) for line in inv.read_text().splitlines()]
+    assert [(r["detector"], r["pattern"]) for r in rows if r["category"] == "secret"] == [
+        ("gitleaks", "gitleaks:generic-api-key")]
+    assert SHAPELESS not in inv.read_text()

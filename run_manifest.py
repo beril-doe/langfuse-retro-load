@@ -79,6 +79,9 @@ def main() -> int:
                      help="tag identifying this run as a batch, so it's filterable/auditable later "
                           "(default matches the 2026-08-20 full load; override for any later run)")
     args = ap.parse_args()
+    if not args.dry_run and args.plan is None:
+        # retro_load.py refuses a real load without one, so every session would fail.
+        ap.error("a real run needs --plan; build it with plan.py build over the same sessions")
 
     manifest = json.loads(Path(args.manifest).read_text())
     if args.limit is not None:

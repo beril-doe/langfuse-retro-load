@@ -259,7 +259,8 @@ python3 run_manifest.py --dry-run
 
 # 4. The real thing. Backgrounded, since a browser/terminal hiccup shouldn't
 #    kill a run partway through -- it's resumable via the markers either way.
-nohup python3 run_manifest.py > full_load_run.txt 2>&1 &
+python3 plan.py build --out plan.jsonl <the manifest's transcripts>   # then review with reveal.py
+nohup python3 run_manifest.py --plan plan.jsonl > full_load_run.txt 2>&1 &
 
 # 5. Verify independently against Langfuse's own API, not just this
 #    script's own "OK" output. Compare the run's own emitted-file count against
