@@ -36,6 +36,7 @@ Usage, from ~/langfuse-retro-load on the pod:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -137,7 +138,7 @@ def hide_others(leaf: str, target, others) -> tuple[str, int, int]:
     return text, target.start + shift, target.end + shift
 
 
-def show_plan(args, records) -> int:
+def show_plan(args, records, data: bytes) -> int:
     """Print each mask the plan holds for this transcript, as the load will apply it."""
     import plan
     headers, masks = plan.read(args.plan)
@@ -146,7 +147,7 @@ def show_plan(args, records) -> int:
     if header is None:
         print(f"{args.plan.name} has no entry for {subject}", file=sys.stderr)
         return 1
-    if header.transcript_sha256 != plan.sha256_of(args.transcript):
+    if header.transcript_sha256 != hashlib.sha256(data).hexdigest():
         print(f"{subject} changed after its plan was built; this view would not match what a "
               f"load does. Rebuild the plan.", file=sys.stderr)
         return 1
@@ -221,10 +222,16 @@ def main() -> int:
         return 2
 
     import retro_load
-    records = retro_load.load_all_jsonl(args.transcript)
-
     if args.plan:
-        return show_plan(args, records)
+        if args.turn:
+            print("--turn isn't supported with --plan; use --record, --pointer or --pattern",
+                  file=sys.stderr)
+            return 2
+        # One read, used for both the hash check and the records shown, as the loader does.
+        data = args.transcript.read_bytes()
+        return show_plan(args, retro_load.parse_jsonl(data), data)
+
+    records = retro_load.load_all_jsonl(args.transcript)
 
     turn_of: dict[int, int] = {}
     if args.turn:

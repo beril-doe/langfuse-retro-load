@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import sys
@@ -88,16 +89,20 @@ def sha256_of(path: Path) -> str:
 
 def _records(path: Path) -> list:
     """Parsed records, numbered the way load_all_jsonl() and the inventory number them."""
+    return _parse(path.read_bytes())
+
+
+def _parse(data: bytes) -> list:
+    """Parsed records from bytes, splitting lines as open() does (universal newlines)."""
     out = []
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except ValueError:  # noqa: S112 -- the loader skips these lines too
-                continue
+    for line in io.StringIO(data.decode("utf-8", errors="replace"), newline=None):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:  # noqa: S112 -- the loader skips these lines too
+            continue
     return out
 
 
@@ -192,10 +197,14 @@ def build(path: Path, *, clearances: list[dict] | None = None,
     transcript fingerprints the same way on every scan and a clearance written against one
     scan still matches the next. Anyone who can compute one already holds the transcript.
     """
-    digest = sha256_of(path)
+    # One snapshot: hash and parse the same bytes, and after gitleaks and the record-number
+    # map (which read the path again) check the file is still those bytes, so a file
+    # replaced mid-scan can't tie one version's hash to another's findings.
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
     key = bytes.fromhex(digest)
     subject = inventory._subject_for(path)
-    records = _records(path)
+    records = _parse(data)
     masks: list[Mask] = []
 
     for index, record in enumerate(records):
@@ -221,6 +230,9 @@ def build(path: Path, *, clearances: list[dict] | None = None,
         numbers = inventory.record_numbers(path)
         for finding in findings:
             masks.extend(_place_gitleaks(finding, records, numbers, subject, key))
+
+    if sha256_of(path) != digest:
+        raise PlanError(f"{path.name} changed while it was being scanned; build the plan again")
 
     clearances = clearances or []
     validate_clearances(clearances)

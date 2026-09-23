@@ -576,3 +576,40 @@ def test_planned_inventory_rows_keep_the_record_uuid(loader, monkeypatch, tmp_pa
                 "--inventory", str(inv), str(path)) == 0
     rows = [json.loads(line) for line in inv.read_text().splitlines()]
     assert rows and all(r["record_uuid"] == "u-1" for r in rows if r["category"] == "secret")
+
+
+# --- seventh Copilot review of PR 27 ----------------------------------------------------------
+
+def test_a_transcript_replaced_during_the_scan_is_refused(monkeypatch, tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+
+    def swap(p):
+        p.write_text(json.dumps({"message": {"content": "something else"}}) + "\n")
+        return []
+    monkeypatch.setattr(inventory, "gitleaks_findings", swap)
+    with pytest.raises(plan.PlanError, match="changed while"):
+        plan.build(path)
+
+
+def test_reveal_shows_the_records_it_hashed(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "token=" + FAKE + " end")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    seen = {}
+    real = reveal.show_plan
+    monkeypatch.setattr(reveal, "show_plan",
+                        lambda args, records, data: seen.update(n=len(records), d=data) or real(args, records, data))
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 0
+    assert seen["d"] == path.read_bytes() and seen["n"] == 1
+
+
+def test_reveal_rejects_turn_with_plan(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "hi")
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan",
+                                      str(tmp_path / "p.jsonl"), "--turn", "1"])
+    assert reveal.main() == 2
