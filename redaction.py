@@ -676,7 +676,10 @@ def redact_value(text, *, key_name: str | None = None,
     # or the report it writes says a value is clean because this run was not rewriting.
     if key_name is not None and is_credential_key(key_name) and not is_reference(text):
         finding = _whole_value_finding(text, CREDENTIAL_KEY, key)
-        return (finding.placeholder if SECRET in categories else text), [finding]
+        # The whole value is replaced, but a personal detail inside it is still reported, so
+        # the inventory keeps one row per finding.
+        others = [f for f in detect(text, key=key) if f.category != SECRET]
+        return (finding.placeholder if SECRET in categories else text), [finding, *others]
 
     findings = detect(text, key=key)
     secrets = [f for f in findings if f.category == SECRET]
@@ -685,7 +688,8 @@ def redact_value(text, *, key_name: str | None = None,
         # record still learns what kind of thing was in there.
         widest = max(secrets, key=lambda f: (f.length, -f.start))
         finding = _whole_value_finding(text, widest.pattern, key)
-        return (finding.placeholder if SECRET in categories else text), [finding]
+        others = [f for f in findings if f.category != SECRET]
+        return (finding.placeholder if SECRET in categories else text), [finding, *others]
 
     return redact(text, categories=categories, key=key)
 
@@ -747,7 +751,10 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
         block_payload = payload_by_type.get(node.get("type"), frozenset()) \
             if isinstance(node.get("type"), str) else frozenset()
         for name, value in node.items():
-            if isinstance(value, str) and str(name) in skip_keys:
+            # A structural name under a credential key is not structure, it is the secret:
+            # `{"token": {"id": "s3cret"}}`.
+            under_credential = key_name is not None and is_credential_key(key_name)
+            if isinstance(value, str) and str(name) in skip_keys and not under_credential:
                 out[name] = value
                 continue
             # Under a credential key, a nested mapping is still the credential: keep the
@@ -784,9 +791,9 @@ def redact_tree(node, *, categories: frozenset[str] = DEFAULT_REDACT,
         clean, findings = redact_value(node, key_name=key_name, categories=categories, key=key)
         # Whether the finding covers the whole leaf, not whether this call rewrote it: a
         # report-only pass rewrites nothing and still has to say the unit was the value.
-        whole = any(f.start == 0 and f.end == len(node) for f in findings)
-    else:
-        clean, findings = redact(node, categories=categories, key=key)
-        whole = False
-    return clean, [Located(path=path, key_name=key_name, whole_value=whole, finding=f)
+        return clean, [Located(path=path, key_name=key_name,
+                               whole_value=(f.start == 0 and f.end == len(node)), finding=f)
+                       for f in findings]
+    clean, findings = redact(node, categories=categories, key=key)
+    return clean, [Located(path=path, key_name=key_name, whole_value=False, finding=f)
                    for f in findings]

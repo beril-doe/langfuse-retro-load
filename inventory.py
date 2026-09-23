@@ -259,7 +259,10 @@ def gitleaks_findings(path: Path) -> list[dict] | None:
     except ValueError as exc:
         raise GitleaksFailed(f"gitleaks wrote an unreadable report for {path.name}; its "
                              f"findings for this file are missing") from exc
-    if not isinstance(findings, list) or (result.returncode == 2 and not findings):
+    if not isinstance(findings, list) or not all(isinstance(f, dict) for f in findings):
+        raise GitleaksFailed(f"gitleaks wrote a report for {path.name} that is not a list "
+                             f"of findings")
+    if result.returncode == 2 and not findings:
         raise GitleaksFailed(f"gitleaks reported findings on {path.name} but listed none")
     return findings
 

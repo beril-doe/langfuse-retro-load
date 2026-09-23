@@ -578,3 +578,29 @@ def test_a_marker_with_non_string_tags_never_matches(retro_load):
     prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
              "turns_emitted": 3, "tags": [1], "redacted": {}}
     assert retro_load.marker_matches(prior, "https://a.test", "pk-a", "s-1") is False
+
+
+# --- eighteenth Copilot review -------------------------------------------------------------
+
+def test_a_personal_detail_beside_a_secret_in_one_value_is_still_reported():
+    value = "token=" + FAKE + " owner a.b@gmail.com"
+    clean, found = redaction.redact_tree({"api_key": value}, key=KEY)
+    assert FAKE not in json.dumps(clean) and "a.b@gmail.com" not in json.dumps(clean)
+    assert {f.finding.category for f in found} == {redaction.SECRET, redaction.PERSON}
+
+
+def test_a_structural_name_under_a_credential_key_is_screened():
+    node = {"token": {"id": "s3cret", "type": "bearer-ish"}}
+    clean, found = redaction.redact_tree(node, key=KEY, skip_keys=inventory.STRUCTURAL_KEYS,
+                                         payload_keys=inventory.PAYLOAD_KEYS)
+    assert "s3cret" not in json.dumps(clean) and found
+
+
+@pytest.mark.parametrize("report", ["{}", "[null]", '["x"]'])
+def test_a_gitleaks_report_of_the_wrong_shape_is_a_failure(monkeypatch, tmp_path, report):
+    path = tmp_path / "t.jsonl"
+    path.write_text("{}\n")
+    monkeypatch.setattr(inventory.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, returncode=2, stdout=report, stderr=""))
+    with pytest.raises(inventory.GitleaksFailed):
+        inventory.gitleaks_rows([path], kind="transcript", key=KEY)
