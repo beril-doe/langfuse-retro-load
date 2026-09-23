@@ -2,20 +2,20 @@
 
 Three ways the same session can land in a project twice, and what answers each:
 
-1. This loader runs twice. The local marker in ~/.retro_load_markers/ says nothing about
-   which project a session went to, so it cannot answer "is it in *this* project". Ask
-   the project: `session_observation_count()`.
+1. This loader runs twice. Its local marker records the destination of that load, but
+   cannot observe another client or a later server-side deletion. Ask the project:
+   `session_observation_count()` when the loader reaches its presence preflight.
 2. The loader runs after live tracing already sent the session. Same question, same answer,
    because live traces carry the same session id.
-3. Someone resumes a backfilled session after opting in to live tracing. The live hook has no
-   state for it and re-sends every earlier turn, backdated to when it happened. Whoever
-   forwards those spans can drop the ones that start at or before `covered_through()`: the
-   latest start time the project already holds for that session. New turns start later and
-   pass. In BERIL that forwarder is the relay (ui/app/routes/langfuse.py), which holds the
-   project keys this needs; the hooks themselves cannot read.
+3. Someone resumes a backfilled session with no corresponding live-hook state, which can
+   resend earlier turns. `covered_through()` provides the greatest observed start time
+   for analysis, not proof that all earlier observations arrived. Partial uploads, equal
+   timestamps and late arrivals make dropping everything before it unsafe without a
+   stronger deduplication contract. No live adapter is implemented here; see issue #30.
 
-Standard library only, and no import from the rest of this repo, so it can be copied into
-another codebase unchanged. It uses only read routes that survive the 2026-11-16 removal
+Standard library only, and no import from the rest of this repo. Reuse still requires an
+authorized read path: BERIL's write-only relay does not expose these reads to clients.
+It uses only read routes that survive the 2026-11-16 removal
 (`/api/public/v2/metrics`, `/api/public/v2/observations`), and v2/metrics is documented as a
 real-time read path, where the older list routes can lag by about ten minutes.
 

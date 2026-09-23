@@ -4,6 +4,10 @@ Loads already-completed Claude Code sessions into BERIL's Langfuse org,
 backdating each step to when the conversation actually happened instead of
 only capturing new sessions going forward.
 
+For how this work and Dileep's BERIL live tracing benefit each other, see the
+[reuse accounting and handoff](docs/live-tracing-handoff.md) and
+[implementation tracker #30](https://github.com/beril-doe/langfuse-retro-load/issues/30).
+
 ## Before anything else: this has to run on the pod, not your laptop
 
 The source transcripts live on the BERDL pod, and some of them (the frozen
@@ -41,8 +45,9 @@ transfer files there) and run everything from a pod terminal.
   `--tag` flags per file, which doesn't scale and is easy to get wrong.
 
 - **`redaction.py`**: detection and redaction of sensitive spans, as a pure
-  function. No file handling, no Langfuse, no clock. The same logic has to run
-  at three filter points that share nothing else, and this is the only copy.
+  function. No file handling, no Langfuse, no clock. This is the reusable
+  engine for this repository; adapting it to BERIL's live masking policy and
+  other filtering points remains tracked in #30.
 - **`plan.py`**: builds the redaction plan a load applies, and applies it. See "The
   redaction plan" below.
 - **`inventory.py`**: the screening pass. Writes one row per finding, says
@@ -53,7 +58,8 @@ transfer files there) and run everything from a pod terminal.
 
 `retro_load.py` screens by default. Every record still goes out; the values
 that carry a secret or someone's personal details are replaced in place, one
-value at a time, and `--no-redact` turns that off.
+value at a time. A real load requires `--plan` unless explicitly bypassed with
+`--without-plan`; `--no-redact` is incompatible with a plan.
 
 That is the whole design decision. The scanner proposed in
 [#6](https://github.com/beril-doe/langfuse-retro-load/pull/6) answers one
@@ -70,9 +76,9 @@ python3 inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.j
 # Screen a project snapshot before attaching it as Langfuse media
 python3 inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
 
-# Load, screening as it goes, keeping the record of what was rewritten. A separate
-# file: the load writes only its own findings and would overwrite the preflight one.
-python3 retro_load.py --inventory load-inv.jsonl session.jsonl
+# Build and review a plan first (see the next section), then load it. Keep the
+# load inventory separate: the loader would overwrite the preflight inventory.
+python3 retro_load.py --plan plan.jsonl --inventory load-inv.jsonl session.jsonl
 ```
 
 Each row is addressed by session id, record number, and an RFC 6901 JSON
@@ -81,9 +87,11 @@ observation, or drop one record, and still emit everything around it.
 `inventory.excluded_paths()` returns those pointers grouped by record.
 
 **No row carries matched text, a value, an absolute path, or the fingerprint
-key.** A fingerprint is HMAC-SHA256 under a key that is random per run and
-never stored, so equal fingerprints mean the same value appeared twice and
-nothing else. One token in 41 records is one thing to rotate; 41 unrelated
+key.** Standalone inventory fingerprints use HMAC-SHA256 with a random,
+unstored key per run. Plan fingerprints instead use the transcript hash as
+the key so clearances remain stable for the same transcript. Matching
+fingerprints group findings within that key scope; they do not authenticate
+a reviewer. One token in 41 records is one thing to rotate; 41 unrelated
 findings is a different afternoon. It also means the inventory needs no
 special file permissions, unlike the `--detail` file in
 [#6](https://github.com/beril-doe/langfuse-retro-load/pull/6), whose whole
@@ -118,8 +126,10 @@ What this does not do, stated plainly:
 
 ## The redaction plan: scan, review, then load
 
-A load applies a **redaction plan** built and reviewed beforehand, not whatever its own
-patterns happen to catch. On the pod:
+A real load normally requires a **redaction plan** built before sending. The
+operator reviews its masks using `reveal.py --plan`; the loader applies them
+and checks for remaining local findings that were neither masked nor cleared.
+On the pod:
 
 ```
 # 1. Scan: both detectors, one row per value to mask, no values in the file
@@ -128,7 +138,7 @@ python3 plan.py build --out plan.jsonl [--clearances clearances.jsonl] SESSION.j
 # 2. Review: every planned mask in context, value hidden unless --show-values in a terminal
 python3 reveal.py --transcript SESSION.jsonl --plan plan.jsonl
 
-# 3. Load: applies exactly that plan, then runs the local patterns as a second pass
+# 3. Load: applies the plan, then checks for uncleared local findings
 python3 retro_load.py --plan plan.jsonl SESSION.jsonl
 ```
 
@@ -150,7 +160,13 @@ What the plan guarantees:
   fingerprint keeps working when the plan is rebuilt.
 
 A real load without `--plan` is refused. `--without-plan` loads with the local patterns only
-and says so; it is for tests, not backfill.
+and says so; it is for tests, not backfill. A plan built with `--no-gitleaks`
+also needs explicit `--allow-plan-without-gitleaks` at load time.
+
+The transcript hash and mask count check source consistency and truncation;
+they do not prove that a person reviewed the plan or that its mask rows have
+not been edited since review. That remaining contract is tracked in
+[issue #29](https://github.com/beril-doe/langfuse-retro-load/issues/29).
 
 ## Not sending a session twice
 
@@ -159,19 +175,22 @@ anything, through `presence.py`:
 
 - **Already there.** If the project holds any observations for the session id, the session is
   skipped. This covers a second run of this loader and a session live tracing already sent. The
-  local marker cannot answer this, because it does not record which project a session went to.
+  local marker cannot detect a session sent by another client, even though current markers
+  record their destination.
   `--allow-existing` sends anyway.
 - **Still in use.** A session whose last record is newer than `--min-idle-days` (default 7) is
-  skipped, because resuming it with live tracing on would re-send every earlier turn.
+  skipped, because resuming it without corresponding live-hook state can re-send earlier turns.
 - **Could not tell.** A failed check stops the send. A skipped session can be loaded later; a
   duplicate can only be removed by deleting whole traces.
 
 A skip exits with status 3, and `run_manifest.py` lists skipped sessions separately.
 
-`presence.covered_through()` returns the latest start time the project holds for a session. It
-is not used here. It is for whatever forwards live traces (in BERIL, the relay), which could drop
-re-sent turns that start at or before it. `presence.py` uses only the standard library and the
-read routes that survive 2026-11-16, so it can be copied as is.
+`presence.covered_through()` returns the greatest observation start time held for a
+session. It is not used by this loader or integrated into BERIL's relay. Reuse is
+tracked in #30, but this value is not a completeness watermark: partial uploads,
+equal timestamps and late arrivals can leave gaps before it. A live adapter needs
+those cases tested before dropping earlier spans. The helper also requires read
+access that the write-only relay does not expose to clients.
 
 ## Adding a person or a new source
 

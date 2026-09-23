@@ -326,7 +326,8 @@ def main() -> int:
     msgs = parse_jsonl(raw)
 
     # Ask the project, not the local marker, whether this session is already there. The
-    # marker cannot say which project a session went to. "Could not tell" stops the send.
+    # marker records this loader's destination but cannot observe other clients.
+    # "Could not tell" stops the send.
     # --dry-run never calls Langfuse, so it does not ask either. --allow-existing covers a
     # project that answered "yes, it is here", never one that could not answer.
     existing = 0
