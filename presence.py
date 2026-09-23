@@ -72,9 +72,11 @@ def session_observation_count(host: str, public_key: str, secret_key: str, sessi
         if not isinstance(rows, list):
             raise TypeError("data is not a list")
         raw = rows[0]["count_count"] if rows else 0
-        if isinstance(raw, bool):
-            raise TypeError("count is a boolean")
-        count = int(raw)
+        # A count is a whole number: reject booleans and fractions rather than coerce them,
+        # since int() would turn false or 0.9 into 0, which reads as "not in the project".
+        if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+            raise TypeError(f"count is not a whole number: {raw!r}")
+        count = int(str(raw)) if isinstance(raw, str) else int(raw)
         if count < 0:
             raise ValueError(f"negative count {count}")
         return count
@@ -103,8 +105,10 @@ def covered_through(host: str, public_key: str, secret_key: str, session_id: str
             raise PresenceError(f"unexpected v2/observations response: {str(body)[:200]}") from exc
         for row in rows:
             stamp = row.get("startTime")
-            if not stamp:
+            if stamp is None:
                 continue
+            if not isinstance(stamp, str) or not stamp:
+                raise PresenceError(f"malformed startTime in v2/observations: {stamp!r}")
             try:
                 when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
             except ValueError as exc:

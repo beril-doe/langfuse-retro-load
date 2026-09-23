@@ -467,3 +467,55 @@ def test_a_boolean_count_is_a_presence_error(monkeypatch, count):
     monkeypatch.setattr(presence, "_get", lambda *a, **k: {"data": [{"count_count": count}]})
     with pytest.raises(presence.PresenceError):
         presence.session_observation_count("https://x.test", "pk", "sk", "s-1")
+
+
+# --- fifteenth Copilot review --------------------------------------------------------------
+
+@pytest.mark.parametrize("flag", ["--out", "--report"])
+def test_inventory_refuses_to_overwrite_an_input(monkeypatch, tmp_path, flag):
+    path = _transcript(tmp_path)
+    before = path.read_bytes()
+    out = path if flag == "--out" else tmp_path / "inv.jsonl"
+    argv = ["inventory.py", "--no-gitleaks", "--out", str(out)]
+    if flag == "--report":
+        argv += ["--report", str(path)]
+    monkeypatch.setattr(sys, "argv", argv + [str(path)])
+    with pytest.raises(SystemExit):
+        inventory.main()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("text", [
+    '{\\"Authorization\\":\\"Basic ZmFrZXVzZXI6ZmFrZXBhc3M=\\"}',
+    '{\\\\"authorization\\\\": \\\\"Token abcdefghijklmnop\\\\"}',
+])
+def test_an_escaped_authorization_header_is_redacted(text):
+    clean, findings = redaction.redact(text, key=KEY)
+    assert "ZmFrZXVzZXI6ZmFrZXBhc3M" not in clean and "abcdefghijklmnop" not in clean
+    assert [f.pattern for f in findings] == ["auth_header"]
+
+
+def test_a_semicolon_ends_an_unquoted_value():
+    clean, findings = redaction.redact("token=abcdefghij;token=klmnopqrst", key=KEY)
+    assert [f.pattern for f in findings] == ["keyed_value", "keyed_value"]
+    assert ";token=" in clean
+
+
+def test_a_semicolon_inside_a_quoted_value_is_content():
+    clean, _ = redaction.redact('password="abcdefgh;ijklmnop"', key=KEY)
+    assert "ijklmnop" not in clean
+
+
+@pytest.mark.parametrize("count", [0.9, "0.9", 1.5])
+def test_a_fractional_count_is_a_presence_error(monkeypatch, count):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: {"data": [{"count_count": count}]})
+    with pytest.raises(presence.PresenceError):
+        presence.session_observation_count("https://x.test", "pk", "sk", "s-1")
+
+
+@pytest.mark.parametrize("stamp", ["", 0, []])
+def test_a_present_but_malformed_start_time_is_a_presence_error(monkeypatch, stamp):
+    monkeypatch.setattr(presence, "_get", lambda *a, **k: {"data": [
+        {"startTime": "2026-05-07T21:34:03Z"}, {"startTime": stamp}], "meta": {}})
+    with pytest.raises(presence.PresenceError):
+        presence.covered_through("https://x.test", "pk", "sk", "s-1")
