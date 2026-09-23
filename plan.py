@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -55,6 +56,9 @@ class Header:
     transcript_sha256: str
     records: int
     detectors: tuple[str, ...]
+    #: How many mask rows follow for this transcript, cleared ones included. A plan cut short
+    #: after its header would otherwise read as a clean one.
+    masks: int = -1
     kind: str = "transcript"
 
 
@@ -96,7 +100,8 @@ def _records(path: Path) -> list:
     return out
 
 
-def _leaves(node, path: str = "", *, in_payload: bool = False, key: str | None = None):
+def _leaves(node, path: str = "", *, in_payload: bool = False, key: str | None = None,
+            under_credential: bool = False):
     """Every string leaf the loader screens, with its RFC 6901 pointer.
 
     The same boundaries as inventory.redact_records(): a structural field (`id`, `uuid`,
@@ -107,15 +112,20 @@ def _leaves(node, path: str = "", *, in_payload: bool = False, key: str | None =
     if isinstance(node, dict):
         block_payload = inventory.PAYLOAD_BY_TYPE.get(node.get("type"), frozenset()) \
             if isinstance(node.get("type"), str) else frozenset()
+        # Under a credential key a structural name is the secret, as in redact_tree().
+        credential = under_credential or (key is not None and redaction.is_credential_key(key))
         for name, value in node.items():
             name = str(name)
             yield from _leaves(value, f"{path}/{redaction._escape_token(name)}",
                                in_payload=(in_payload or name in inventory.PAYLOAD_KEYS
-                                           or name in block_payload), key=name)
+                                           or name in block_payload), key=name,
+                               under_credential=credential)
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            yield from _leaves(value, f"{path}/{index}", in_payload=in_payload, key=key)
-    elif isinstance(node, str) and (in_payload or key not in inventory.STRUCTURAL_KEYS):
+            yield from _leaves(value, f"{path}/{index}", in_payload=in_payload, key=key,
+                               under_credential=under_credential)
+    elif isinstance(node, str) and (in_payload or under_credential
+                                    or key not in inventory.STRUCTURAL_KEYS):
         yield path, node
 
 
@@ -192,7 +202,7 @@ def build(path: Path, *, clearances: list[dict] | None = None,
     clearances = clearances or []
     masks = [replace(m, cleared=True) if is_cleared(m, clearances) else m for m in masks]
     return Header(subject=subject, transcript_sha256=digest, records=len(records),
-                  detectors=tuple(detectors)), masks
+                  detectors=tuple(detectors), masks=len(masks)), masks
 
 
 def _place_gitleaks(finding: dict, records: list, numbers: dict[int, int], subject: str,
@@ -228,11 +238,16 @@ def _place_gitleaks(finding: dict, records: list, numbers: dict[int, int], subje
 
 
 def write(out: Path, entries: list[tuple[Header, list[Mask]]]) -> None:
-    with out.open("w", encoding="utf-8") as handle:
+    """Write to a temporary file beside `out` and rename it into place, so a reader sees the
+    whole plan or none of it."""
+    tmp = out.with_name(out.name + ".partial")
+    with tmp.open("w", encoding="utf-8") as handle:
         for header, masks in entries:
+            header = replace(header, masks=len(masks))
             handle.write(json.dumps(asdict(header), sort_keys=True) + "\n")
             for mask in masks:
                 handle.write(json.dumps(asdict(mask), sort_keys=True) + "\n")
+    os.replace(tmp, out)
 
 
 def read(path: Path) -> tuple[dict[str, Header], dict[str, list[Mask]]]:
@@ -272,6 +287,9 @@ def load(plan_path: Path, transcript: Path) -> tuple[Header, list[Mask]]:
     if header.transcript_sha256 != sha256_of(transcript):
         raise PlanError(f"{subject} changed after its plan was built; rebuild the plan")
     rows = masks.get(subject, [])
+    if header.masks != len(rows):
+        raise PlanError(f"{plan_path.name} is incomplete for {subject}: its header lists "
+                        f"{header.masks} mask(s) and {len(rows)} follow; rebuild the plan")
     unplaceable = [m for m in rows if m.pointer is None and not m.cleared]
     if unplaceable:
         raise PlanError(f"{len(unplaceable)} finding(s) in {subject} could not be pinned to a "

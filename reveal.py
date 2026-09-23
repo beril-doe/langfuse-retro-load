@@ -39,6 +39,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -108,8 +109,17 @@ OTHER_MASK = "[another planned mask]"
 def hide_others(leaf: str, target, others) -> tuple[str, int, int]:
     """The field with every other planned span replaced, and the target's new offsets.
 
-    A span overlapping the target is part of the same value and stays with it.
+    A span overlapping the target is part of the same value: the target grows to cover it,
+    so a wider gitleaks span around a narrower local one is hidden in full.
     """
+    lo, hi = target.start, target.end
+    grown = True
+    while grown:
+        grown = False
+        for other in others:
+            if other.start < hi and lo < other.end and (other.start < lo or other.end > hi):
+                lo, hi, grown = min(lo, other.start), max(hi, other.end), True
+    target = SimpleNamespace(start=lo, end=hi)
     spans = []
     for other in sorted(others, key=lambda m: (m.start, m.end)):
         if other.end <= target.start or other.start >= target.end:

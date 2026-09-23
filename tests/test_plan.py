@@ -429,3 +429,54 @@ def test_the_inventory_records_what_the_plan_masked(loader, monkeypatch, tmp_pat
     assert [(r["detector"], r["pattern"]) for r in rows if r["category"] == "secret"] == [
         ("gitleaks", "gitleaks:generic-api-key")]
     assert SHAPELESS not in inv.read_text()
+
+
+# --- fourth Copilot review of PR 27 -----------------------------------------------------------
+
+def test_a_plan_cut_short_after_its_header_is_refused(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    header_line = out.read_text().splitlines()[0]
+    out.write_text(header_line + "\n")          # the mask rows never made it
+    with pytest.raises(plan.PlanError, match="incomplete"):
+        plan.for_transcript(out, path)
+
+
+def test_the_plan_is_written_atomically(monkeypatch, tmp_path):
+    path = _transcript(tmp_path, [{"x": 1}])
+    out = tmp_path / "plan.jsonl"
+    out.write_text("previous plan\n")
+    monkeypatch.setattr(plan.json, "dumps", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(OSError):
+        plan.write(out, [plan.build(path, use_gitleaks=False)])
+    assert out.read_text() == "previous plan\n"
+
+
+def test_an_unplanned_marker_does_not_satisfy_a_planned_run(loader):
+    prior = {"session_id": "s-1", "host": "https://a.test", "public_key": "pk-a",
+             "turns_emitted": 3, "tags": [], "redacted": {}, "planned": False}
+    assert loader.marker_matches(prior, "https://a.test", "pk-a", "s-1") is True
+    assert loader.marker_matches(prior, "https://a.test", "pk-a", "s-1", planned=True) is False
+
+
+def test_reveal_hides_the_whole_of_an_overlapping_wider_span():
+    import reveal
+    leaf = "prefix LEFTPARTsecretRIGHTPART suffix"
+    s = leaf.index("secret")
+    narrow = plan.Mask("s", 0, "/m", s, s + 6, "p", "secret", "redaction", "a")
+    wide = plan.Mask("s", 0, "/m", leaf.index("LEFTPART"), leaf.index(" suffix"), "gitleaks:x",
+                     "secret", "gitleaks", "b")
+    text, start, end = reveal.hide_others(leaf, narrow, [wide])
+    shown = reveal.context_for(text, start, end, show_values=False)
+    assert "LEFTPART" not in shown and "RIGHTPART" not in shown
+
+
+def test_a_gitleaks_match_under_a_credential_keys_structural_name_is_placed(monkeypatch, tmp_path):
+    record = {"type": "user", "message": {"content": {"token": {"id": SHAPELESS}}}}
+    path = _transcript(tmp_path, [record])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": SHAPELESS, "StartLine": 1}])
+    _, masks = plan.build(path)
+    placed = [m for m in masks if m.detector == "gitleaks"]
+    assert placed and all(m.pointer == "/message/content/token/id" for m in placed)

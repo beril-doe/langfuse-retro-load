@@ -131,7 +131,7 @@ def _valid_summary(summary) -> bool:
 
 
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
-                   session_id: str, *, screened: bool = True) -> bool:
+                   session_id: str, *, screened: bool = True, planned: bool = False) -> bool:
     """True only for a marker written by a load of this session into this host and project.
 
     A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
@@ -141,6 +141,8 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
     # A marker that is not an object, or lacks what the early return prints, is treated as
     # absent, which sends the session to the presence check rather than raising.
     if not valid_marker(prior):
+        return False
+    if planned and prior.get("planned") is not True:
         return False
     # A --no-redact load records redacted=None. It is not a completion a screened run can
     # rely on: what went out was never screened.
@@ -152,7 +154,7 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
 
 def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
                  redaction_summary: dict | None = None, *, host: str | None = None,
-                 public_key: str | None = None) -> None:
+                 public_key: str | None = None, planned: bool = False) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
@@ -161,6 +163,9 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
                 # somewhere". The public key names a project and is not a secret.
                 "host": host,
                 "public_key": public_key,
+                # Whether a reviewed redaction plan was applied. A --without-plan load never
+                # satisfies a later planned run.
+                "planned": planned,
                 "turns_emitted": turn_count,
                 "tags": tags,
                 # What was rewritten before this went out, by category. A marker that says
@@ -293,7 +298,8 @@ def main() -> int:
     host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
 
     prior = already_loaded(transcript_path)
-    if marker_matches(prior, host, public_key, session_id, screened=args.redact) and not args.force:
+    if marker_matches(prior, host, public_key, session_id, screened=args.redact,
+                      planned=bool(args.plan)) and not args.force:
         # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
         # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
         print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
@@ -451,7 +457,7 @@ def main() -> int:
 
     write_marker(transcript_path, session_id, emitted, tags,
                  redaction_summary=(summary if args.redact else None),
-                 host=host, public_key=public_key)
+                 host=host, public_key=public_key, planned=bool(args.plan))
     print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0
