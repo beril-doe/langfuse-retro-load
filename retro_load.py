@@ -252,6 +252,9 @@ def main() -> int:
                     help="the redaction plan from `plan.py build`. A real load requires one: it is "
                          "what was reviewed, gitleaks included, and it must have been built from "
                          "this transcript's exact bytes")
+    ap.add_argument("--allow-plan-without-gitleaks", action="store_true",
+                    help="accept a plan built with --no-gitleaks. Without this the load refuses "
+                         "it, since a secret only gitleaks recognises would go out")
     ap.add_argument("--without-plan", action="store_true",
                     help="load with the local patterns only and no reviewed plan. Says so in the "
                          "output; meant for tests and emergencies, not for backfill")
@@ -260,6 +263,8 @@ def main() -> int:
                          "which JSON pointer. Carries no matched text and no values")
     args = ap.parse_args()
 
+    if args.plan and not args.redact:
+        ap.error("--plan and --no-redact contradict each other: the plan is the screening")
     transcript_path = args.transcript.expanduser().resolve()
     if not transcript_path.exists():
         print(f"transcript not found: {transcript_path}", file=sys.stderr)
@@ -318,14 +323,19 @@ def main() -> int:
     # Apply the reviewed plan first: it is what a person looked at, and it carries gitleaks'
     # findings, which the local patterns below can't rewrite on their own. A real load
     # without one is refused unless --without-plan says so on purpose.
+    masks: list = []
     if args.plan:
         try:
-            masks = plan.for_transcript(args.plan, transcript_path)
+            header, masks = plan.load(args.plan, transcript_path)
+            if "gitleaks" not in header.detectors and not args.allow_plan_without_gitleaks:
+                raise plan.PlanError("its plan was built without gitleaks; rebuild it with "
+                                     "gitleaks, or pass --allow-plan-without-gitleaks")
+            msgs = plan.apply(msgs, masks)
         except plan.PlanError as e:
             print(f"{transcript_path.name}: not sending, {e}", file=sys.stderr)
             return 1
-        msgs = plan.apply(msgs, masks)
-        print(f"  plan applied: {len(masks)} mask(s) from {args.plan.name}")
+        print(f"  plan applied: {sum(1 for m in masks if not m.cleared)} mask(s), "
+              f"{sum(1 for m in masks if m.cleared)} cleared, from {args.plan.name}")
     elif not args.dry_run and not args.without_plan:
         print(f"{transcript_path.name}: not sending without a redaction plan; build one with "
               f"`plan.py build`, or pass --without-plan", file=sys.stderr)
@@ -337,7 +347,23 @@ def main() -> int:
     # rewritten and the vendored hook needs no changes. The unit left out is one value at
     # one pointer: no record, turn or session is dropped for carrying one.
     rows: list[inventory.Row] = []
-    if args.redact:
+    if args.redact and args.plan:
+        # With a plan, the second pass checks rather than rewrites: the plan is what was
+        # reviewed, so a reviewer's clearance must hold. Anything the local patterns still
+        # find that the plan neither masked nor cleared means the plan missed it.
+        redactor = redaction.Redactor()
+        _, rows = inventory.redact_records(msgs, redactor, subject=session_id,
+                                           categories=inventory.REPORT_ONLY)
+        cleared = {(m.record, m.pointer, m.pattern) for m in masks if m.cleared}
+        missed = sorted({(r.record, r.path, r.pattern) for r in rows
+                         if r.category in plan.ACTIONABLE
+                         and (r.record, r.path, r.pattern) not in cleared}, key=str)
+        if missed:
+            shown = "; ".join(f"record {r} {p} {k}" for r, p, k in missed[:5])
+            print(f"{transcript_path.name}: not sending, {len(missed)} finding(s) the plan "
+                  f"neither masked nor cleared ({shown}); rebuild the plan", file=sys.stderr)
+            return 1
+    elif args.redact:
         redactor = redaction.Redactor()
         msgs, rows = inventory.redact_records(msgs, redactor, subject=session_id)
     summary = {}

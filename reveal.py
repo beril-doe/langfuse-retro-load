@@ -130,7 +130,8 @@ def show_plan(args, records) -> int:
             unplaceable += 1
             continue
         leaf = resolve(records[mask.record], mask.pointer)
-        print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector})")
+        label = "  CLEARED, will not be masked" if mask.cleared else ""
+        print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")
         print(f"    {context_for(leaf, mask.start, mask.end, show_values=args.show_values)}")
         shown += 1
     print(f"\n{shown} planned mask(s)" + (f", {unplaceable} not pinned" if unplaceable else "")

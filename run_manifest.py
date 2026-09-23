@@ -68,6 +68,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="passed to retro_load.py: the redaction plan covering these sessions. "
+                         "A real run needs one; build it with plan.py build")
     ap.add_argument("--allow-existing", action="store_true",
                     help="passed to retro_load.py: send sessions the project already holds")
     ap.add_argument("--min-idle-days", type=float, default=None,
@@ -119,6 +122,8 @@ def main() -> int:
             cmd.append("--force")
         if args.allow_existing:
             cmd.append("--allow-existing")
+        if args.plan:
+            cmd += ["--plan", str(args.plan)]
         if args.min_idle_days is not None:
             cmd += ["--min-idle-days", str(args.min_idle_days)]
         cmd.append(str(path))

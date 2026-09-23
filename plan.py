@@ -30,7 +30,7 @@ import argparse
 import hashlib
 import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -72,6 +72,9 @@ class Mask:
     detector: str
     fingerprint: str
     kind: str = "mask"
+    #: A reviewer cleared it. Kept in the plan so the loader knows not to mask it and doesn't
+    #: treat it as something the plan missed.
+    cleared: bool = False
 
 
 def sha256_of(path: Path) -> str:
@@ -93,15 +96,26 @@ def _records(path: Path) -> list:
     return out
 
 
-def _leaves(node, path: str = ""):
-    """Every string leaf with its RFC 6901 pointer."""
+def _leaves(node, path: str = "", *, in_payload: bool = False, key: str | None = None):
+    """Every string leaf the loader screens, with its RFC 6901 pointer.
+
+    The same boundaries as inventory.redact_records(): a structural field (`id`, `uuid`,
+    `type` and the rest) is skipped unless it sits inside a payload subtree, since rewriting
+    one would break the turn assembly. A gitleaks match found only in such a field can't be
+    placed, which blocks the load rather than corrupting it.
+    """
     if isinstance(node, dict):
+        block_payload = inventory.PAYLOAD_BY_TYPE.get(node.get("type"), frozenset()) \
+            if isinstance(node.get("type"), str) else frozenset()
         for name, value in node.items():
-            yield from _leaves(value, f"{path}/{redaction._escape_token(str(name))}")
+            name = str(name)
+            yield from _leaves(value, f"{path}/{redaction._escape_token(name)}",
+                               in_payload=(in_payload or name in inventory.PAYLOAD_KEYS
+                                           or name in block_payload), key=name)
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            yield from _leaves(value, f"{path}/{index}")
-    elif isinstance(node, str):
+            yield from _leaves(value, f"{path}/{index}", in_payload=in_payload, key=key)
+    elif isinstance(node, str) and (in_payload or key not in inventory.STRUCTURAL_KEYS):
         yield path, node
 
 
@@ -144,14 +158,16 @@ def build(path: Path, *, clearances: list[dict] | None = None,
     detectors = ["redaction"]
     if use_gitleaks:
         findings = inventory.gitleaks_findings(path)
-        if findings is not None:
-            detectors.append("gitleaks")
-            numbers = inventory.record_numbers(path)
-            for finding in findings:
-                masks.extend(_place_gitleaks(finding, records, numbers, subject, key))
+        if findings is None:
+            raise PlanError("gitleaks is not installed, so this plan would miss what only it "
+                            "finds; install it, or pass --no-gitleaks to plan without it")
+        detectors.append("gitleaks")
+        numbers = inventory.record_numbers(path)
+        for finding in findings:
+            masks.extend(_place_gitleaks(finding, records, numbers, subject, key))
 
     clearances = clearances or []
-    masks = [m for m in masks if not is_cleared(m, clearances)]
+    masks = [replace(m, cleared=True) if is_cleared(m, clearances) else m for m in masks]
     return Header(subject=subject, transcript_sha256=digest, records=len(records),
                   detectors=tuple(detectors)), masks
 
@@ -212,6 +228,11 @@ def read(path: Path) -> tuple[dict[str, Header], dict[str, list[Mask]]]:
 
 def for_transcript(plan_path: Path, transcript: Path) -> list[Mask]:
     """The masks for one transcript, after checking the plan was built from these exact bytes."""
+    return load(plan_path, transcript)[1]
+
+
+def load(plan_path: Path, transcript: Path) -> tuple[Header, list[Mask]]:
+    """for_transcript(), with the header, so a caller can check which detectors built it."""
     headers, masks = read(plan_path)
     subject = inventory._subject_for(transcript)
     header = headers.get(subject)
@@ -220,12 +241,12 @@ def for_transcript(plan_path: Path, transcript: Path) -> list[Mask]:
     if header.transcript_sha256 != sha256_of(transcript):
         raise PlanError(f"{subject} changed after its plan was built; rebuild the plan")
     rows = masks.get(subject, [])
-    unplaceable = [m for m in rows if m.pointer is None]
+    unplaceable = [m for m in rows if m.pointer is None and not m.cleared]
     if unplaceable:
         raise PlanError(f"{len(unplaceable)} finding(s) in {subject} could not be pinned to a "
                         f"field (record(s) {sorted({m.record for m in unplaceable}, key=str)}); "
                         f"review with reveal.py and clear or fix them before loading")
-    return rows
+    return header, rows
 
 
 def _set(document, pointer: str, value) -> None:
@@ -249,6 +270,8 @@ def apply(records: list, masks: list[Mask]) -> list:
     out = json.loads(json.dumps(records))
     by_field: dict[tuple[int, str], list[Mask]] = {}
     for mask in masks:
+        if mask.cleared:
+            continue
         by_field.setdefault((mask.record, mask.pointer), []).append(mask)
     for (record, pointer), group in by_field.items():
         try:
@@ -298,23 +321,35 @@ def main() -> int:
                    help="JSONL of findings a reviewer cleared; each row names any of subject, "
                         "record, pointer, pattern, fingerprint")
     b.add_argument("--no-gitleaks", action="store_true",
-                   help="plan from the local patterns only. The loader will still accept it; "
-                        "the header records which detectors ran")
+                   help="plan from the local patterns only. The header records it, and the "
+                        "loader refuses such a plan unless --allow-plan-without-gitleaks")
     args = ap.parse_args()
 
     clearances = []
     if args.clearances:
         clearances = [json.loads(line) for line in args.clearances.read_text().splitlines()
                       if line.strip()]
+    inputs = {p.expanduser().resolve() for p in args.paths}
+    if args.out.expanduser().resolve() in inputs:
+        ap.error("--out names one of the transcripts; refusing to overwrite it")
+    subjects = [inventory._subject_for(p) for p in args.paths]
+    repeated = sorted({s for s in subjects if subjects.count(s) > 1})
+    if repeated:
+        ap.error(f"more than one input has session id {', '.join(repeated)}; a plan names each "
+                 f"transcript by session id, so build them into separate plans")
     entries = []
     for path in args.paths:
-        header, masks = build(path, clearances=clearances, use_gitleaks=not args.no_gitleaks)
+        try:
+            header, masks = build(path, clearances=clearances, use_gitleaks=not args.no_gitleaks)
+        except PlanError as e:
+            print(f"{path.name}: {e}", file=sys.stderr)
+            return 1
         entries.append((header, masks))
-        unplaceable = sum(1 for m in masks if m.pointer is None)
-        print(f"{path.name}: {len(masks)} mask(s), detectors {', '.join(header.detectors)}"
+        unplaceable = sum(1 for m in masks if m.pointer is None and not m.cleared)
+        cleared = sum(1 for m in masks if m.cleared)
+        print(f"{path.name}: {len(masks) - cleared} mask(s), {cleared} cleared, detectors "
+              f"{', '.join(header.detectors)}"
               + (f", {unplaceable} could not be pinned to a field" if unplaceable else ""))
-        if "gitleaks" not in header.detectors and not args.no_gitleaks:
-            print("  gitleaks is not installed: this plan covers the local patterns only")
     write(args.out, entries)
     print(f"plan written to {args.out}")
     return 0

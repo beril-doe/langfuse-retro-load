@@ -1,5 +1,6 @@
 """The redaction plan: built at scan time, checked against the transcript, applied at load."""
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -88,7 +89,10 @@ def test_a_clearance_removes_exactly_what_it_names(tmp_path):
     record = {"message": {"content": "token=" + FAKE + " mail a.b@gmail.com"}}
     path = _transcript(tmp_path, [record])
     _, masks = plan.build(path, use_gitleaks=False, clearances=[{"pattern": "email_personal"}])
-    assert [m.pattern for m in masks] == ["github_pat"]
+    assert [m.pattern for m in masks if not m.cleared] == ["github_pat"]
+    assert [m.pattern for m in masks if m.cleared] == ["email_personal"]
+    out = plan.apply([record], masks)[0]["message"]["content"]
+    assert "a.b@gmail.com" in out and FAKE not in out
 
 
 def test_fingerprints_are_stable_across_scans_of_the_same_transcript(tmp_path):
@@ -233,3 +237,94 @@ def test_reveal_refuses_a_stale_plan(monkeypatch, tmp_path):
     path.write_text(path.read_text().replace("hi", "hello"))
     monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out)])
     assert reveal.main() == 1
+
+
+# --- first Copilot review of PR 27 ------------------------------------------------------------
+
+def _cli(monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["plan.py", *argv])
+    return plan.main()
+
+
+def test_build_refuses_two_inputs_with_the_same_session_id(monkeypatch, tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    a = _transcript(tmp_path / "a", [{"x": 1}], "s.jsonl")
+    b = _transcript(tmp_path / "b", [{"x": 2}], "s.jsonl")
+    with pytest.raises(SystemExit):
+        _cli(monkeypatch, "build", "--no-gitleaks", "--out", str(tmp_path / "p.jsonl"), str(a), str(b))
+
+
+def test_build_refuses_to_overwrite_a_transcript(monkeypatch, tmp_path):
+    path = _transcript(tmp_path, [{"x": 1}])
+    before = path.read_bytes()
+    with pytest.raises(SystemExit):
+        _cli(monkeypatch, "build", "--no-gitleaks", "--out", str(path), str(path))
+    assert path.read_bytes() == before
+
+
+def test_build_refuses_when_gitleaks_is_missing(monkeypatch, tmp_path):
+    path = _transcript(tmp_path, [{"x": 1}])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: None)
+    with pytest.raises(plan.PlanError, match="gitleaks is not installed"):
+        plan.build(path)
+
+
+def test_the_loader_refuses_a_plan_built_without_gitleaks(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "hi")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    assert _run(loader, monkeypatch, "--dry-run", "--plan", str(out), str(path)) == 1
+    assert _run(loader, monkeypatch, "--dry-run", "--allow-plan-without-gitleaks",
+                "--plan", str(out), str(path)) == 0
+
+
+def test_a_clearance_survives_the_loaders_second_pass(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "mail a.b@gmail.com please")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False, clearances=[{"pattern": "email_personal"}])])
+    seen = []
+    monkeypatch.setattr(loader, "build_turns", lambda msgs: seen.extend(msgs) or [])
+    assert _run(loader, monkeypatch, "--dry-run", "--allow-plan-without-gitleaks",
+                "--plan", str(out), str(path)) == 0
+    assert "a.b@gmail.com" in json.dumps(seen)
+
+
+def test_a_finding_the_plan_missed_blocks_the_load(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "token=" + FAKE)
+    out = tmp_path / "plan.jsonl"
+    header, _ = plan.build(path, use_gitleaks=False)
+    plan.write(out, [(header, [])])        # a plan that masks nothing
+    assert _run(loader, monkeypatch, "--dry-run", "--allow-plan-without-gitleaks",
+                "--plan", str(out), str(path)) == 1
+
+
+def test_plan_and_no_redact_together_are_refused(loader, monkeypatch, tmp_path):
+    path = _session(tmp_path, "hi")
+    with pytest.raises(SystemExit):
+        _run(loader, monkeypatch, "--dry-run", "--no-redact", "--plan", str(tmp_path / "p"), str(path))
+
+
+def test_a_gitleaks_match_only_in_a_structural_field_is_not_placed(monkeypatch, tmp_path):
+    record = {"type": "user", "uuid": SHAPELESS, "message": {"content": "nothing"}}
+    path = _transcript(tmp_path, [record])
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": SHAPELESS, "StartLine": 1}])
+    _, masks = plan.build(path)
+    assert [(m.pointer, m.detector) for m in masks] == [(None, "gitleaks")]
+
+
+def test_the_manifest_passes_the_plan_to_each_load(loader, monkeypatch, tmp_path):
+    import run_manifest
+    path = _session(tmp_path, "hi")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{"session_id": "s-1", "user_id": "u", "event_day": False,
+                                     "source": "t", "find_root": str(tmp_path)}]))
+    monkeypatch.setattr(run_manifest, "resolve_path", lambda root, sid: path)
+    calls = []
+    monkeypatch.setattr(run_manifest.subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(sys, "argv", ["run_manifest.py", "--manifest", str(manifest),
+                                      "--plan", str(tmp_path / "plan.jsonl")])
+    run_manifest.main()
+    assert "--plan" in calls[0] and str(tmp_path / "plan.jsonl") in calls[0]

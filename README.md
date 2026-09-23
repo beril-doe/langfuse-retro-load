@@ -90,10 +90,10 @@ special file permissions, unlike the `--detail` file in
 purpose is to hold the material being looked for.
 
 Two detectors, union, per
-https://github.com/beril-doe/langfuse-retro-load/issues/10, **in the inventory step
-only**: `inventory.py` runs both, while `retro_load.py` rewrites with the local
-patterns and does not run gitleaks at load time yet. Run `inventory.py` on a batch
-before loading it. The local
+https://github.com/beril-doe/langfuse-retro-load/issues/10. Both run at scan time, in
+`inventory.py` and in `plan.py build`. `retro_load.py` never invokes gitleaks itself, but
+with `--plan` it applies gitleaks' findings as the plan recorded them (see "The redaction
+plan" below); without a plan it has only the local patterns. The local
 patterns are keyword and shape anchored and can also use the key a value sits
 under, so `{"KBASE_AUTH_TOKEN": "s3cret"}` is caught on six characters.
 gitleaks knows about 150 provider shapes and gates on entropy near 3.5, so it
