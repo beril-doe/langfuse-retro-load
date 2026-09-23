@@ -519,3 +519,45 @@ def test_a_present_but_malformed_start_time_is_a_presence_error(monkeypatch, sta
         {"startTime": "2026-05-07T21:34:03Z"}, {"startTime": stamp}], "meta": {}})
     with pytest.raises(presence.PresenceError):
         presence.covered_through("https://x.test", "pk", "sk", "s-1")
+
+
+# --- sixteenth Copilot review --------------------------------------------------------------
+
+def test_inventory_refuses_the_same_path_for_out_and_report(monkeypatch, tmp_path):
+    path = _transcript(tmp_path)
+    same = tmp_path / "both.txt"
+    monkeypatch.setattr(sys, "argv", ["inventory.py", "--no-gitleaks", "--out", str(same),
+                                      "--report", str(same), str(path)])
+    with pytest.raises(SystemExit):
+        inventory.main()
+    assert not same.exists()
+
+
+@pytest.mark.parametrize("text,tail", [
+    ('password="abcdefgh\\"ijklmnop"', "ijklmnop"),
+    ('{\\"password\\":\\"abcdefgh\\\\\\"ijklmnop\\"}', "ijklmnop"),
+])
+def test_an_escaped_quote_inside_a_quoted_value_is_content(text, tail):
+    clean, _ = redaction.redact(text, key=KEY)
+    assert tail not in clean
+
+
+def test_nested_json_still_closes_at_its_own_quote():
+    """The control: in JSON inside a JSONL line, the escaped quote is the delimiter."""
+    clean, _ = redaction.redact('{\\"password\\":\\"abcdefghijkl\\",\\"next\\":\\"kept\\"}', key=KEY)
+    assert clean.endswith('\\",\\"next\\":\\"kept\\"}')
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "x"])
+def test_min_idle_days_must_be_finite_and_non_negative(retro_load, monkeypatch, tmp_path, value):
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", "--dry-run", "--min-idle-days", value,
+                                      str(_transcript(tmp_path))])
+    with pytest.raises(SystemExit):
+        retro_load.main()
+
+
+def test_skip_reason_fails_closed_on_a_bad_idle_value(retro_load):
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 22, tzinfo=timezone.utc)
+    assert retro_load.skip_reason(last_seen=now, now=now, min_idle_days=float("nan"),
+                                  existing=0, allow_existing=False)

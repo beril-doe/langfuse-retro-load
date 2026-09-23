@@ -318,12 +318,23 @@ def _through_closing_quote(text: str, span: tuple[int, int]) -> tuple[int, int]:
     quote = text[start - 1] if start > 0 else ""
     if quote not in ("\"", "'"):
         return span
+    # The opening quote's escape level decides which quote closes it: a bare quote closes a
+    # bare one, and `\\"` closes `\\"` in JSON nested inside a JSONL line. A quote escaped
+    # differently is content, so `password="abc\\"def"` keeps going past `\\"`.
+    level = _backslashes_before(text, start - 1)
     close = text.find(quote, start)
+    while close != -1 and _backslashes_before(text, close) != level:
+        close = text.find(quote, close + 1)
     if close == -1:
         return span
-    while close > start and text[close - 1] == "\\":
-        close -= 1
-    return start, max(end, close)
+    return start, max(end, close - level)
+
+
+def _backslashes_before(text: str, index: int) -> int:
+    count = 0
+    while index - count - 1 >= 0 and text[index - count - 1] == "\\":
+        count += 1
+    return count
 
 
 class _Boundaries:

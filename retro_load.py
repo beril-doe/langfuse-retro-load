@@ -37,6 +37,7 @@ off it):
 
 import argparse
 import hashlib
+import math
 import json
 import os
 import sys
@@ -167,6 +168,17 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
     )
 
 
+def _idle_days(text: str) -> float:
+    """argparse type: a finite, non-negative number of days. Only 0 turns the check off."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from exc
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"must be finite and non-negative, not {text!r}")
+    return value
+
+
 #: Exit status for "deliberately not sent", so run_manifest.py can count it apart from a load.
 EXIT_SKIPPED = 3
 
@@ -200,6 +212,8 @@ def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
                 f"this loader has no record of completing it there: live tracing sent it, or "
                 f"an earlier load failed partway. Sending would duplicate what is there; "
                 f"check it first, and pass --allow-existing only to send anyway")
+    if not math.isfinite(min_idle_days) or min_idle_days < 0:
+        return f"--min-idle-days {min_idle_days!r} is not a finite, non-negative number"
     if min_idle_days > 0:
         if last_seen is None:
             return ("no record carries a timestamp, so there is no way to tell whether the "
@@ -229,7 +243,7 @@ def main() -> int:
                     help="send even when the target project already holds observations for "
                          "this session id. Without it the session is skipped, since Langfuse "
                          "has no create-time dedupe")
-    ap.add_argument("--min-idle-days", type=float, default=7.0,
+    ap.add_argument("--min-idle-days", type=_idle_days, default=7.0,
                     help="skip a session whose last record is newer than this many days, so "
                          "one still in use is not backfilled and then re-sent by live tracing "
                          "when resumed (default 7; 0 turns the check off)")
