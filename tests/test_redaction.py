@@ -543,3 +543,16 @@ def test_a_credential_written_inside_a_call_is_still_masked(key, literal):
     found = [line[f.start:f.end] for f in redaction.detect(line)
              if f.category == redaction.SECRET]
     assert found == [literal], "mask the argument, not the function name"
+
+
+def test_a_credential_joined_after_a_harmless_call_is_masked():
+    secret = "hunter2" * 2
+    line = f'password = get_secret("PASSWORD") + "{secret}"'
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [secret]
+
+
+def test_the_next_line_is_not_read_as_part_of_the_call():
+    text = 'file_token = env_vars.get("KBASE_AUTH_TOKEN", "")\nprint("hello world here")'
+    assert redaction.detect(text) == []

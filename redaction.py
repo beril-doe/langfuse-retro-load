@@ -246,8 +246,13 @@ def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | No
     match = _CODE_EXPRESSION_RE.match(text, start)
     if not match or match.end() < end:
         return None
+    # Literals are checked to the end of the line, not only inside the call, so a value
+    # joined on after it is still found: `get_secret("PASSWORD") + "hunter2hunter2"`
+    # (fourth Copilot review of the same pull request).
+    line_end = text.find("\n", match.end())
+    line_end = len(text) if line_end == -1 else line_end
     spans = []
-    for literal in _LITERAL_RE.finditer(text, match.start(), match.end()):
+    for literal in _LITERAL_RE.finditer(text, match.start(), line_end):
         group = 1 if literal.group(1) is not None else 2
         value = literal.group(group)
         if len(value) >= 8 and not _ENV_NAME_RE.fullmatch(value):
