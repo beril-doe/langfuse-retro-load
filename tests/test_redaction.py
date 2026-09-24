@@ -511,6 +511,8 @@ _FAKE_PASSWORD = "hunter2" * 2
     ("token: ", "abcdefghijklmnop"),
     ("token=", "abcdefghijklmnop.qrstuvwxyz"),
     ("secret = ", "settings_obj.secret_key"),
+    ("token=", "abcdefghijklmnop[qrstuvwxyz"),
+    ("token=", "abcdefghijklmnop(secretvalue"),
     ("token = ", _FAKE_JWT),
 ])
 def test_values_that_look_like_data_are_still_caught(key, value):

@@ -208,12 +208,25 @@ _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 #: the first backfill plan on the pod, 2026-09-24. A bare dotted chain such as
 #: `settings.secret_key` is not exempt: `abcdefghijklmnop.qrstuvwxyz` has the same shape and
 #: can be a real value.
-_CODE_EXPRESSION_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*[(\[].*", re.DOTALL)
+#: Only a complete expression counts: the call's parentheses must close, and an index must
+#: hold a quoted key, a number or a name and then close. `token=abcdefghijklmnop[rest` or
+#: `token=abcdefghijklmnop(rest` stay masked, since a value that merely starts like code could
+#: be a credential containing a bracket (first Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/42).
+_CODE_EXPRESSION_RE = re.compile(
+    r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
+    r"(?:\((?:[^()\"'\n]|\"[^\"\n]*\"|'[^'\n]*')*\)"
+    r"|\[(?:\"[^\"\n]*\"|'[^'\n]*'|\d+|[A-Za-z_]\w*)\])")
 
 
-def is_code_expression(value: str) -> bool:
-    """True when a keyword-anchored value is a call or an index."""
-    return bool(_CODE_EXPRESSION_RE.fullmatch(value.strip().strip("\"'")))
+def is_code_expression(text: str, start: int, end: int) -> bool:
+    """True when text[start:end], a keyword-anchored value, begins a complete call or index
+    in the surrounding text that covers the whole value."""
+    offset = start
+    while offset < end and text[offset] in "\"' ":
+        offset += 1
+    match = _CODE_EXPRESSION_RE.match(text, offset)
+    return bool(match) and match.end() >= end
 
 
 def is_reference(value: str) -> bool:
@@ -501,7 +514,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
                 continue
-            if name == "keyed_value" and is_code_expression(value):
+            if name == "keyed_value" and is_code_expression(text, span[0], span[1]):
                 continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
