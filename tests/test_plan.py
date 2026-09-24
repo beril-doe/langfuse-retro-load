@@ -395,6 +395,46 @@ def test_reveal_never_prints_a_neighbouring_planned_value(monkeypatch, tmp_path,
     assert other not in printed and FAKE not in printed and "[another planned mask]" in printed
 
 
+def test_show_values_shows_the_neighbouring_planned_value_too(monkeypatch, tmp_path, capsys):
+    """Asked for 2026-09-24: with --show-values the context should read as the transcript
+    does, not hide the email beside a name behind a placeholder."""
+    pytest.importorskip("dotenv")
+    import reveal
+    other = "Qw" + "7rTy3Up" * 3
+    path = _session(tmp_path, "token=" + FAKE + " and " + other + " end")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "x", "Secret": other, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out),
+                                      "--show-values"])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert other in printed and FAKE in printed
+    assert "[another planned mask]" not in printed
+
+
+def test_show_values_does_not_re_redact_a_neighbouring_local_finding(monkeypatch, tmp_path, capsys):
+    """Two personal emails in one field: the second was printed as [REDACTED:...] by the
+    context's own redaction pass even after the placeholder was dropped (first Copilot
+    review of https://github.com/beril-doe/langfuse-retro-load/pull/43)."""
+    pytest.importorskip("dotenv")
+    import reveal
+    first, second = "alpha.person@gmail.com", "beta.person@gmail.com"
+    path = _session(tmp_path, f"write to {first} and {second} today")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path)])
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out),
+                                      "--show-values"])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert printed.count(first) == 2 and printed.count(second) == 2, printed
+    assert "[REDACTED" not in printed
+
+
 # --- third Copilot review of PR 27 ------------------------------------------------------------
 
 def test_a_gitleaks_value_that_is_also_an_object_key_blocks(monkeypatch, tmp_path):
