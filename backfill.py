@@ -210,7 +210,7 @@ def main() -> int:
         by_source[(entry["source"], entry["consent_bin"])].append((entry, path))
     for (source, consent), items in sorted(by_source.items(), key=str):
         turns = sum(e["turns_expected"] for e, _ in items)
-        marked = sum(1 for _, p in items if valid_marker(already_loaded(p)))
+        marked = sum(1 for _, p in items if valid_marker(already_loaded(p.resolve())))
         print(f"  {source} (consent: {consent or 'not recorded'}): {len(items)} sessions, "
               f"{turns} turns" + (f", {marked} already marked as sent" if marked else ""))
     print(f"redaction plan: {plan_path}")
@@ -230,7 +230,10 @@ def main() -> int:
             # The default tag has today's date in it; pin it so a load after midnight UTC
             # carries the tag this preview showed.
             again += ["--batch-tag", tag]
-        if "--force" not in again and any(valid_marker(already_loaded(p)) for p in paths):
+        # Markers are keyed by the resolved path, as retro_load.py writes them. The frozen
+        # corpus is reached through a symlink, so the unresolved path never finds its marker.
+        if "--force" not in again and any(valid_marker(already_loaded(p.resolve()))
+                                          for p in paths):
             again.append("--force")
         python = sys.executable
         command = shlex.join([python, str(HERE / "backfill.py"), *again, "--load",

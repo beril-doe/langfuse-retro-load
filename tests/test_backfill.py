@@ -74,6 +74,7 @@ def preview_plan(monkeypatch, corpus, capsys, *argv):
     out = capsys.readouterr().out
     command = out.strip().splitlines()[-1].strip()
     plan_path = command.split("--plan ")[1].strip("'")
+    preview_plan.output = out
     return Path(plan_path), command
 
 
@@ -220,3 +221,21 @@ def test_the_printed_command_pins_the_default_batch_tag(corpus, monkeypatch, cap
     _, command = preview_plan(monkeypatch, corpus, capsys)
     assert "--batch-tag backfill-someone-" in command
     assert command.startswith(sys.executable), "the load should use the preview's Python"
+
+
+def test_markers_are_found_through_a_symlinked_corpus(corpus, monkeypatch, capsys, tmp_path):
+    """The pod's frozen corpus is reached through a symlink, and retro_load.py keys each
+    marker by the resolved path. Looking markers up by the linked path found none of 14."""
+    # The link sits partway along the path, as claudefiles does on the pod.
+    real = tmp_path / "projects"
+    link = tmp_path / "linked"
+    link.symlink_to(tmp_path)
+    people = json.loads(corpus.read_text())
+    people[0]["sources"][0]["find_root"] = str(link / "projects")
+    corpus.write_text(json.dumps(people))
+    target = (real / "proj" / "s-1.jsonl").resolve()
+    retro_load.write_marker(target, "s-1", 1, ["claude-code"], {}, host="https://h.test",
+                            public_key="pk", planned=True)
+    _, command = preview_plan(monkeypatch, corpus, capsys)
+    assert "--force" in command
+    assert "2 sessions, 2 turns, 1 already marked as sent" in preview_plan.output
