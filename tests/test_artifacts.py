@@ -67,7 +67,7 @@ def test_snapshots_carry_the_project_state_at_each_session_end(tmp_path):
     assert snaps["s1"].files == {"REPORT.md": "v2"}
     assert snaps["s2"].files == {"REPORT.md": "v2", "RESEARCH_PLAN.md": "plan"}, \
         "the live hook uploads every artifact the project has at session end"
-    assert snaps["s1"].ended == "2026-05-07T10:05:01Z"
+    assert snaps["s1"].ended == "2026-05-07T10:05:01+00:00"
 
 
 def test_a_failed_tool_call_does_not_change_the_file(tmp_path):
@@ -243,3 +243,99 @@ def test_reading_another_projects_report_creates_no_snapshot(tmp_path):
         result("t1", "2026-05-07T10:00:01Z"),
     ])
     assert artifacts.snapshots([s1]) == []
+
+
+# --- first Copilot review of PR 47 ------------------------------------------------------------
+
+def test_a_short_value_under_a_credential_key_is_masked(monkeypatch):
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [])
+    clean, n = artifacts.mask("Setup:\nexport KBASE_AUTH_TOKEN=s3cret\ndone", "REPORT.md")
+    assert "s3cret" not in clean and "KBASE_AUTH_TOKEN=" in clean and n == 1
+
+
+def test_a_reference_under_a_credential_key_is_left_alone(monkeypatch):
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [])
+    clean, n = artifacts.mask("export KBASE_AUTH_TOKEN=$KBASE_TOKEN", "REPORT.md")
+    assert clean == "export KBASE_AUTH_TOKEN=$KBASE_TOKEN" and n == 0
+
+
+@pytest.mark.parametrize("command", [f"make 2> {P}REPORT.md", f"make 2>> {P}REPORT.md"])
+def test_a_stderr_redirect_onto_an_artifact_is_a_write(command):
+    assert artifacts.shell_writes(command) == {("demo", "REPORT.md")}
+
+
+def test_an_unreadable_end_time_makes_the_snapshot_unknown(tmp_path):
+    s1 = session(tmp_path, "s1", [
+        tool("t1", "Write", {"file_path": P + "REPORT.md", "content": "v1"}, "2026-05-07T10:00:00Z"),
+        result("t1", "not a time"),
+    ])
+    [snap] = artifacts.snapshots([s1])
+    assert snap.files == {} and snap.unknown == ["REPORT.md"] and "end time" in snap.reason
+
+
+def test_a_zone_less_end_time_is_refused_too(tmp_path):
+    s1 = session(tmp_path, "s1", [
+        tool("t1", "Write", {"file_path": P + "REPORT.md", "content": "v1"}, "2026-05-07T10:00:00Z"),
+        result("t1", "2026-05-07T10:00:01"),
+    ])
+    [snap] = artifacts.snapshots([s1])
+    assert snap.files == {}
+
+
+def test_a_change_by_another_session_before_this_one_ends_is_included(tmp_path):
+    """s1 edits at 10:00 and ends at 12:00; s2 edits the same project at 11:00."""
+    s1 = session(tmp_path, "s1", [
+        tool("t1", "Write", {"file_path": P + "REPORT.md", "content": "v1"}, "2026-05-07T10:00:00Z"),
+        result("t1", "2026-05-07T10:00:01Z"),
+        {"type": "user", "timestamp": "2026-05-07T12:00:00Z", "message": {"content": "later"}},
+    ])
+    s2 = session(tmp_path, "s2", [
+        tool("t2", "Edit", {"file_path": P + "REPORT.md", "old_string": "v1", "new_string": "v2"},
+             "2026-05-07T11:00:00Z"),
+        result("t2", "2026-05-07T11:00:01Z"),
+    ])
+    snaps = {s.session_id: s for s in artifacts.snapshots([s1, s2])}
+    assert snaps["s1"].files == {"REPORT.md": "v2"}, "the state at s1's end, not at its last edit"
+
+
+def test_one_session_id_in_two_sources_is_refused(tmp_path):
+    a = session(tmp_path, "s1", [])
+    b = tmp_path / "other" / "s1.jsonl"
+    b.parent.mkdir(parents=True)
+    b.write_text("")
+    with pytest.raises(ValueError, match="more than one source"):
+        artifacts.snapshots([a, b])
+
+
+def test_the_marker_depends_on_the_langfuse_project():
+    assert artifacts.marker("h", "pk-a", "s1", "demo") != artifacts.marker("h", "pk-b", "s1", "demo")
+
+
+def test_a_partial_or_foreign_marker_does_not_count_as_sent(tmp_path):
+    expected = {"session_id": "s1", "project": "demo", "host": "h", "public_key": "pk"}
+    path = tmp_path / "m.json"
+    path.write_text('{"session_id": "s1"')
+    assert not artifacts.already_sent(path, expected)
+    path.write_text(json.dumps({**expected, "public_key": "other"}))
+    assert not artifacts.already_sent(path, expected)
+    artifacts.write_marker(path, expected)
+    assert artifacts.already_sent(path, expected) and not path.with_suffix(".tmp").exists()
+
+
+def test_the_marker_is_written_only_after_flushing(roster, monkeypatch):
+    import retro_load
+    order = []
+
+    class Client:
+        def flush(self): order.append("flush")
+        def shutdown(self): pass
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr(retro_load, "make_client", lambda *a, **k: Client())
+    monkeypatch.setattr(artifacts, "upload", lambda *a: order.append("upload"))
+    real = artifacts.write_marker
+    monkeypatch.setattr(artifacts, "write_marker", lambda p, r: (order.append("marker"), real(p, r)))
+    monkeypatch.setattr(sys, "argv", ["artifacts.py", "someone", "--people", str(roster), "--load"])
+    assert artifacts.main() == 0
+    assert order == ["upload", "flush", "marker"]

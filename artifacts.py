@@ -24,7 +24,6 @@ each file attached as text/markdown. It adds one tag, retro-load, so a batch can
 and deleted, and it is dated at the end of the session it belongs to.
 """
 import argparse
-import collections
 import datetime
 import hashlib
 import json
@@ -44,7 +43,7 @@ import build_manifest  # noqa: E402
 
 ARTIFACTS = ("REPORT.md", "RESEARCH_PLAN.md", "WORKLOG.md")
 _PATH_RE = re.compile(r"projects/([^/\s\"'`]+)/(" + "|".join(re.escape(n) for n in ARTIFACTS) + r")")
-_REDIRECT_RE = re.compile(r"(?<![0-9&])>>?\s*[\"']?([^\s\"';|&]+)")
+_REDIRECT_RE = re.compile(r">>?\s*[\"']?([^\s\"';|&]+)")
 
 
 def _artifact(text: str):
@@ -100,6 +99,7 @@ class Snapshot:
     ended: str
     files: dict = field(default_factory=dict)      # name -> text
     unknown: list = field(default_factory=list)    # names whose state could not be known
+    reason: str = ""                               # why every file is unknown, if one applies
 
 
 def _records(path: Path):
@@ -162,45 +162,80 @@ def apply(state: str | None, name: str, inp: dict) -> str | None:
     return state
 
 
+def _instant(raw):
+    """An aware datetime from a record timestamp, or None if it is missing or unusable."""
+    import langfuse_hook_official as hook
+    parsed = hook.parse_ts(raw) if isinstance(raw, str) and raw else None
+    return parsed if parsed is not None and parsed.tzinfo is not None else None
+
+
 def session_ends(paths: list[Path]) -> dict:
-    """The last record timestamp in each session."""
+    """Each session's end as an aware datetime, or None when any record's timestamp cannot
+    be read: one unreadable stamp could be the newest, so the rest do not give the end.
+    Mirrors retro_load.last_activity."""
     ends = {}
     for path in paths:
-        stamps = [rec.get("timestamp") for rec in _records(path) if rec.get("timestamp")]
-        if stamps:
-            ends[path.stem] = max(stamps)
+        stamps, bad = [], False
+        for rec in _records(path):
+            raw = rec.get("timestamp")
+            if raw is None:
+                continue
+            when = _instant(raw)
+            if when is None:
+                bad = True
+                break
+            stamps.append(when)
+        ends[path.stem] = None if bad or not stamps else max(stamps)
     return ends
 
 
 def snapshots(paths: list[Path]) -> list[Snapshot]:
-    """For each session that changed a project's artifacts, the project's files at its end.
+    """For each session that changed a project's artifacts, the project's files at the end
+    of that session.
 
-    The live hook uploads every artifact the project has at session end, touched in that
-    session or not, so a snapshot carries the current state of all three names.
+    Every session's changes are replayed in time order up to each session's end, so a change
+    another session made in the meantime is included. The live hook uploads every artifact
+    the project has at session end, touched in that session or not, so a snapshot carries
+    the current state of all three names. A session whose end cannot be dated is returned
+    with every file unknown.
     """
+    stems = [p.stem for p in paths]
+    repeated = sorted({s for s in stems if stems.count(s) > 1})
+    if repeated:
+        raise ValueError(f"session id(s) {', '.join(repeated)} appear in more than one source; "
+                         "move one copy out of its find_root")
+    ends = session_ends(paths)
+    timeline, order = [], []
+    for ts, sid, kind, detail in events(paths):
+        project = detail[1] if kind == "op" else detail[0]
+        if (sid, project) not in order:
+            order.append((sid, project))
+        timeline.append((_instant(ts), 0, sid, kind, detail))
+    for sid, project in order:
+        if ends.get(sid) is not None:
+            timeline.append((ends[sid], 1, sid, "end", project))
+    far_past = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    timeline.sort(key=lambda row: (row[0] or far_past, row[1]))
+
     state: dict[tuple, str | None] = {}
-    touched = collections.defaultdict(set)          # session -> projects
-    order = []
-    snap_state: dict[tuple, dict] = {}
-    for _ts, sid, kind, detail in events(paths):
+    taken: dict[tuple, dict] = {}
+    for when, _, sid, kind, detail in timeline:
         if kind == "op":
             name, project, fname, inp = detail
-            state[(project, fname)] = apply(state.get((project, fname)), name, inp)
+            # An undatable change cannot be ordered against anything, so its result is unknown.
+            state[(project, fname)] = apply(state.get((project, fname)), name, inp) if when else None
+        elif kind == "shell":
+            state[detail] = None
         else:
-            project, fname = detail
-            state[(project, fname)] = None
-        if project not in touched[sid]:
-            touched[sid].add(project)
-            order.append((sid, project))
-        # Take the snapshot as the session's last event for the project goes by.
-        snap_state[(sid, project)] = {f: state.get((project, f), "__absent__") for f in ARTIFACTS}
-    ends = session_ends(paths)
+            taken[(sid, detail)] = {f: state[(detail, f)] for f in ARTIFACTS if (detail, f) in state}
     result = []
     for sid, project in order:
-        snap = Snapshot(session_id=sid, project=project, ended=ends.get(sid, ""))
-        for fname, value in snap_state[(sid, project)].items():
-            if value == "__absent__":
-                continue
+        end = ends.get(sid)
+        snap = Snapshot(session_id=sid, project=project, ended=end.isoformat() if end else "")
+        if end is None:
+            snap.unknown = [f for f in ARTIFACTS if (project, f) in state]
+            snap.reason = "the session's end time cannot be read"
+        for fname, value in taken.get((sid, project), {}).items():
             if value is None:
                 snap.unknown.append(fname)
             else:
@@ -223,6 +258,21 @@ def mask(text: str, name: str) -> tuple[str, int]:
     import redaction
     clean, findings = redaction.redact(text, categories=plan.ACTIONABLE)
     replaced = sum(1 for f in findings if f.category in plan.ACTIONABLE)
+    # The key-name rule, as inventory.scan_asset applies it to text assets:
+    # `KBASE_AUTH_TOKEN=s3cret` is too short for the flat pattern and too plain for gitleaks,
+    # but under a credential key name it is the credential (first Copilot review of PR 47).
+    lines = []
+    for line in clean.split("\n"):
+        m = inventory._KEYED_LINE.match(line)
+        if m and redaction.is_credential_key(m.group(1)):
+            value = m.group(2)
+            masked_value, found = redaction.redact_value(value.strip("\"'"), key_name=m.group(1),
+                                                          categories=plan.ACTIONABLE)
+            if found and masked_value != value.strip("\"'"):
+                line = line[:m.start(2)] + masked_value + line[m.end(2):]
+                replaced += 1
+        lines.append(line)
+    clean = "\n".join(lines)
     with tempfile.NamedTemporaryFile("w", suffix="-" + name, delete=False, encoding="utf-8") as h:
         h.write(clean)
         tmp = Path(h.name)
@@ -237,9 +287,25 @@ def mask(text: str, name: str) -> tuple[str, int]:
     return clean, replaced
 
 
-def marker(host: str, session_id: str, project: str) -> Path:
-    key = hashlib.sha256(f"{host}|{session_id}|{project}".encode()).hexdigest()[:24]
+def marker(host: str, public_key: str, session_id: str, project: str) -> Path:
+    key = hashlib.sha256(f"{host}|{public_key}|{session_id}|{project}".encode()).hexdigest()[:24]
     return MARKER_DIR / f"artifacts-{key}.json"
+
+
+def already_sent(path: Path, expected: dict) -> bool:
+    """True only for a complete marker naming this exact target and snapshot."""
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and all(record.get(k) == v for k, v in expected.items())
+
+
+def write_marker(path: Path, record: dict) -> None:
+    """Write through a temporary file and rename, so an interruption leaves no partial marker."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record))
+    os.replace(tmp, path)
 
 
 def upload(langfuse, snap: Snapshot, masked: dict, user_id: str) -> None:
@@ -286,7 +352,10 @@ def main() -> int:
 
     paths = [p for source in person["sources"]
              for p in build_manifest.find_jsonl_files(source["find_root"])]
-    snaps = snapshots(paths)
+    try:
+        snaps = snapshots(paths)
+    except ValueError as exc:
+        raise SystemExit(f"{exc}. Nothing was read further or sent.") from exc
     print(f"person   : {args.person}\nuser_id  : {user_id}\nsessions : {len(paths)} scanned, "
           f"{len({s.session_id for s in snaps})} changed a BERIL project's artifacts")
     ready = []
@@ -298,8 +367,8 @@ def main() -> int:
                 notes.append(f"{name} ({len(text)} chars, {n} masked)")
             except Refused as exc:
                 notes.append(f"{name} REFUSED: {exc}")
-        notes += [f"{name} UNKNOWN: changed in a way the transcript cannot replay"
-                  for name in snap.unknown]
+        why = snap.reason or "changed in a way the transcript cannot replay"
+        notes += [f"{name} UNKNOWN: {why}" for name in snap.unknown]
         print(f"  {snap.session_id[:8]} {snap.project}: " + "; ".join(notes))
         if masked:
             ready.append((snap, masked))
@@ -317,18 +386,20 @@ def main() -> int:
     MARKER_DIR.mkdir(exist_ok=True)
     sent = skipped = 0
     for snap, masked in ready:
-        mark = marker(host, snap.session_id, snap.project)
-        if mark.exists() and not args.force:
+        mark = marker(host, public, snap.session_id, snap.project)
+        identity = {"session_id": snap.session_id, "project": snap.project, "host": host,
+                    "public_key": public}
+        if already_sent(mark, identity) and not args.force:
             skipped += 1
             print(f"  {snap.session_id[:8]} {snap.project}: already sent, skipped")
             continue
         upload(langfuse, snap, masked, user_id)
-        mark.write_text(json.dumps({"session_id": snap.session_id, "project": snap.project,
-                                    "host": host, "files": sorted(masked),
-                                    "sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+        # The marker says the span left this process, so it is written only after flushing.
+        langfuse.flush()
+        write_marker(mark, {**identity, "files": sorted(masked),
+                            "sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
         sent += 1
         print(f"  {snap.session_id[:8]} {snap.project}: sent {len(masked)} file(s)")
-    langfuse.flush()
     langfuse.shutdown()
     print(f"sent {sent}, skipped {skipped}")
     return 0
