@@ -74,6 +74,7 @@ def preview_plan(monkeypatch, corpus, capsys, *argv):
     out = capsys.readouterr().out
     command = out.strip().splitlines()[-1].strip()
     plan_path = command.split("--plan ")[1].strip("'")
+    preview_plan.output = out
     return Path(plan_path), command
 
 
@@ -237,3 +238,4 @@ def test_markers_are_found_through_a_symlinked_corpus(corpus, monkeypatch, capsy
                             public_key="pk", planned=True)
     _, command = preview_plan(monkeypatch, corpus, capsys)
     assert "--force" in command
+    assert "2 sessions, 2 turns, 1 already marked as sent" in preview_plan.output
