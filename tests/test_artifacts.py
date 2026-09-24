@@ -377,3 +377,15 @@ def test_an_undated_change_keeps_the_file_unknown_after_later_writes(tmp_path):
     ])
     [snap] = artifacts.snapshots([s1])
     assert snap.files == {} and snap.unknown == ["REPORT.md"]
+
+
+def test_a_missing_tool_id_does_not_confirm_an_edit(tmp_path):
+    s1 = session(tmp_path, "s1", [
+        tool("t1", "Write", {"file_path": P + "REPORT.md", "content": "v1"}, "2026-05-07T10:00:00Z"),
+        result("t1", "2026-05-07T10:00:01Z"),
+        tool(None, "Edit", {"file_path": P + "REPORT.md", "old_string": "v1", "new_string": "v2"},
+             "2026-05-07T10:05:00Z"),
+        result(None, "2026-05-07T10:05:01Z"),
+    ])
+    [snap] = artifacts.snapshots([s1])
+    assert snap.files == {} and snap.unknown == ["REPORT.md"]

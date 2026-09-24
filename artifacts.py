@@ -137,10 +137,12 @@ def events(paths: list[Path]) -> list[tuple]:
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "tool_result":
-                    answered.add(block.get("tool_use_id"))
+                if block.get("type") == "tool_result" and block.get("tool_use_id"):
+                    # Only real ids are matched: a missing id on both sides must not pair up
+                    # and confirm an edit (Copilot review of 5510e1d on PR 48).
+                    answered.add(block["tool_use_id"])
                     if block.get("is_error"):
-                        errored.add(block.get("tool_use_id"))
+                        errored.add(block["tool_use_id"])
                 if block.get("type") != "tool_use":
                     continue
                 inp = block.get("input") or {}
@@ -157,7 +159,7 @@ def events(paths: list[Path]) -> list[tuple]:
         for ts, sid, kind, detail, tid in rows:
             if tid in errored:
                 continue  # the tool reported an error, so the file did not change
-            if tid not in answered and kind == "op":
+            if (not tid or tid not in answered) and kind == "op":
                 # No result was recorded, as in an interrupted transcript, so whether the change
                 # happened is unknown (second Copilot review of PR 47).
                 kind, detail = "shell", (detail[1], detail[2])
