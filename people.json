@@ -2,6 +2,7 @@
   {
     "person": "mamillerpa",
     "user_id": "mamillerpa",
+    "orcid": "https://orcid.org/0000-0001-9076-6066",
     "role": "Observe",
     "group": "NMDC",
     "sources": [
@@ -22,6 +23,7 @@
   {
     "person": "dkishore",
     "user_id": "dkishore",
+    "orcid": "https://orcid.org/0000-0003-4859-8681",
     "role": "Observe",
     "group": "KBase",
     "sources": [

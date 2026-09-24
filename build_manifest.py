@@ -105,6 +105,26 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
     return {"turns": turns, "event_day": saw_event_day, "failed": False}
 
 
+ORCID_RE = re.compile(r"(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-\d{3}[\dX])")
+
+
+def langfuse_user_id(person: dict) -> str:
+    """The person's bare ORCID if people.json records one, else their user_id.
+
+    BERIL's live hook sets user_id to the ORCID from `beril login`, so a retro-loaded
+    trace for the same person should carry the same value. A malformed ORCID is an
+    error rather than a fallback: silently using the account name would split one
+    person across two identities without anyone noticing.
+    """
+    orcid = person.get("orcid")
+    if not orcid:
+        return person["user_id"]
+    match = ORCID_RE.fullmatch(orcid.strip())
+    if not match:
+        raise ValueError(f"{person['person']}: orcid {orcid!r} is not an ORCID iD")
+    return match.group(1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--people", default=str(HERE / "people.json"))
@@ -145,7 +165,7 @@ def main() -> int:
                     "person": person["person"],
                     "source": source["type"],
                     "find_root": source["find_root"],
-                    "user_id": person["user_id"],
+                    "user_id": langfuse_user_id(person),
                     "consent_bin": source.get("consent_bin"),
                     "event_day": event_day if source.get("consent_bin") or source["type"] == "workshop-frozen-corpus" else None,
                     "event_day_date": args.event_day,

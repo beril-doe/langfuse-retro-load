@@ -201,6 +201,7 @@ entry per place their traces live:
 {
   "person": "someuser",
   "user_id": "someuser",
+  "orcid": "https://orcid.org/0000-0000-0000-0000",
   "role": "Observe",
   "group": "SomeGroup",
   "sources": [
@@ -223,9 +224,15 @@ why that's a real, non-hypothetical case). `role`/`group` come from the
 workshop invite-list sheet if applicable; leave them `null` for sources
 where that doesn't apply (e.g. someone's own ongoing pod-home work).
 
-`user_id` is deliberately the pod account name, never a real name. Langfuse
-Sessions/Users views are a re-identification surface, and consent was
-tracked pseudonymously. Don't change that without a real reason.
+Langfuse's `user_id` is the person's ORCID when `people.json` records one, and the
+pod account name otherwise. BERIL's live hook sets `user_id` to the ORCID from
+`beril login`, so this puts a person's retro-loaded and live traces under one
+identity. Record an ORCID only when the person has confirmed it: a name search in the
+ORCID registry can match more than one person. Never use a real name.
+
+`orcid` is optional. Without it the pod account name is used, so the backlog is not
+blocked on collecting ORCIDs. An ORCID makes the person identifiable in Langfuse's
+Sessions and Users views, so it also needs their consent, beyond consent to loading.
 
 ## This repository is public, and two of its files are about people
 
@@ -252,10 +259,10 @@ person rather than a mechanism.
   session, so loading the corpus as the repo stands today would publish 82 named
   accounts with their consent decisions.
 
-The care already taken over `user_id` is the reason to care here: it is the pod
-account name rather than a real name because Langfuse's Sessions and Users views make
-re-identification easy. That reasoning stops at the Langfuse boundary and needs to
-reach the repository too.
+The care taken over `user_id` is the reason to care here: Langfuse's Sessions and
+Users views make re-identification easy, and an `orcid` in `people.json` publishes
+the link between a pod account and a real person. That reasoning stops at the Langfuse
+boundary and needs to reach the repository too.
 
 ## Running it
 
