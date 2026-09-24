@@ -86,8 +86,16 @@ def shell_writes(command: str) -> set[tuple]:
                 for src in args[:-1]:
                     if m and os.path.basename(src) in ARTIFACTS:
                         found.add((m.group(1), os.path.basename(src)))
-        elif verb == "git" and args and args[0] in ("checkout", "restore", "reset", "stash"):
-            found |= named
+        elif verb == "git":
+            # Skip global options (-C dir, -c key=value, --git-dir=...) to find the subcommand
+            # (second Copilot review of PR 47).
+            rest = list(args)
+            while rest and rest[0].startswith("-"):
+                option = rest.pop(0)
+                if option in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") and rest:
+                    rest.pop(0)
+            if rest and rest[0] in ("checkout", "restore", "reset", "stash"):
+                found |= named
     return found
 MARKER_DIR = Path.home() / ".retro_load_markers"
 
@@ -114,12 +122,14 @@ def events(paths: list[Path]) -> list[tuple]:
     """(timestamp, session_id, kind, detail) for every artifact change, in time order.
 
     kind is "op" (detail: tool name, project, file, input) or "shell" (detail: project,
-    file). A tool call whose result reported an error is dropped: the file did not change.
+    file), where "shell" means the file's state became unknown. A tool call whose result
+    reported an error is dropped: the file did not change. An edit with no recorded result
+    becomes "shell": it may or may not have happened.
     """
     out = []
     for path in paths:
         sid = path.stem
-        errored, rows = set(), []
+        errored, answered, rows = set(), set(), []
         for rec in _records(path):
             content = (rec.get("message") or {}).get("content")
             if not isinstance(content, list):
@@ -127,8 +137,12 @@ def events(paths: list[Path]) -> list[tuple]:
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "tool_result" and block.get("is_error"):
-                    errored.add(block.get("tool_use_id"))
+                if block.get("type") == "tool_result" and block.get("tool_use_id"):
+                    # Only real ids are matched: a missing id on both sides must not pair up
+                    # and confirm an edit (Copilot review of 5510e1d on PR 48).
+                    answered.add(block["tool_use_id"])
+                    if block.get("is_error"):
+                        errored.add(block["tool_use_id"])
                 if block.get("type") != "tool_use":
                     continue
                 inp = block.get("input") or {}
@@ -142,7 +156,14 @@ def events(paths: list[Path]) -> list[tuple]:
                     for project, fname in sorted(shell_writes(inp.get("command") or "")):
                         rows.append((rec.get("timestamp") or "", sid, "shell",
                                      (project, fname), block.get("id")))
-        out += [(ts, sid, kind, detail) for ts, sid, kind, detail, tid in rows if tid not in errored]
+        for ts, sid, kind, detail, tid in rows:
+            if tid in errored:
+                continue  # the tool reported an error, so the file did not change
+            if (not tid or tid not in answered) and kind == "op":
+                # No result was recorded, as in an interrupted transcript, so whether the change
+                # happened is unknown (second Copilot review of PR 47).
+                kind, detail = "shell", (detail[1], detail[2])
+            out.append((ts, sid, kind, detail))
     return sorted(out, key=lambda r: r[0])
 
 
@@ -219,15 +240,21 @@ def snapshots(paths: list[Path]) -> list[Snapshot]:
 
     state: dict[tuple, str | None] = {}
     taken: dict[tuple, dict] = {}
-    for when, _, sid, kind, detail in timeline:
+    # A change that cannot be dated cannot be ordered against anything, so its file stays
+    # unknown for good: a later Write must not make it look known again (Copilot review of
+    # https://github.com/beril-doe/langfuse-retro-load/pull/48).
+    undated = {(d[1], d[2]) if k == "op" else d
+               for w, _, _, k, d in timeline if k in ("op", "shell") and w is None}
+    for _when, _, sid, kind, detail in timeline:
         if kind == "op":
             name, project, fname, inp = detail
-            # An undatable change cannot be ordered against anything, so its result is unknown.
-            state[(project, fname)] = apply(state.get((project, fname)), name, inp) if when else None
+            state[(project, fname)] = apply(state.get((project, fname)), name, inp)
         elif kind == "shell":
             state[detail] = None
         else:
             taken[(sid, detail)] = {f: state[(detail, f)] for f in ARTIFACTS if (detail, f) in state}
+        for key in undated & set(state):
+            state[key] = None
     result = []
     for sid, project in order:
         end = ends.get(sid)
