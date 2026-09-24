@@ -244,15 +244,16 @@ why that's a real, non-hypothetical case). `role`/`group` come from the
 workshop invite-list sheet if applicable; leave them `null` for sources
 where that doesn't apply (e.g. someone's own ongoing pod-home work).
 
-Langfuse's `user_id` is the person's ORCID when `people.json` records one, and the
-pod account name otherwise. BERIL's live hook sets `user_id` to the ORCID from
-`beril login`, so this puts a person's retro-loaded and live traces under one
-identity. Record an ORCID only when the person has confirmed it: a name search in the
-ORCID registry can match more than one person. Never use a real name.
+Langfuse's `user_id` is the person's ORCID, as BERIL's live hook sets it from
+`beril login`, so a person's retro-loaded and live traces share one identity.
+`backfill.py` refuses anyone without an `orcid`: nobody is loaded under a pod account
+name. Record an ORCID only with good evidence, since a name search in the ORCID
+registry can match more than one person. Never use a real name.
 
-`orcid` is optional. Without it the pod account name is used, so the backlog is not
-blocked on collecting ORCIDs. An ORCID makes the person identifiable in Langfuse's
-Sessions and Users views, so it also needs their consent, beyond consent to loading.
+`build_manifest.py` still falls back to the pod account name for a person without an
+`orcid`, but that manifest only drives `run_manifest.py`; `backfill.py` does not use it.
+A roster of consenters with their ORCIDs belongs in a private file on the pod, passed
+with `--people`, not in this public `people.json`.
 
 ## This repository is public, and two of its files are about people
 
