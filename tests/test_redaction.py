@@ -485,3 +485,74 @@ def test_an_escaped_quote_still_ends_the_value(text, after):
     clean, _ = redaction.redact(text, key=KEY)
     assert "abcdefghijklmnop" not in clean
     assert clean.endswith(after)
+
+
+# --- keyed_value on source code, found reviewing the first backfill plan (2026-09-24) -----
+
+@pytest.mark.parametrize("line", [
+    'file_token = env_vars.get("KBASE_AUTH_TOKEN", "")',
+    "api_key = load_api_key(path)",
+    'my_token = request_headers["x"]',
+    'password = cfg.values["db"]',
+])
+def test_code_that_reads_a_credential_is_not_a_credential(line):
+    assert [f for f in redaction.detect(line) if f.pattern == "keyed_value"] == []
+
+
+# Built at run time so the repo's own gitleaks pre-commit scan does not stop on them.
+_FAKE_JWT = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0In0", "SflKxwRJSMeKKF2QT4fw"])
+_FAKE_LIVE = "sk_" + "live_abcdefgh.1234"
+_FAKE_PASSWORD = "hunter2" * 2
+
+
+@pytest.mark.parametrize("key, value", [
+    ("PASSWORD=", _FAKE_PASSWORD),
+    ("export API_KEY=", _FAKE_LIVE),
+    ("token: ", "abcdefghijklmnop"),
+    ("token=", "abcdefghijklmnop.qrstuvwxyz"),
+    ("secret = ", "settings_obj.secret_key"),
+    ("token=", "abcdefghijklmnop[qrstuvwxyz"),
+    ("token=", "abcdefghijklmnop(secretvalue"),
+    ('token="', 'abcdefghijklmnop()'),
+    ("token='", "abcdefghijklmnop[1]"),
+    ("token = ", _FAKE_JWT),
+])
+def test_values_that_look_like_data_are_still_caught(key, value):
+    """A dotted chain stays masked: it cannot be told apart from a real dotted value."""
+    line = key + value
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [value]
+
+
+def test_a_call_split_across_lines_is_still_masked():
+    """Out of scope on purpose: the exemption covers one-line calls, and anything else falls
+    back to masking, which hides a variable name rather than a credential."""
+    line = 'file_token = env_vars.get(\n    "KBASE_AUTH_TOKEN",\n)'
+    assert [f.pattern for f in redaction.detect(line)] == ["keyed_value"]
+
+
+@pytest.mark.parametrize("key, literal", [
+    ("password = ", "hunter2" * 2),
+    ("token = ", "abcdefghijklmnop"),
+    ("api_key = ", "sk_" + "live_abcdefgh1234"),
+])
+def test_a_credential_written_inside_a_call_is_still_masked(key, literal):
+    """`get_secret("hunter2hunter2")` is a complete call, but its argument is the secret."""
+    line = f'{key}get_secret("{literal}")'
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [literal], "mask the argument, not the function name"
+
+
+def test_a_credential_joined_after_a_harmless_call_is_masked():
+    secret = "hunter2" * 2
+    line = f'password = get_secret("PASSWORD") + "{secret}"'
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [secret]
+
+
+def test_the_next_line_is_not_read_as_part_of_the_call():
+    text = 'file_token = env_vars.get("KBASE_AUTH_TOKEN", "")\nprint("hello world here")'
+    assert redaction.detect(text) == []

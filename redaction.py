@@ -202,6 +202,64 @@ REFERENCE_RE = re.compile(
 _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
 
+#: A value that is code rather than data: a name, or names joined by dots, followed by a
+#: call or an index. `file_token = env_vars.get("KBASE_AUTH_TOKEN", "")` reads a token and
+#: holds none, but `keyed_value` saw `token =` and masked `env_vars.get(`. Found reviewing
+#: the first backfill plan on the pod, 2026-09-24. A bare dotted chain such as
+#: `settings.secret_key` is not exempt: `abcdefghijklmnop.qrstuvwxyz` has the same shape and
+#: can be a real value.
+#: Only a complete expression counts: the call's parentheses must close, and an index must
+#: hold a quoted key, a number or a name and then close. `token=abcdefghijklmnop[rest` or
+#: `token=abcdefghijklmnop(rest` stay masked, since a value that merely starts like code could
+#: be a credential containing a bracket (first Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/42).
+_CODE_EXPRESSION_RE = re.compile(
+    r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
+    r"(?:\((?:[^()\"'\n]|\"[^\"\n]*\"|'[^'\n]*')*\)"
+    r"|\[(?:\"[^\"\n]*\"|'[^'\n]*'|\d+|[A-Za-z_]\w*)\])")
+
+
+_LITERAL_RE = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
+_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | None:
+    """For a keyword-anchored value text[start:end]: None when it is not a complete one-line
+    call or index covering the whole value. Otherwise the spans of the string literals
+    inside it that could be credentials, which is an empty list for code that only names
+    things, such as `env_vars.get("KBASE_AUTH_TOKEN", "")`.
+
+    A quoted value is data, whatever its shape: `token="abcdefghijklmnop()"` stays masked.
+    A call split across lines is still masked as before, which is the safe direction, and
+    is left out of scope (second Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/42).
+
+    Masking the literal rather than the call closes a gap that predates the exemption: for
+    `password = get_secret("hunter2hunter2")` the pattern used to mask only `get_secret(`
+    and send the argument (third Copilot review of the same pull request).
+    """
+    before = start
+    while before > 0 and text[before - 1] in " \t":
+        before -= 1
+    if (before > 0 and text[before - 1] in "\"'`") or text[start:start + 1] in "\"'`":
+        return None
+    match = _CODE_EXPRESSION_RE.match(text, start)
+    if not match or match.end() < end:
+        return None
+    # Literals are checked to the end of the line, not only inside the call, so a value
+    # joined on after it is still found: `get_secret("PASSWORD") + "hunter2hunter2"`
+    # (fourth Copilot review of the same pull request).
+    line_end = text.find("\n", match.end())
+    line_end = len(text) if line_end == -1 else line_end
+    spans = []
+    for literal in _LITERAL_RE.finditer(text, match.start(), line_end):
+        group = 1 if literal.group(1) is not None else 2
+        value = literal.group(group)
+        if len(value) >= 8 and not _ENV_NAME_RE.fullmatch(value):
+            spans.append(literal.span(group))
+    return spans
+
+
 def is_reference(value: str) -> bool:
     """True when the whole value, quotes and whitespace aside, names another value.
 
@@ -487,6 +545,14 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
                 continue
+            if name == "keyed_value":
+                literals = code_literals(text, span[0], span[1])
+                if literals is not None:
+                    for lo, hi in literals:
+                        if not _inside((lo, hi), protected):
+                            candidates.append((_RANK[category], -(hi - lo), lo, name,
+                                               text[lo:hi]))
+                    continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
