@@ -3,7 +3,6 @@
 https://github.com/beril-doe/langfuse-retro-load/issues/38
 """
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 pytest.importorskip("langfuse")
 import backfill  # noqa: E402
+import inventory  # noqa: E402
 import retro_load  # noqa: E402
 
 
@@ -41,6 +41,10 @@ def corpus(tmp_path, monkeypatch):
         "sources": [{"type": "workshop-frozen-corpus", "find_root": str(root),
                      "consent_bin": "opt_in", "force_event_day": []}]}]))
     monkeypatch.setattr(backfill, "HERE", tmp_path)
+    # CI has no gitleaks. Stand in for it with "installed, found nothing", so every test
+    # here runs everywhere; the setup test below replaces this with "not installed".
+    monkeypatch.setattr(backfill.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda path: [])
     return people
 
 
@@ -51,8 +55,6 @@ def run(monkeypatch, people, *argv):
 
 
 def test_the_preview_builds_a_plan_and_sends_nothing(corpus, monkeypatch, capsys):
-    if shutil.which("gitleaks") is None:
-        pytest.skip("gitleaks not installed here")
     sent = []
     monkeypatch.setattr(backfill, "run_load", lambda cmd: sent.append(cmd) or 0)
     assert run(monkeypatch, corpus) == 0
@@ -66,8 +68,6 @@ def test_the_preview_builds_a_plan_and_sends_nothing(corpus, monkeypatch, capsys
 
 
 def test_load_passes_only_the_previewed_sessions_to_run_manifest(corpus, monkeypatch):
-    if shutil.which("gitleaks") is None:
-        pytest.skip("gitleaks not installed here")
     seen = {}
 
     def fake_load(cmd):
