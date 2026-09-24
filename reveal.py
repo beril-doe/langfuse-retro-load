@@ -26,7 +26,8 @@ The default prints no value at all. It prints the shape (how long, and for a lon
 first and last two characters), a guess at whether it looks like a placeholder, and the
 surrounding text with any *other* finding in that context redacted, so reading about one
 credential never shows you a neighbouring one. `--show-values` prints the raw text and is
-the only way to see it.
+the only way to see it. With `--plan`, it also shows the other planned values in the same
+field, so the context reads as the transcript does.
 
 Usage, from ~/langfuse-retro-load on the pod:
     .venv/bin/python reveal.py --transcript SESSION.jsonl --turn 71
@@ -177,11 +178,15 @@ def show_plan(args, records, data: bytes) -> int:
             unplaceable += 1
             continue
         leaf = resolve(records[mask.record], mask.pointer)
-        # Every other planned span in this field is hidden before the context is cut, so
-        # reading about one mask never prints another, including gitleaks-only ones.
-        # Cleared ones too: a clearance decides what the load masks, not what this view shows.
+        # Without --show-values, every other planned span in this field is hidden before the
+        # context is cut, so the default view never prints any value, including gitleaks-only
+        # ones and cleared ones. With --show-values the context reads as the transcript does:
+        # only a span overlapping this one is folded into it, so a reviewer sees the value
+        # next to the one under review instead of a placeholder (asked for 2026-09-24).
         siblings = [m for m in subject_masks
                     if m is not mask and m.record == mask.record and m.pointer == mask.pointer]
+        if args.show_values:
+            siblings = [m for m in siblings if m.start < mask.end and mask.start < m.end]
         shown_leaf, start, end = hide_others(leaf, mask, siblings)
         label = "  CLEARED, will not be masked" if mask.cleared else ""
         print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")
