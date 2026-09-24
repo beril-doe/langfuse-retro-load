@@ -117,3 +117,11 @@ def test_the_readme_example_passes_validation():
     text = (ROOT / "README.md").read_text()
     example = re.search(r'"orcid": "([^"]+)"', text).group(1)
     assert build_manifest.langfuse_user_id({"person": "p", "user_id": "p", "orcid": example})
+
+
+def test_the_sample_env_does_not_reintroduce_a_limit():
+    """retro_load.py loads .env before reading the limit, so a copied sample decides it."""
+    for line in (ROOT / ".env.example").read_text().splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key == "CC_LANGFUSE_MAX_CHARS":
+            assert int(value) <= 0, f".env.example sets a {value}-character limit"
