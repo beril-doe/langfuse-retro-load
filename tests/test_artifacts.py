@@ -339,3 +339,22 @@ def test_the_marker_is_written_only_after_flushing(roster, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["artifacts.py", "someone", "--people", str(roster), "--load"])
     assert artifacts.main() == 0
     assert order == ["upload", "flush", "marker"]
+
+
+# --- second Copilot review of PR 47 -----------------------------------------------------------
+
+@pytest.mark.parametrize("command", [f"git -C /home/u/BERIL checkout -- {P}REPORT.md",
+                                     f"git -c core.x=1 restore {P}REPORT.md"])
+def test_git_global_options_do_not_hide_the_subcommand(command):
+    assert artifacts.shell_writes(command) == {("demo", "REPORT.md")}
+
+
+def test_an_edit_with_no_recorded_result_makes_the_file_unknown(tmp_path):
+    s1 = session(tmp_path, "s1", [
+        tool("t1", "Write", {"file_path": P + "REPORT.md", "content": "v1"}, "2026-05-07T10:00:00Z"),
+        result("t1", "2026-05-07T10:00:01Z"),
+        tool("t2", "Edit", {"file_path": P + "REPORT.md", "old_string": "v1", "new_string": "v2"},
+             "2026-05-07T10:05:00Z"),
+    ])
+    [snap] = artifacts.snapshots([s1])
+    assert snap.files == {} and snap.unknown == ["REPORT.md"]
