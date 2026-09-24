@@ -111,8 +111,9 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
         # same thing.
         where = [str(path) for entry, path in found if entry["session_id"] in repeated]
         raise SystemExit(f"session id(s) {', '.join(repeated)} appear in more than one "
-                         f"source: {', '.join(where)}. Load them separately with --session "
-                         "after deciding which copy is right.")
+                         f"source: {', '.join(where)}. Decide which copy is right, then move "
+                         "the other out of its find_root or drop that source from people.json. "
+                         "--session cannot pick between them: it matches by id in every source.")
     missing = sessions - set(ids)
     if missing:
         raise SystemExit(f"not found under {person['person']}'s sources: "
@@ -225,13 +226,19 @@ def main() -> int:
 
     if not args.load:
         again = [a for a in sys.argv[1:]]
+        if args.batch_tag is None:
+            # The default tag has today's date in it; pin it so a load after midnight UTC
+            # carries the tag this preview showed.
+            again += ["--batch-tag", tag]
         if "--force" not in again and any(valid_marker(already_loaded(p)) for p in paths):
             again.append("--force")
-        command = shlex.join([".venv/bin/python", "backfill.py", *again, "--load",
+        python = sys.executable
+        command = shlex.join([python, str(HERE / "backfill.py"), *again, "--load",
                               "--plan", str(plan_path)])
         print("\nNothing sent. Review what the plan will mask, one session at a time:")
         for path in paths:
-            print(f"  .venv/bin/python reveal.py --plan {shlex.quote(str(plan_path))} "
+            print(f"  {shlex.quote(python)} {shlex.quote(str(HERE / 'reveal.py'))} "
+                  f"--plan {shlex.quote(str(plan_path))} "
                   f"--transcript {shlex.quote(str(path))}")
         print(f"Then load exactly what was previewed:\n  {command}")
         return 0

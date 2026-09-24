@@ -211,5 +211,12 @@ def test_one_session_id_in_two_sources_is_refused(corpus, monkeypatch, tmp_path)
                                  "consent_bin": None, "force_event_day": []})
     corpus.write_text(json.dumps(people))
     monkeypatch.setattr(backfill, "build_plan", lambda *a: pytest.fail("planned a duplicate"))
-    with pytest.raises(SystemExit, match="more than one source"):
+    with pytest.raises(SystemExit, match="more than one source.*drop that source"):
         run(monkeypatch, corpus)
+
+
+def test_the_printed_command_pins_the_default_batch_tag(corpus, monkeypatch, capsys):
+    """A load after midnight UTC must carry the tag the preview showed, not the next day's."""
+    _, command = preview_plan(monkeypatch, corpus, capsys)
+    assert "--batch-tag backfill-someone-" in command
+    assert command.startswith(sys.executable), "the load should use the preview's Python"
