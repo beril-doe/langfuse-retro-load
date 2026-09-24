@@ -143,6 +143,36 @@ def hide_others(leaf: str, target, others) -> tuple[str, int, int]:
     return text, target.start + shift, target.end + shift
 
 
+def overlap_chain(target, others) -> list:
+    """Every span joined to `target` through a chain of overlaps, as `plan.apply` merges them.
+
+    Direct overlap alone missed C when A overlaps B and B overlaps C but not A, so the view
+    printed C apart from the one span the load would replace (Copilot review of the merged
+    head of https://github.com/beril-doe/langfuse-retro-load/pull/43).
+    """
+    lo, hi, chain = target.start, target.end, []
+    grown = True
+    while grown:
+        grown = False
+        for other in others:
+            if other not in chain and other.start < hi and lo < other.end:
+                chain.append(other)
+                lo, hi, grown = min(lo, other.start), max(hi, other.end), True
+    return chain
+
+
+def shown_with(target, siblings) -> list:
+    """The planned spans `--show-values` folds into `target`: its overlap chain, ignoring
+    cleared spans. The load does not apply a cleared span, so it must not join two masked
+    spans into one; it stays visible as raw context (Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/45)."""
+    if getattr(target, "cleared", False):
+        # A cleared target is not applied either, so it joins nothing (third Copilot
+        # review of the same pull request).
+        return []
+    return overlap_chain(target, [m for m in siblings if not m.cleared])
+
+
 def show_plan(args, records, data: bytes) -> int:
     """Print each mask the plan holds for this transcript, as the load will apply it."""
     import plan
@@ -190,7 +220,7 @@ def show_plan(args, records, data: bytes) -> int:
         siblings = [m for m in subject_masks
                     if m is not mask and m.record == mask.record and m.pointer == mask.pointer]
         if args.show_values:
-            siblings = [m for m in siblings if m.start < mask.end and mask.start < m.end]
+            siblings = shown_with(mask, siblings)
         shown_leaf, start, end = hide_others(leaf, mask, siblings)
         label = "  CLEARED, will not be masked" if mask.cleared else ""
         print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")
