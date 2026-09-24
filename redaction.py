@@ -219,22 +219,40 @@ _CODE_EXPRESSION_RE = re.compile(
     r"|\[(?:\"[^\"\n]*\"|'[^'\n]*'|\d+|[A-Za-z_]\w*)\])")
 
 
-def is_code_expression(text: str, start: int, end: int) -> bool:
-    """True when text[start:end], a keyword-anchored value, begins a complete call or index
-    in the surrounding text that covers the whole value.
+_LITERAL_RE = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
+_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | None:
+    """For a keyword-anchored value text[start:end]: None when it is not a complete one-line
+    call or index covering the whole value. Otherwise the spans of the string literals
+    inside it that could be credentials, which is an empty list for code that only names
+    things, such as `env_vars.get("KBASE_AUTH_TOKEN", "")`.
 
     A quoted value is data, whatever its shape: `token="abcdefghijklmnop()"` stays masked.
-    The expression must also sit on one line. A call split across lines is still masked,
-    which is the safe direction, and is left out of scope (second Copilot review of
+    A call split across lines is still masked as before, which is the safe direction, and
+    is left out of scope (second Copilot review of
     https://github.com/beril-doe/langfuse-retro-load/pull/42).
+
+    Masking the literal rather than the call closes a gap that predates the exemption: for
+    `password = get_secret("hunter2hunter2")` the pattern used to mask only `get_secret(`
+    and send the argument (third Copilot review of the same pull request).
     """
     before = start
     while before > 0 and text[before - 1] in " \t":
         before -= 1
     if (before > 0 and text[before - 1] in "\"'`") or text[start:start + 1] in "\"'`":
-        return False
+        return None
     match = _CODE_EXPRESSION_RE.match(text, start)
-    return bool(match) and match.end() >= end
+    if not match or match.end() < end:
+        return None
+    spans = []
+    for literal in _LITERAL_RE.finditer(text, match.start(), match.end()):
+        group = 1 if literal.group(1) is not None else 2
+        value = literal.group(group)
+        if len(value) >= 8 and not _ENV_NAME_RE.fullmatch(value):
+            spans.append(literal.span(group))
+    return spans
 
 
 def is_reference(value: str) -> bool:
@@ -522,8 +540,14 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
                 continue
-            if name == "keyed_value" and is_code_expression(text, span[0], span[1]):
-                continue
+            if name == "keyed_value":
+                literals = code_literals(text, span[0], span[1])
+                if literals is not None:
+                    for lo, hi in literals:
+                        if not _inside((lo, hi), protected):
+                            candidates.append((_RANK[category], -(hi - lo), lo, name,
+                                               text[lo:hi]))
+                    continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
     # Resolve overlaps: highest-ranked category first, then the longest match, then the

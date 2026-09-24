@@ -530,3 +530,16 @@ def test_a_call_split_across_lines_is_still_masked():
     back to masking, which hides a variable name rather than a credential."""
     line = 'file_token = env_vars.get(\n    "KBASE_AUTH_TOKEN",\n)'
     assert [f.pattern for f in redaction.detect(line)] == ["keyed_value"]
+
+
+@pytest.mark.parametrize("key, literal", [
+    ("password = ", "hunter2" * 2),
+    ("token = ", "abcdefghijklmnop"),
+    ("api_key = ", "sk_" + "live_abcdefgh1234"),
+])
+def test_a_credential_written_inside_a_call_is_still_masked(key, literal):
+    """`get_secret("hunter2hunter2")` is a complete call, but its argument is the secret."""
+    line = f'{key}get_secret("{literal}")'
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [literal], "mask the argument, not the function name"
