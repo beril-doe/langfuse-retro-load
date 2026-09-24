@@ -108,6 +108,19 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
 ORCID_RE = re.compile(r"(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-\d{3}[\dX])")
 
 
+def orcid_checksum_ok(orcid: str) -> bool:
+    """ISO 7064 MOD 11-2, the check ORCID documents for the last character.
+
+    https://support.orcid.org/hc/en-us/articles/360006897674
+    """
+    digits = orcid.replace("-", "")
+    total = 0
+    for char in digits[:-1]:
+        total = (total + int(char)) * 2
+    check = (12 - total % 11) % 11
+    return digits[-1] == ("X" if check == 10 else str(check))
+
+
 def langfuse_user_id(person: dict) -> str:
     """The person's bare ORCID if people.json records one, else their user_id.
 
@@ -120,8 +133,8 @@ def langfuse_user_id(person: dict) -> str:
     if not orcid:
         return person["user_id"]
     match = ORCID_RE.fullmatch(orcid.strip())
-    if not match:
-        raise ValueError(f"{person['person']}: orcid {orcid!r} is not an ORCID iD")
+    if not match or not orcid_checksum_ok(match.group(1)):
+        raise ValueError(f"{person['person']}: orcid {orcid!r} is not a valid ORCID iD")
     return match.group(1)
 
 
@@ -134,6 +147,15 @@ def main() -> int:
     args = ap.parse_args()
 
     people = json.loads(Path(args.people).read_text())
+    # Every person's ORCID is checked before anything else, not only when a file of
+    # theirs is found: someone with no sessions yet would otherwise carry a bad value
+    # forward until their first one appeared.
+    try:
+        for person in people:
+            langfuse_user_id(person)
+    except ValueError as exc:
+        print(f"refusing to build the manifest: {exc}", file=sys.stderr)
+        return 2
     manifest = []
     n_failed = 0
 

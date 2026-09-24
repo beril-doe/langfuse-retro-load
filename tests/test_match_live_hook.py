@@ -69,3 +69,33 @@ def test_the_committed_manifest_agrees_with_people_json():
               for p in json.loads((ROOT / "people.json").read_text())}
     manifest = json.loads((ROOT / "manifest.json").read_text())
     assert {(r["person"], r["user_id"]) for r in manifest} <= set(people.items())
+
+
+def test_a_mistyped_check_digit_is_refused():
+    """Well formed but one digit off would otherwise send a different person's identity."""
+    with pytest.raises(ValueError):
+        build_manifest.langfuse_user_id({"person": "p", "user_id": "p",
+                                         "orcid": "0000-0001-9076-6067"})
+
+
+@pytest.mark.parametrize("orcid", ["0000-0002-1825-0097", "0000-0002-1694-233X",
+                                   "0000-0001-9076-6066", "0000-0003-4859-8681"])
+def test_valid_check_digits_pass(orcid):
+    """0000-0002-1825-0097 and 0000-0002-1694-233X are ORCID's own documented examples."""
+    assert build_manifest.orcid_checksum_ok(orcid)
+
+
+def test_a_bad_orcid_stops_the_build_before_any_scan(monkeypatch, tmp_path, capsys):
+    people = tmp_path / "people.json"
+    people.write_text(json.dumps([{"person": "p", "user_id": "p", "orcid": "0000-0001-9076-6067",
+                                   "sources": [{"type": "t", "find_root": str(tmp_path)}]}]))
+
+    def no_scan(root):
+        raise AssertionError("scanned transcripts before validating ORCIDs")
+
+    monkeypatch.setattr(build_manifest, "find_jsonl_files", no_scan)
+    monkeypatch.setattr(sys, "argv", ["build_manifest.py", "--people", str(people),
+                                      "--out", str(tmp_path / "m.json")])
+    assert build_manifest.main() == 2
+    assert "not a valid ORCID" in capsys.readouterr().err
+    assert not (tmp_path / "m.json").exists()
