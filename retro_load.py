@@ -71,6 +71,33 @@ except SystemExit:
           file=sys.stderr)
     sys.exit(1)
 
+import langfuse_hook_official  # noqa: E402  (already imported above; this names the module)
+
+_vendored_truncate_text = langfuse_hook_official.truncate_text
+
+
+def truncate_text(s, max_chars=None):
+    """Keep full text unless a positive CC_LANGFUSE_MAX_CHARS asks for a limit.
+
+    This is BERIL's live hook rule (.claude/hooks/langfuse_hook.py on BERIL main,
+    changed 2026-09-22), so a retro-loaded turn carries the same text a live one
+    would. The vendored Langfuse sample instead cuts at 20,000 characters by default,
+    and treats 0 as "keep nothing", so setting the variable to 0 cannot be used to
+    switch its limit off.
+    """
+    if max_chars is None:
+        try:
+            max_chars = int(os.environ.get("CC_LANGFUSE_MAX_CHARS", "0"))
+        except ValueError:
+            max_chars = 0
+    if max_chars <= 0:
+        return _vendored_truncate_text(s, max_chars=len(s or ""))
+    return _vendored_truncate_text(s, max_chars=max_chars)
+
+
+# emit_turn() calls truncate_text through its own module, so replace it there.
+langfuse_hook_official.truncate_text = truncate_text
+
 
 def load_all_jsonl(transcript_path: Path):
     return parse_jsonl(transcript_path.read_bytes())
@@ -286,9 +313,9 @@ def main() -> int:
     ap.add_argument("transcript", type=Path, help="path to a Claude Code .jsonl transcript")
     ap.add_argument("--session-id", help="override session id (default: derived from filename stem)")
     ap.add_argument("--tag", action="append", default=[], help="extra tag to attach (repeatable)")
-    ap.add_argument("--user-id", help="pseudonymous user_id for Langfuse (the pod account name, e.g. "
-                                       "'mamillerpa' or 'dkishore') -- deliberately NOT a real name, since "
-                                       "Langfuse's Sessions/Users views are a re-identification surface")
+    ap.add_argument("--user-id", help="user_id for Langfuse: the person's ORCID where one is recorded "
+                                       "in people.json, as BERIL's live hook uses, otherwise the pod "
+                                       "account name. Never a real name")
     ap.add_argument("--dry-run", action="store_true", help="parse and print turn summary, do not call Langfuse")
     ap.add_argument("--force", action="store_true", help="ignore an existing marker in ~/.retro_load_markers/")
     ap.add_argument("--no-redact", dest="redact", action="store_false", default=True,

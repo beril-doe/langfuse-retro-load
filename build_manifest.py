@@ -105,6 +105,41 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
     return {"turns": turns, "event_day": saw_event_day, "failed": False}
 
 
+ORCID_RE = re.compile(r"(?:https?://orcid\.org/)?([0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X])")
+
+
+def orcid_checksum_ok(orcid: str) -> bool:
+    """ISO 7064 MOD 11-2, the check ORCID documents for the last character.
+
+    https://support.orcid.org/hc/en-us/articles/360006897674
+    """
+    digits = orcid.replace("-", "")
+    total = 0
+    for char in digits[:-1]:
+        total = (total + int(char)) * 2
+    check = (12 - total % 11) % 11
+    return digits[-1] == ("X" if check == 10 else str(check))
+
+
+def langfuse_user_id(person: dict) -> str:
+    """The person's bare ORCID if people.json records one, else their user_id.
+
+    BERIL's live hook sets user_id to the ORCID from `beril login`, so a retro-loaded
+    trace for the same person should carry the same value. A malformed ORCID is an
+    error rather than a fallback: silently using the account name would split one
+    person across two identities without anyone noticing.
+    """
+    if person.get("orcid") is None:
+        return person["user_id"]
+    orcid = person["orcid"]
+    if not isinstance(orcid, str):
+        raise ValueError(f"{person['person']}: orcid {orcid!r} is not a valid ORCID iD")
+    match = ORCID_RE.fullmatch(orcid.strip())
+    if not match or not orcid_checksum_ok(match.group(1)):
+        raise ValueError(f"{person['person']}: orcid {orcid!r} is not a valid ORCID iD")
+    return match.group(1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--people", default=str(HERE / "people.json"))
@@ -114,6 +149,15 @@ def main() -> int:
     args = ap.parse_args()
 
     people = json.loads(Path(args.people).read_text())
+    # Every person's ORCID is checked before anything else, not only when a file of
+    # theirs is found: someone with no sessions yet would otherwise carry a bad value
+    # forward until their first one appeared.
+    try:
+        for person in people:
+            langfuse_user_id(person)
+    except ValueError as exc:
+        print(f"refusing to build the manifest: {exc}", file=sys.stderr)
+        return 2
     manifest = []
     n_failed = 0
 
@@ -145,7 +189,7 @@ def main() -> int:
                     "person": person["person"],
                     "source": source["type"],
                     "find_root": source["find_root"],
-                    "user_id": person["user_id"],
+                    "user_id": langfuse_user_id(person),
                     "consent_bin": source.get("consent_bin"),
                     "event_day": event_day if source.get("consent_bin") or source["type"] == "workshop-frozen-corpus" else None,
                     "event_day_date": args.event_day,
