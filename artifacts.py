@@ -249,10 +249,10 @@ def snapshots(paths: list[Path]) -> list[Snapshot]:
             state[(project, fname)] = apply(state.get((project, fname)), name, inp)
         elif kind == "shell":
             state[detail] = None
-        for key in undated & set(state):
-            state[key] = None
         else:
             taken[(sid, detail)] = {f: state[(detail, f)] for f in ARTIFACTS if (detail, f) in state}
+        for key in undated & set(state):
+            state[key] = None
     result = []
     for sid, project in order:
         end = ends.get(sid)
