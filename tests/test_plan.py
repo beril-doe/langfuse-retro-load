@@ -444,6 +444,19 @@ def test_overlap_chain_follows_overlaps_transitively():
     assert c in chain and b in chain and far not in chain
 
 
+def test_a_cleared_span_does_not_join_two_masked_spans(monkeypatch, tmp_path, capsys):
+    """The load skips cleared masks, so A and C stay separate replacements even when a
+    cleared B overlaps both."""
+    import reveal
+    from types import SimpleNamespace as Span
+    a = Span(start=0, end=10, cleared=False)
+    b = Span(start=8, end=20, cleared=True)
+    c = Span(start=18, end=30, cleared=False)
+    assert reveal.shown_with(a, [b, c]) == []
+    b.cleared = False
+    assert reveal.shown_with(a, [b, c]) == [b, c], "an active B does join them"
+
+
 # --- third Copilot review of PR 27 ------------------------------------------------------------
 
 def test_a_gitleaks_value_that_is_also_an_object_key_blocks(monkeypatch, tmp_path):

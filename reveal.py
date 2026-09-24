@@ -161,6 +161,14 @@ def overlap_chain(target, others) -> list:
     return chain
 
 
+def shown_with(target, siblings) -> list:
+    """The planned spans `--show-values` folds into `target`: its overlap chain, ignoring
+    cleared spans. The load does not apply a cleared span, so it must not join two masked
+    spans into one; it stays visible as raw context (Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/45)."""
+    return overlap_chain(target, [m for m in siblings if not m.cleared])
+
+
 def show_plan(args, records, data: bytes) -> int:
     """Print each mask the plan holds for this transcript, as the load will apply it."""
     import plan
@@ -208,7 +216,7 @@ def show_plan(args, records, data: bytes) -> int:
         siblings = [m for m in subject_masks
                     if m is not mask and m.record == mask.record and m.pointer == mask.pointer]
         if args.show_values:
-            siblings = overlap_chain(mask, siblings)
+            siblings = shown_with(mask, siblings)
         shown_leaf, start, end = hide_others(leaf, mask, siblings)
         label = "  CLEARED, will not be masked" if mask.cleared else ""
         print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")
