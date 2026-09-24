@@ -435,6 +435,15 @@ def test_show_values_does_not_re_redact_a_neighbouring_local_finding(monkeypatch
     assert "[REDACTED" not in printed
 
 
+def test_overlap_chain_follows_overlaps_transitively():
+    import reveal
+    from types import SimpleNamespace as Span
+    a, b, c, far = Span(start=0, end=10), Span(start=8, end=20), Span(start=18, end=30), \
+        Span(start=40, end=50)
+    chain = reveal.overlap_chain(a, [c, far, b])
+    assert c in chain and b in chain and far not in chain
+
+
 # --- third Copilot review of PR 27 ------------------------------------------------------------
 
 def test_a_gitleaks_value_that_is_also_an_object_key_blocks(monkeypatch, tmp_path):
