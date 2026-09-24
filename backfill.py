@@ -101,7 +101,7 @@ def build_plan(paths: list[Path], out: Path) -> dict:
     try:
         entries = [plan.build(path) for path in paths]
     except plan.PlanError as e:
-        raise SystemExit(f"could not build the redaction plan: {e}")
+        raise SystemExit(f"could not build the redaction plan: {e}") from e
     out.parent.mkdir(parents=True, exist_ok=True)
     plan.write(out, entries)
     masks = [m for _, ms in entries for m in ms if not m.cleared]
