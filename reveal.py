@@ -91,15 +91,19 @@ def resolve(document, pointer: str):
     return node
 
 
-def context_for(leaf: str, start: int, end: int, *, show_values: bool) -> str:
+def context_for(leaf: str, start: int, end: int, *, show_values: bool,
+                raw_context: bool = False) -> str:
     """The text around a finding, with every neighbouring finding redacted.
 
     Reading about one credential must not put a different one on the screen, so the two
     sides are redacted independently and the finding itself is spliced back in as its shape
-    or, with `--show-values`, as itself.
+    or, with `--show-values`, as itself. `raw_context` leaves the two sides as they are, for
+    `--plan --show-values`, where the reviewer asked to read the field as the transcript has it.
     """
-    before, _ = redaction.redact(leaf[max(0, start - CONTEXT):start])
-    after, _ = redaction.redact(leaf[end:end + CONTEXT])
+    before, after = leaf[max(0, start - CONTEXT):start], leaf[end:end + CONTEXT]
+    if not raw_context:
+        before, _ = redaction.redact(before)
+        after, _ = redaction.redact(after)
     middle = leaf[start:end] if show_values else shape(leaf[start:end])
     return (before + middle + after).replace("\n", " ⏎ ")
 
@@ -190,7 +194,7 @@ def show_plan(args, records, data: bytes) -> int:
         shown_leaf, start, end = hide_others(leaf, mask, siblings)
         label = "  CLEARED, will not be masked" if mask.cleared else ""
         print(f"{where}  {mask.pointer}  {mask.pattern} ({mask.detector}){label}")
-        print(f"    {context_for(shown_leaf, start, end, show_values=args.show_values)}")
+        print(f"    {context_for(shown_leaf, start, end, show_values=args.show_values, raw_context=args.show_values)}")
         shown += 1
     print(f"\n{shown} planned mask(s)" + (f", {unplaceable} not pinned" if unplaceable else "")
           + ("" if args.show_values else ". No value was printed; pass --show-values in a "
