@@ -103,7 +103,17 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
             summary = build_manifest.dry_run_summary(path, event_day)
             found.append((build_manifest.manifest_entry(person, source, path.stem, summary,
                                                         event_day), path))
-    missing = sessions - {entry["session_id"] for entry, _ in found}
+    ids = [entry["session_id"] for entry, _ in found]
+    repeated = sorted({sid for sid in ids if ids.count(sid) > 1})
+    if repeated:
+        # A plan names each transcript by session id, so two files with one id would
+        # share a header and one would load with the other's masks. plan.py refuses the
+        # same thing.
+        where = [str(path) for entry, path in found if entry["session_id"] in repeated]
+        raise SystemExit(f"session id(s) {', '.join(repeated)} appear in more than one "
+                         f"source: {', '.join(where)}. Load them separately with --session "
+                         "after deciding which copy is right.")
+    missing = sessions - set(ids)
     if missing:
         raise SystemExit(f"not found under {person['person']}'s sources: "
                          f"{', '.join(sorted(missing))}")
@@ -219,10 +229,11 @@ def main() -> int:
             again.append("--force")
         command = shlex.join([".venv/bin/python", "backfill.py", *again, "--load",
                               "--plan", str(plan_path)])
-        print(f"\nNothing sent. Review the plan, for example:\n"
-              f"  .venv/bin/python reveal.py --plan {shlex.quote(str(plan_path))} "
-              f"--transcript {shlex.quote(str(paths[0]))}\n"
-              f"Then load exactly what was previewed:\n  {command}")
+        print("\nNothing sent. Review what the plan will mask, one session at a time:")
+        for path in paths:
+            print(f"  .venv/bin/python reveal.py --plan {shlex.quote(str(plan_path))} "
+                  f"--transcript {shlex.quote(str(path))}")
+        print(f"Then load exactly what was previewed:\n  {command}")
         return 0
 
     if failed:

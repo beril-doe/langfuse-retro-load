@@ -191,3 +191,25 @@ def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch):
     import langfuse
     monkeypatch.setattr(langfuse, "__version__", "5.0.0", raising=False)
     assert any("needs 4.x" in p for p in backfill.setup_problems(skip_git=True))
+
+
+def test_every_session_gets_a_review_command(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    out = capsys.readouterr().out
+    reviewed = [line for line in out.splitlines() if "reveal.py --plan" in line]
+    assert len(reviewed) == 2 and any("s-1.jsonl" in r for r in reviewed) \
+        and any("s-2.jsonl" in r for r in reviewed)
+
+
+def test_one_session_id_in_two_sources_is_refused(corpus, monkeypatch, tmp_path):
+    other = tmp_path / "other" / "proj"
+    other.mkdir(parents=True)
+    other.joinpath("s-1.jsonl").write_text((tmp_path / "projects" / "proj" / "s-1.jsonl").read_text())
+    people = json.loads(corpus.read_text())
+    people[0]["sources"].append({"type": "pod-live", "find_root": str(other.parent),
+                                 "consent_bin": None, "force_event_day": []})
+    corpus.write_text(json.dumps(people))
+    monkeypatch.setattr(backfill, "build_plan", lambda *a: pytest.fail("planned a duplicate"))
+    with pytest.raises(SystemExit, match="more than one source"):
+        run(monkeypatch, corpus)
