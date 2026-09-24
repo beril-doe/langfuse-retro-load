@@ -358,3 +358,22 @@ def test_an_edit_with_no_recorded_result_makes_the_file_unknown(tmp_path):
     ])
     [snap] = artifacts.snapshots([s1])
     assert snap.files == {} and snap.unknown == ["REPORT.md"]
+
+
+
+@pytest.mark.parametrize("command", [f"git --git-dir /home/u/BERIL/.git checkout {P}REPORT.md",
+                                     f"git --work-tree=/home/u/BERIL checkout {P}REPORT.md",
+                                     f"git -C /home/u/BERIL -c a=b stash push {P}REPORT.md"])
+def test_more_git_global_option_forms(command):
+    assert artifacts.shell_writes(command) == {("demo", "REPORT.md")}
+
+
+def test_an_undated_change_keeps_the_file_unknown_after_later_writes(tmp_path):
+    s1 = session(tmp_path, "s1", [
+        tool("t0", "Bash", {"command": f"echo x > {P}REPORT.md"}, None),
+        result("t0", "2026-05-07T09:00:01Z"),
+        tool("t1", "Write", {"file_path": P + "REPORT.md", "content": "v1"}, "2026-05-07T10:00:00Z"),
+        result("t1", "2026-05-07T10:00:01Z"),
+    ])
+    [snap] = artifacts.snapshots([s1])
+    assert snap.files == {} and snap.unknown == ["REPORT.md"]

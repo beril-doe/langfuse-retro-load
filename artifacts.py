@@ -238,13 +238,19 @@ def snapshots(paths: list[Path]) -> list[Snapshot]:
 
     state: dict[tuple, str | None] = {}
     taken: dict[tuple, dict] = {}
-    for when, _, sid, kind, detail in timeline:
+    # A change that cannot be dated cannot be ordered against anything, so its file stays
+    # unknown for good: a later Write must not make it look known again (Copilot review of
+    # https://github.com/beril-doe/langfuse-retro-load/pull/48).
+    undated = {(d[1], d[2]) if k == "op" else d
+               for w, _, _, k, d in timeline if k in ("op", "shell") and w is None}
+    for _when, _, sid, kind, detail in timeline:
         if kind == "op":
             name, project, fname, inp = detail
-            # An undatable change cannot be ordered against anything, so its result is unknown.
-            state[(project, fname)] = apply(state.get((project, fname)), name, inp) if when else None
+            state[(project, fname)] = apply(state.get((project, fname)), name, inp)
         elif kind == "shell":
             state[detail] = None
+        for key in undated & set(state):
+            state[key] = None
         else:
             taken[(sid, detail)] = {f: state[(detail, f)] for f in ARTIFACTS if (detail, f) in state}
     result = []
