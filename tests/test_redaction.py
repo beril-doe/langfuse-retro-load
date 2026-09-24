@@ -513,6 +513,8 @@ _FAKE_PASSWORD = "hunter2" * 2
     ("secret = ", "settings_obj.secret_key"),
     ("token=", "abcdefghijklmnop[qrstuvwxyz"),
     ("token=", "abcdefghijklmnop(secretvalue"),
+    ('token="', 'abcdefghijklmnop()'),
+    ("token='", "abcdefghijklmnop[1]"),
     ("token = ", _FAKE_JWT),
 ])
 def test_values_that_look_like_data_are_still_caught(key, value):
@@ -521,3 +523,10 @@ def test_values_that_look_like_data_are_still_caught(key, value):
     found = [line[f.start:f.end] for f in redaction.detect(line)
              if f.category == redaction.SECRET]
     assert found == [value]
+
+
+def test_a_call_split_across_lines_is_still_masked():
+    """Out of scope on purpose: the exemption covers one-line calls, and anything else falls
+    back to masking, which hides a variable name rather than a credential."""
+    line = 'file_token = env_vars.get(\n    "KBASE_AUTH_TOKEN",\n)'
+    assert [f.pattern for f in redaction.detect(line)] == ["keyed_value"]

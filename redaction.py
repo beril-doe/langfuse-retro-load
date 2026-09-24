@@ -221,11 +221,19 @@ _CODE_EXPRESSION_RE = re.compile(
 
 def is_code_expression(text: str, start: int, end: int) -> bool:
     """True when text[start:end], a keyword-anchored value, begins a complete call or index
-    in the surrounding text that covers the whole value."""
-    offset = start
-    while offset < end and text[offset] in "\"' ":
-        offset += 1
-    match = _CODE_EXPRESSION_RE.match(text, offset)
+    in the surrounding text that covers the whole value.
+
+    A quoted value is data, whatever its shape: `token="abcdefghijklmnop()"` stays masked.
+    The expression must also sit on one line. A call split across lines is still masked,
+    which is the safe direction, and is left out of scope (second Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/42).
+    """
+    before = start
+    while before > 0 and text[before - 1] in " \t":
+        before -= 1
+    if (before > 0 and text[before - 1] in "\"'`") or text[start:start + 1] in "\"'`":
+        return False
+    match = _CODE_EXPRESSION_RE.match(text, start)
     return bool(match) and match.end() >= end
 
 
