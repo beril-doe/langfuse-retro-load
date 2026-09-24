@@ -455,6 +455,8 @@ def test_a_cleared_span_does_not_join_two_masked_spans(monkeypatch, tmp_path, ca
     assert reveal.shown_with(a, [b, c]) == []
     b.cleared = False
     assert reveal.shown_with(a, [b, c]) == [b, c], "an active B does join them"
+    b.cleared = True
+    assert reveal.shown_with(b, [a, c]) == [], "a cleared target joins nothing"
 
 
 # --- third Copilot review of PR 27 ------------------------------------------------------------

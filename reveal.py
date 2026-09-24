@@ -166,6 +166,10 @@ def shown_with(target, siblings) -> list:
     cleared spans. The load does not apply a cleared span, so it must not join two masked
     spans into one; it stays visible as raw context (Copilot review of
     https://github.com/beril-doe/langfuse-retro-load/pull/45)."""
+    if getattr(target, "cleared", False):
+        # A cleared target is not applied either, so it joins nothing (third Copilot
+        # review of the same pull request).
+        return []
     return overlap_chain(target, [m for m in siblings if not m.cleared])
 
 
