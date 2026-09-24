@@ -67,7 +67,18 @@ def test_the_preview_builds_a_plan_and_sends_nothing(corpus, monkeypatch, capsys
     assert list((corpus.parent / "plans").glob("someone-*.jsonl"))
 
 
-def test_load_passes_only_the_previewed_sessions_to_run_manifest(corpus, monkeypatch):
+def preview_plan(monkeypatch, corpus, capsys, *argv):
+    """Run a preview and return the plan path and the load command it printed."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("the preview loaded"))
+    assert run(monkeypatch, corpus, *argv) == 0
+    out = capsys.readouterr().out
+    command = out.strip().splitlines()[-1].strip()
+    plan_path = command.split("--plan ")[1].strip("'")
+    return Path(plan_path), command
+
+
+def test_load_passes_only_the_previewed_sessions_to_run_manifest(corpus, monkeypatch, capsys):
+    plan_path, _ = preview_plan(monkeypatch, corpus, capsys, "--session", "s-2")
     seen = {}
 
     def fake_load(cmd):
@@ -78,13 +89,14 @@ def test_load_passes_only_the_previewed_sessions_to_run_manifest(corpus, monkeyp
         return 0
 
     monkeypatch.setattr(backfill, "run_load", fake_load)
-    assert run(monkeypatch, corpus, "--load", "--session", "s-2", "--force",
-               "--batch-tag", "backfill-test") == 0
+    assert run(monkeypatch, corpus, "--load", "--plan", str(plan_path), "--session", "s-2",
+               "--force", "--batch-tag", "backfill-test") == 0
     assert seen["sessions"] == ["s-2"]
     assert seen["user_ids"] == {"0000-0002-1825-0097"}
     cmd = seen["cmd"]
     assert cmd[cmd.index("--batch-tag") + 1] == "backfill-test"
-    assert "--force" in cmd and "--plan" in cmd
+    assert "--force" in cmd
+    assert cmd[cmd.index("--plan") + 1] == str(plan_path), "loaded with a plan nobody reviewed"
     assert cmd[cmd.index("--min-idle-days") + 1] == "1.0", "a session in use could load half done"
 
 
@@ -121,7 +133,7 @@ def test_main_behind_origin_is_reported(monkeypatch):
 def test_an_unknown_session_is_an_error_not_an_empty_load(corpus, monkeypatch):
     monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
     with pytest.raises(SystemExit, match="not found"):
-        run(monkeypatch, corpus, "--load", "--session", "no-such-session")
+        run(monkeypatch, corpus, "--session", "no-such-session")
 
 
 def test_an_unknown_person_lists_who_is_known(corpus, monkeypatch):
@@ -129,3 +141,53 @@ def test_an_unknown_person_lists_who_is_known(corpus, monkeypatch):
                                       "--skip-git-check"])
     with pytest.raises(SystemExit, match="Known: someone"):
         backfill.main()
+
+
+def test_load_without_a_reviewed_plan_is_refused(corpus, monkeypatch):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    with pytest.raises(SystemExit):
+        run(monkeypatch, corpus, "--load")
+
+
+def test_the_printed_command_keeps_the_previewed_selection(corpus, monkeypatch, capsys):
+    """Following the printed command must not load sessions that were not previewed."""
+    _, command = preview_plan(monkeypatch, corpus, capsys, "--session", "s-2")
+    assert "--session s-2" in command and "--load" in command and "--plan" in command
+
+
+def test_a_plan_missing_a_session_is_refused(corpus, monkeypatch, capsys):
+    plan_path, _ = preview_plan(monkeypatch, corpus, capsys, "--session", "s-2")
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus, "--load", "--plan", str(plan_path)) == 2
+    assert "does not cover s-1" in capsys.readouterr().err
+
+
+def test_a_session_that_failed_to_parse_blocks_the_load(corpus, monkeypatch, capsys):
+    plan_path, _ = preview_plan(monkeypatch, corpus, capsys)
+    real = backfill.build_manifest.dry_run_summary
+
+    def s1_fails(path, event_day):
+        result = real(path, event_day)
+        return dict(result, failed=True) if path.stem == "s-1" else result
+
+    monkeypatch.setattr(backfill.build_manifest, "dry_run_summary", s1_fails)
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus, "--load", "--plan", str(plan_path)) == 2
+    assert "failed to parse" in capsys.readouterr().err
+
+
+def test_a_failed_fetch_is_a_setup_problem(monkeypatch):
+    """A stale origin/main can equal HEAD, so without a fetch the check proves nothing."""
+    def fake_git(*a):
+        if a[0] == "fetch":
+            return subprocess.CompletedProcess(a, 1, stdout="", stderr="network unreachable")
+        return subprocess.CompletedProcess(a, 0, stdout={"--abbrev-ref": "main"}.get(a[1], "same")
+                                           + "\n", stderr="")
+    monkeypatch.setattr(backfill, "git", fake_git)
+    assert any("could not fetch origin" in p for p in backfill.setup_problems())
+
+
+def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch):
+    import langfuse
+    monkeypatch.setattr(langfuse, "__version__", "5.0.0", raising=False)
+    assert any("needs 4.x" in p for p in backfill.setup_problems(skip_git=True))

@@ -13,16 +13,20 @@ For how this work and Dileep's BERIL live tracing benefit each other, see the
 On the pod, from this repository:
 
 ```
-.venv/bin/python backfill.py <person>            # preview: checks, redaction plan, summary; sends nothing
-.venv/bin/python backfill.py <person> --load     # the same, then loads
+.venv/bin/python backfill.py <person>                       # preview: sends nothing
+.venv/bin/python backfill.py <person> --load --plan PLAN    # load, with the plan you reviewed
 ```
 
 `<person>` is a `person` in `people.json`. The preview says what to fix if the setup
-is not ready: an old branch, a Python without `langfuse`, or missing `gitleaks`. Add
-`--force` to reload sessions an earlier load marked as sent, and `--session <id>` to
-limit the run. Run a long load under `nohup ... > backfill-<person>.log 2>&1 &` so a
-closed browser tab does not stop it. The sections below describe the pieces this
-command runs.
+is not ready: an old branch, a Python without `langfuse` 4.x, or missing `gitleaks`.
+Otherwise it writes a redaction plan under `plans/`, prints what would be sent, and
+prints the exact load command. Review the plan with `reveal.py --plan PLAN --transcript
+FILE`, then run that command; `--load` uses the reviewed plan and never builds a new
+one. `--session <id>` limits the run. `--force` loads sessions an earlier load marked
+as sent, and still skips any whose traces are in Langfuse, so delete those first with
+`langfuse_admin.py delete`. Run a long load under `nohup ... > backfill-<person>.log
+2>&1 &` so a closed browser tab does not stop it. The sections below describe the
+pieces this command runs.
 
 ## Before anything else: this has to run on the pod, not your laptop
 

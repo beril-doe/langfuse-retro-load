@@ -3,17 +3,19 @@
 
 Run on the BERDL pod, from this repository:
 
-    .venv/bin/python backfill.py mamillerpa            # preview: sends nothing
-    .venv/bin/python backfill.py mamillerpa --load     # the same, then loads
+    .venv/bin/python backfill.py mamillerpa                        # preview: sends nothing
+    .venv/bin/python backfill.py mamillerpa --load --plan PLAN     # load with the reviewed plan
 
-The preview checks the setup, finds the person's transcripts from people.json, builds
-the redaction plan, and prints what a load would send. Each setup problem is reported
-with the command that fixes it. `--load` repeats all of that and then loads through
+The preview checks the setup, finds the person's transcripts from people.json, writes a
+redaction plan under plans/, and prints what a load would send and the exact command to
+load it. Each setup problem is reported with the command that fixes it. Review the plan
+(reveal.py --plan PLAN --transcript FILE shows what will be masked), then run the printed
+command. `--load` uses that plan as reviewed, never a new one, and loads through
 run_manifest.py and retro_load.py, the same path as a manual load.
 
 A long load should survive a closed browser tab, so run it in the background:
 
-    nohup .venv/bin/python backfill.py mamillerpa --load > backfill-mamillerpa.log 2>&1 &
+    nohup .venv/bin/python backfill.py mamillerpa --load --plan PLAN > backfill-mamillerpa.log 2>&1 &
 
 See https://github.com/beril-doe/langfuse-retro-load/issues/38.
 """
@@ -21,6 +23,7 @@ import argparse
 import collections
 import datetime
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -48,20 +51,32 @@ def setup_problems(skip_git: bool = False) -> list[str]:
     problems = []
     if not skip_git:
         branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        git("fetch", "-q", "origin", "main")
+        fetched = git("fetch", "-q", "origin", "main")
         head = git("rev-parse", "HEAD").stdout.strip()
         main = git("rev-parse", "origin/main").stdout.strip()
-        if branch != "main":
+        if fetched.returncode != 0:
+            # A stale origin/main can equal HEAD, so without a fetch "current" is unknown.
+            problems.append(f"could not fetch origin to check that main is current "
+                            f"({fetched.stderr.strip()[:200] or 'git fetch failed'}). Fix: "
+                            f"check the network, then git -C {HERE} pull --ff-only")
+        elif branch != "main":
             problems.append(f"this checkout is on '{branch}', not main. Fix: "
                             f"git -C {HERE} switch main && git -C {HERE} pull --ff-only")
         elif head != main:
             problems.append(f"main is not current. Fix: git -C {HERE} pull --ff-only")
     try:
-        import langfuse  # noqa: F401
+        import langfuse
+        version = getattr(langfuse, "__version__", "")
     except ImportError:
+        version = None
+    if version is None:
         problems.append(f"this Python has no langfuse package. Fix: run with "
                         f"{HERE / '.venv/bin/python'}, or create it with "
                         f"'uv sync' in {HERE}")
+    elif not version.startswith("4."):
+        # The vendored hook reaches into SDK 4.x internals to backdate spans.
+        problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
+                        f"loader needs 4.x. Fix: run with {HERE / '.venv/bin/python'}")
     if shutil.which("gitleaks") is None:
         problems.append("gitleaks is not installed, and the redaction plan needs it. Fix: "
                         "install gitleaks 8.x from https://github.com/gitleaks/gitleaks/releases "
@@ -95,8 +110,7 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
     return found
 
 
-def build_plan(paths: list[Path], out: Path) -> dict:
-    """Write the redaction plan and return a summary of it."""
+def build_plan(paths: list[Path], out: Path) -> None:
     import plan
     try:
         entries = [plan.build(path) for path in paths]
@@ -104,8 +118,20 @@ def build_plan(paths: list[Path], out: Path) -> dict:
         raise SystemExit(f"could not build the redaction plan: {e}") from e
     out.parent.mkdir(parents=True, exist_ok=True)
     plan.write(out, entries)
-    masks = [m for _, ms in entries for m in ms if not m.cleared]
-    return {"by_pattern": collections.Counter(m.pattern for m in masks),
+
+
+def summarize_plan(plan_path: Path, paths: list[Path]) -> dict:
+    """Counts from the plan file, and every session the plan does not cover."""
+    import inventory
+    import plan
+    try:
+        headers, by_subject = plan.read(plan_path)
+    except (OSError, ValueError, plan.PlanError) as e:
+        raise SystemExit(f"could not read the plan {plan_path}: {e}") from e
+    subjects = [inventory._subject_for(p) for p in paths]
+    masks = [m for s in subjects for m in by_subject.get(s, []) if not m.cleared]
+    return {"uncovered": [s for s in subjects if s not in headers],
+            "by_pattern": collections.Counter(m.pattern for m in masks),
             "by_detector": collections.Counter(m.detector for m in masks),
             "blocking": sum(1 for m in masks if m.pointer is None),
             "total": len(masks)}
@@ -115,11 +141,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("person", help="the person's name in people.json, e.g. mamillerpa")
-    ap.add_argument("--load", action="store_true", help="load after the preview")
+    ap.add_argument("--load", action="store_true",
+                    help="load, using the plan named by --plan")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="the reviewed plan a preview wrote; required with --load")
     ap.add_argument("--session", action="append", default=[],
                     help="only this session id; repeat for several")
     ap.add_argument("--force", action="store_true",
-                    help="reload sessions that an earlier load marked as sent")
+                    help="load sessions an earlier load marked as sent. A session whose "
+                         "traces are still in Langfuse is skipped anyway: delete those first "
+                         "with langfuse_admin.py delete, so reloading cannot duplicate them")
     ap.add_argument("--batch-tag", default=None,
                     help="default: backfill-<person>-<today's UTC date>")
     ap.add_argument("--min-idle-days", type=float, default=1.0,
@@ -129,6 +160,11 @@ def main() -> int:
     ap.add_argument("--people", type=Path, default=HERE / "people.json")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.load and args.plan is None:
+        ap.error("--load needs --plan: run the preview first, review its plan, then load "
+                 "with the command the preview prints")
+    if args.plan is not None and not args.load:
+        ap.error("--plan is only used with --load; the preview writes a new plan")
 
     problems = setup_problems(skip_git=args.skip_git_check)
     if problems:
@@ -146,9 +182,14 @@ def main() -> int:
     if not found:
         print(f"no transcripts found for {args.person}")
         return 0
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    plan_path = HERE / "plans" / f"{args.person}-{stamp}.jsonl"
-    summary = build_plan([path for _, path in found], plan_path)
+    paths = [path for _, path in found]
+    if args.load:
+        plan_path = args.plan.expanduser().resolve()
+    else:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        plan_path = HERE / "plans" / f"{args.person}-{stamp}.jsonl"
+        build_plan(paths, plan_path)
+    summary = summarize_plan(plan_path, paths)
 
     print(f"person   : {args.person}")
     print(f"user_id  : {found[0][0]['user_id']}")
@@ -169,12 +210,29 @@ def main() -> int:
               "The load refuses these sessions until a reviewer clears or fixes them.")
     failed = [e["session_id"] for e, _ in found if e["dry_run_failed"]]
     if failed:
-        print(f"  {len(failed)} session(s) failed to parse: {', '.join(failed)}")
+        print(f"  {len(failed)} session(s) failed to parse: {', '.join(failed)}. A load "
+              "refuses until they parse or are left out with --session")
 
     if not args.load:
-        print(f"\nNothing sent. To load: .venv/bin/python backfill.py {args.person} --load"
-              + (" --force" if any(valid_marker(already_loaded(p)) for _, p in found) else ""))
+        again = [a for a in sys.argv[1:]]
+        if "--force" not in again and any(valid_marker(already_loaded(p)) for p in paths):
+            again.append("--force")
+        command = shlex.join([".venv/bin/python", "backfill.py", *again, "--load",
+                              "--plan", str(plan_path)])
+        print(f"\nNothing sent. Review the plan, for example:\n"
+              f"  .venv/bin/python reveal.py --plan {shlex.quote(str(plan_path))} "
+              f"--transcript {shlex.quote(str(paths[0]))}\n"
+              f"Then load exactly what was previewed:\n  {command}")
         return 0
+
+    if failed:
+        print("refusing to load: some sessions failed to parse (listed above)", file=sys.stderr)
+        return 2
+    if summary["uncovered"]:
+        print(f"refusing to load: the plan does not cover {', '.join(summary['uncovered'])}. "
+              "Run the preview with the same options and load with the plan it writes.",
+              file=sys.stderr)
+        return 2
 
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         json.dump([entry for entry, _ in found], handle, indent=2)
