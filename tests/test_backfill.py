@@ -239,3 +239,21 @@ def test_markers_are_found_through_a_symlinked_corpus(corpus, monkeypatch, capsy
     _, command = preview_plan(monkeypatch, corpus, capsys)
     assert "--force" in command
     assert "2 sessions, 2 turns, 1 already marked as sent" in preview_plan.output
+
+
+def test_a_person_without_an_orcid_is_refused_before_any_scan(corpus, monkeypatch):
+    people = json.loads(corpus.read_text())
+    del people[0]["orcid"]
+    corpus.write_text(json.dumps(people))
+    monkeypatch.setattr(backfill, "discover", lambda *a: pytest.fail("scanned without an ORCID"))
+    with pytest.raises(SystemExit, match="no orcid"):
+        run(monkeypatch, corpus)
+
+
+def test_a_malformed_orcid_is_a_clean_refusal(corpus, monkeypatch):
+    people = json.loads(corpus.read_text())
+    people[0]["orcid"] = "0000-0002-1825-0098"   # wrong check digit
+    corpus.write_text(json.dumps(people))
+    monkeypatch.setattr(backfill, "discover", lambda *a: pytest.fail("scanned with a bad ORCID"))
+    with pytest.raises(SystemExit, match="not a valid ORCID"):
+        run(monkeypatch, corpus)

@@ -187,6 +187,15 @@ def main() -> int:
     from retro_load import already_loaded, valid_marker
 
     person = find_person(args.people, args.person)
+    if person.get("orcid") is None:
+        # Everyone is loaded under an ORCID, as BERIL's live hook does. A pod account name
+        # is never used as the Langfuse user id (Mark, 2026-09-24).
+        raise SystemExit(f"{args.person} has no orcid in {args.people.name}. Record a confirmed "
+                         "ORCID there first; nobody is loaded under a pod account name.")
+    try:
+        build_manifest.langfuse_user_id(person)  # a malformed ORCID stops here, before any scan
+    except ValueError as exc:
+        raise SystemExit(f"{exc}. Fix it in {args.people.name}; nothing was read or sent.") from exc
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     tag = args.batch_tag or f"backfill-{args.person}-{today}"
     found = discover(person, set(args.session), args.event_day)
