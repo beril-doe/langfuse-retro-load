@@ -8,6 +8,22 @@ For how this work and Dileep's BERIL live tracing benefit each other, see the
 [reuse accounting and handoff](docs/live-tracing-handoff.md) and
 [implementation tracker #30](https://github.com/beril-doe/langfuse-retro-load/issues/30).
 
+## Backfilling one person
+
+On the pod, from this repository:
+
+```
+.venv/bin/python backfill.py <person>            # preview: checks, redaction plan, summary; sends nothing
+.venv/bin/python backfill.py <person> --load     # the same, then loads
+```
+
+`<person>` is a `person` in `people.json`. The preview says what to fix if the setup
+is not ready: an old branch, a Python without `langfuse`, or missing `gitleaks`. Add
+`--force` to reload sessions an earlier load marked as sent, and `--session <id>` to
+limit the run. Run a long load under `nohup ... > backfill-<person>.log 2>&1 &` so a
+closed browser tab does not stop it. The sections below describe the pieces this
+command runs.
+
 ## Before anything else: this has to run on the pod, not your laptop
 
 The source transcripts live on the BERDL pod, and some of them (the frozen
