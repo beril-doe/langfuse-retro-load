@@ -105,7 +105,7 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
     return {"turns": turns, "event_day": saw_event_day, "failed": False}
 
 
-ORCID_RE = re.compile(r"(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-\d{3}[\dX])")
+ORCID_RE = re.compile(r"(?:https?://orcid\.org/)?([0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X])")
 
 
 def orcid_checksum_ok(orcid: str) -> bool:

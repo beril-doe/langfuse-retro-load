@@ -125,3 +125,10 @@ def test_the_sample_env_does_not_reintroduce_a_limit():
         key, sep, value = line.strip().partition("=")
         if sep and key == "CC_LANGFUSE_MAX_CHARS":
             assert int(value) <= 0, f".env.example sets a {value}-character limit"
+
+
+def test_non_ascii_digits_are_refused():
+    """Python's \\d matches Arabic-Indic digits, and int() accepts them, so the checksum passes."""
+    arabic_indic = "٠٠٠٠-٠٠٠٢-١٨٢٥-٠٠٩7"
+    with pytest.raises(ValueError):
+        build_manifest.langfuse_user_id({"person": "p", "user_id": "p", "orcid": arabic_indic})
