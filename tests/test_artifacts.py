@@ -216,3 +216,30 @@ def test_a_snapshot_is_sent_once(roster, monkeypatch, capsys):
     assert artifacts.main() == 0
     assert sent == [("s1", "0000-0002-1825-0097")], "the second run must skip what the first sent"
     assert "already sent, skipped" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command, writes", [
+    (f"grep -n x {P}REPORT.md 2>&1 | head", set()),
+    (f"cat {P}REPORT.md > /tmp/copy.md", set()),
+    (f"cp {P}REPORT.md /tmp/backup.md", set()),
+    (f"echo done > {P}REPORT.md", {("demo", "REPORT.md")}),
+    (f"echo more >> {P}WORKLOG.md", {("demo", "WORKLOG.md")}),
+    (f"cat x | tee {P}REPORT.md", {("demo", "REPORT.md")}),
+    (f"sed -i 's/a/b/' {P}REPORT.md", {("demo", "REPORT.md")}),
+    (f"cp /tmp/new.md {P}REPORT.md", {("demo", "REPORT.md")}),
+    (f"cp /tmp/REPORT.md {P}", {("demo", "REPORT.md")}),
+    (f"cd x && rm {P}RESEARCH_PLAN.md", {("demo", "RESEARCH_PLAN.md")}),
+    (f"git checkout -- {P}REPORT.md", {("demo", "REPORT.md")}),
+    (f"git add {P}REPORT.md && git commit -m x", set()),
+])
+def test_shell_writes_are_told_apart_from_reads(command, writes):
+    assert artifacts.shell_writes(command) == writes
+
+
+def test_reading_another_projects_report_creates_no_snapshot(tmp_path):
+    s1 = session(tmp_path, "s1", [
+        tool("t1", "Bash", {"command": "cat /home/u/BERIL/projects/other/REPORT.md 2>&1"},
+             "2026-05-07T10:00:00Z"),
+        result("t1", "2026-05-07T10:00:01Z"),
+    ])
+    assert artifacts.snapshots([s1]) == []

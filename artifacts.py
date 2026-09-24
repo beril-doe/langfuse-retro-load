@@ -13,7 +13,8 @@ disk; for a past session the files have moved on, so this rebuilds each one as i
 at the end of each session by replaying the Write, Edit and MultiEdit calls recorded in the
 person's transcripts, in time order. A file is left out, and the preview says so, when its
 state cannot be known exactly: an edit whose old text is missing, or a shell command that
-could have changed it.
+writes to it by name (see shell_writes). A script that changes a file without naming it on
+its command line is not visible in the transcript, so its effect is not replayed.
 
 Each rebuilt file is masked with the same rules as the conversation traces, and then
 checked with gitleaks; a file gitleaks still flags is not uploaded. The upload matches the
@@ -29,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -42,10 +44,52 @@ import build_manifest  # noqa: E402
 
 ARTIFACTS = ("REPORT.md", "RESEARCH_PLAN.md", "WORKLOG.md")
 _PATH_RE = re.compile(r"projects/([^/\s\"'`]+)/(" + "|".join(re.escape(n) for n in ARTIFACTS) + r")")
-#: Shell commands that could change a file named in them. Reading one (cat, grep, head) is
-#: harmless; anything here makes that file's state unknown from that point on.
-_SHELL_WRITE_RE = re.compile(r">|\btee\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\bcp\b|\bmv\b|\brm\b|"
-                             r"\btruncate\b|\bpython[0-9.]*\b|\bgit\s+(checkout|restore|reset|stash|pull|merge)")
+_REDIRECT_RE = re.compile(r"(?<![0-9&])>>?\s*[\"']?([^\s\"';|&]+)")
+
+
+def _artifact(text: str):
+    """(project, name) when text names an artifact file, else None."""
+    m = _PATH_RE.search(text)
+    return (m.group(1), m.group(2)) if m and text.rstrip("\"'/").endswith(m.group(2)) else None
+
+
+def shell_writes(command: str) -> set[tuple]:
+    """Artifacts a shell command could have changed. Reading one is not a change.
+
+    A write is a redirect into the file, tee to it, sed -i or perl -i on it, cp or mv onto
+    it, rm of it, or a git checkout, restore, reset or stash that names it. A script that
+    writes the file without naming it on the command line is not seen; that limit is
+    stated in the preview's docstring rather than guessed at.
+    """
+    found = set()
+    for segment in re.split(r"&&|\|\||;|\||\n", command):
+        for target in _REDIRECT_RE.findall(segment):
+            if (hit := _artifact(target)):
+                found.add(hit)
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        if not tokens:
+            continue
+        verb, args = tokens[0], tokens[1:]
+        named = {hit for t in args if (hit := _artifact(t))}
+        if verb == "tee" or verb == "rm":
+            found |= named
+        elif verb in ("sed", "perl") and any(a.startswith("-") and "i" in a for a in args):
+            found |= named
+        elif verb in ("cp", "mv") and len(args) >= 2:
+            dest = args[-1]
+            if (hit := _artifact(dest)):
+                found.add(hit)
+            else:
+                m = re.search(r"projects/([^/\s]+)/?$", dest)
+                for src in args[:-1]:
+                    if m and os.path.basename(src) in ARTIFACTS:
+                        found.add((m.group(1), os.path.basename(src)))
+        elif verb == "git" and args and args[0] in ("checkout", "restore", "reset", "stash"):
+            found |= named
+    return found
 MARKER_DIR = Path.home() / ".retro_load_markers"
 
 
@@ -95,11 +139,9 @@ def events(paths: list[Path]) -> list[tuple]:
                         rows.append((rec.get("timestamp") or "", sid, "op",
                                      (name, m.group(1), m.group(2), inp), block.get("id")))
                 elif name == "Bash":
-                    cmd = inp.get("command") or ""
-                    if _SHELL_WRITE_RE.search(cmd):
-                        for m in _PATH_RE.finditer(cmd):
-                            rows.append((rec.get("timestamp") or "", sid, "shell",
-                                         (m.group(1), m.group(2)), block.get("id")))
+                    for project, fname in sorted(shell_writes(inp.get("command") or "")):
+                        rows.append((rec.get("timestamp") or "", sid, "shell",
+                                     (project, fname), block.get("id")))
         out += [(ts, sid, kind, detail) for ts, sid, kind, detail, tid in rows if tid not in errored]
     return sorted(out, key=lambda r: r[0])
 
