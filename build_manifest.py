@@ -140,6 +140,26 @@ def langfuse_user_id(person: dict) -> str:
     return match.group(1)
 
 
+def manifest_entry(person: dict, source: dict, session_id: str, summary: dict,
+                   event_day_date: str) -> dict:
+    """One manifest row. Shared with backfill.py so both describe a session the same way."""
+    event_day = summary["event_day"] or session_id in source.get("force_event_day", [])
+    return {
+        "session_id": session_id,
+        "person": person["person"],
+        "source": source["type"],
+        "find_root": source["find_root"],
+        "user_id": langfuse_user_id(person),
+        "consent_bin": source.get("consent_bin"),
+        "event_day": event_day if source.get("consent_bin") or source["type"] == "workshop-frozen-corpus" else None,
+        "event_day_date": event_day_date,
+        "role": person.get("role"),
+        "group": person.get("group"),
+        "turns_expected": summary["turns"],
+        "dry_run_failed": summary["failed"],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--people", default=str(HERE / "people.json"))
@@ -183,21 +203,7 @@ def main() -> int:
                 summary = dry_run_summary(path, args.event_day)
                 if summary["failed"]:
                     n_failed += 1
-                event_day = summary["event_day"] or sid in source.get("force_event_day", [])
-                manifest.append({
-                    "session_id": sid,
-                    "person": person["person"],
-                    "source": source["type"],
-                    "find_root": source["find_root"],
-                    "user_id": langfuse_user_id(person),
-                    "consent_bin": source.get("consent_bin"),
-                    "event_day": event_day if source.get("consent_bin") or source["type"] == "workshop-frozen-corpus" else None,
-                    "event_day_date": args.event_day,
-                    "role": person.get("role"),
-                    "group": person.get("group"),
-                    "turns_expected": summary["turns"],
-                    "dry_run_failed": summary["failed"],
-                })
+                manifest.append(manifest_entry(person, source, sid, summary, args.event_day))
 
     Path(args.out).write_text(json.dumps(manifest, indent=2))
     print(f"\n{len(manifest)} entries written to {args.out}")

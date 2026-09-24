@@ -18,3 +18,8 @@ deletion-record*.json
 
 # Local run log from `just load`.
 full_load_run.txt
+
+# Redaction plans written by backfill.py. They hold field positions and
+# fingerprints for real transcripts, not values, but belong to the pod run.
+plans/
+backfill-*.log
