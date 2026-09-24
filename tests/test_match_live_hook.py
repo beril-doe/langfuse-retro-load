@@ -99,3 +99,21 @@ def test_a_bad_orcid_stops_the_build_before_any_scan(monkeypatch, tmp_path, caps
     assert build_manifest.main() == 2
     assert "not a valid ORCID" in capsys.readouterr().err
     assert not (tmp_path / "m.json").exists()
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 0, False, []])
+def test_a_recorded_but_empty_orcid_is_refused(bad):
+    """Only an absent or null orcid means "use the account name"; anything else is a typo."""
+    with pytest.raises(ValueError):
+        build_manifest.langfuse_user_id({"person": "p", "user_id": "p", "orcid": bad})
+
+
+def test_null_orcid_means_the_account_name():
+    assert build_manifest.langfuse_user_id({"person": "p", "user_id": "p", "orcid": None}) == "p"
+
+
+def test_the_readme_example_passes_validation():
+    import re
+    text = (ROOT / "README.md").read_text()
+    example = re.search(r'"orcid": "([^"]+)"', text).group(1)
+    assert build_manifest.langfuse_user_id({"person": "p", "user_id": "p", "orcid": example})

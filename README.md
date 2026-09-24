@@ -201,7 +201,7 @@ entry per place their traces live:
 {
   "person": "someuser",
   "user_id": "someuser",
-  "orcid": "https://orcid.org/0000-0000-0000-0000",
+  "orcid": "https://orcid.org/0000-0002-1825-0097",
   "role": "Observe",
   "group": "SomeGroup",
   "sources": [

@@ -129,9 +129,11 @@ def langfuse_user_id(person: dict) -> str:
     error rather than a fallback: silently using the account name would split one
     person across two identities without anyone noticing.
     """
-    orcid = person.get("orcid")
-    if not orcid:
+    if person.get("orcid") is None:
         return person["user_id"]
+    orcid = person["orcid"]
+    if not isinstance(orcid, str):
+        raise ValueError(f"{person['person']}: orcid {orcid!r} is not a valid ORCID iD")
     match = ORCID_RE.fullmatch(orcid.strip())
     if not match or not orcid_checksum_ok(match.group(1)):
         raise ValueError(f"{person['person']}: orcid {orcid!r} is not a valid ORCID iD")
