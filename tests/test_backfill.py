@@ -248,3 +248,12 @@ def test_a_person_without_an_orcid_is_refused_before_any_scan(corpus, monkeypatc
     monkeypatch.setattr(backfill, "discover", lambda *a: pytest.fail("scanned without an ORCID"))
     with pytest.raises(SystemExit, match="no orcid"):
         run(monkeypatch, corpus)
+
+
+def test_a_malformed_orcid_is_a_clean_refusal(corpus, monkeypatch):
+    people = json.loads(corpus.read_text())
+    people[0]["orcid"] = "0000-0002-1825-0098"   # wrong check digit
+    corpus.write_text(json.dumps(people))
+    monkeypatch.setattr(backfill, "discover", lambda *a: pytest.fail("scanned with a bad ORCID"))
+    with pytest.raises(SystemExit, match="not a valid ORCID"):
+        run(monkeypatch, corpus)

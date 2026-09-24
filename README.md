@@ -17,7 +17,9 @@ On the pod, from this repository:
 .venv/bin/python backfill.py <person> --load --plan PLAN    # load, with the plan you reviewed
 ```
 
-`<person>` is a `person` in `people.json`. The preview says what to fix if the setup
+`<person>` is a `person` in the roster: `people.json` by default, or a private roster
+on the pod passed with `--people <file>`, which is where consenters belong (see "Adding a
+person" below). The preview says what to fix if the setup
 is not ready: an old branch, a Python without `langfuse` 4.x, or missing `gitleaks`.
 Otherwise it writes a redaction plan under `plans/`, prints what would be sent, and
 prints the exact load command. Review the plan with `reveal.py --plan PLAN --transcript
@@ -55,8 +57,9 @@ transfer files there) and run everything from a pod terminal.
   corpus isn't writable by any individual account) so re-running against an
   already-loaded file reports "already retro-loaded" instead of duplicating
   it in Langfuse.
-- **`people.json`**: the only file you edit to add a new person or source.
-  See below.
+- **`people.json`**: the committed roster, for team members who have agreed to be
+  listed publicly. Anyone else goes in a private roster file on the pod with the same
+  format, passed to `backfill.py --people`. See below.
 - **`build_manifest.py`** / **`run_manifest.py`**: `build_manifest.py`
   reads `people.json`, discovers every session under each source's
   `find_root`, and runs `retro_load.py --dry-run` on each to work out turn
@@ -214,8 +217,10 @@ access that the write-only relay does not expose to clients.
 
 ## Adding a person or a new source
 
-Edit `people.json`, not the Python. One entry per person, one `sources`
-entry per place their traces live:
+Edit a roster, not the Python: `people.json` for someone who has agreed to be listed in
+this public repository, otherwise a private file on the pod with the same format, passed
+with `--people`. One entry per person, one `sources` entry per place their traces live,
+and an `orcid`, which `backfill.py` requires:
 
 ```json
 {
