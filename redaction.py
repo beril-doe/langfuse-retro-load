@@ -202,6 +202,20 @@ REFERENCE_RE = re.compile(
 _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
 
+#: A value that is code rather than data: a name, or names joined by dots, followed by a
+#: call or an index. `file_token = env_vars.get("KBASE_AUTH_TOKEN", "")` reads a token and
+#: holds none, but `keyed_value` saw `token =` and masked `env_vars.get(`. Found reviewing
+#: the first backfill plan on the pod, 2026-09-24. A bare dotted chain such as
+#: `settings.secret_key` is not exempt: `abcdefghijklmnop.qrstuvwxyz` has the same shape and
+#: can be a real value.
+_CODE_EXPRESSION_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*[(\[].*", re.DOTALL)
+
+
+def is_code_expression(value: str) -> bool:
+    """True when a keyword-anchored value is a call or an index."""
+    return bool(_CODE_EXPRESSION_RE.fullmatch(value.strip().strip("\"'")))
+
+
 def is_reference(value: str) -> bool:
     """True when the whole value, quotes and whitespace aside, names another value.
 
@@ -486,6 +500,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
+                continue
+            if name == "keyed_value" and is_code_expression(value):
                 continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 

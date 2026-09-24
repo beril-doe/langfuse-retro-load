@@ -485,3 +485,37 @@ def test_an_escaped_quote_still_ends_the_value(text, after):
     clean, _ = redaction.redact(text, key=KEY)
     assert "abcdefghijklmnop" not in clean
     assert clean.endswith(after)
+
+
+# --- keyed_value on source code, found reviewing the first backfill plan (2026-09-24) -----
+
+@pytest.mark.parametrize("line", [
+    'file_token = env_vars.get("KBASE_AUTH_TOKEN", "")',
+    "api_key = load_api_key(path)",
+    'my_token = request_headers["x"]',
+    'password = cfg.values["db"]',
+])
+def test_code_that_reads_a_credential_is_not_a_credential(line):
+    assert [f for f in redaction.detect(line) if f.pattern == "keyed_value"] == []
+
+
+# Built at run time so the repo's own gitleaks pre-commit scan does not stop on them.
+_FAKE_JWT = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0In0", "SflKxwRJSMeKKF2QT4fw"])
+_FAKE_LIVE = "sk_" + "live_abcdefgh.1234"
+_FAKE_PASSWORD = "hunter2" * 2
+
+
+@pytest.mark.parametrize("key, value", [
+    ("PASSWORD=", _FAKE_PASSWORD),
+    ("export API_KEY=", _FAKE_LIVE),
+    ("token: ", "abcdefghijklmnop"),
+    ("token=", "abcdefghijklmnop.qrstuvwxyz"),
+    ("secret = ", "settings_obj.secret_key"),
+    ("token = ", _FAKE_JWT),
+])
+def test_values_that_look_like_data_are_still_caught(key, value):
+    """A dotted chain stays masked: it cannot be told apart from a real dotted value."""
+    line = key + value
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [value]
