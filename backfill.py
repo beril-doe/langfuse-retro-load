@@ -23,6 +23,7 @@ import argparse
 import collections
 import datetime
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -31,6 +32,8 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# Where a user install of gitleaks lands on the pod, which is not on the pod's PATH.
+LOCAL_BIN = Path.home() / ".local" / "bin"
 sys.path.insert(0, str(HERE))
 
 import build_manifest  # noqa: E402
@@ -44,6 +47,22 @@ def git(*args) -> subprocess.CompletedProcess:
 def run_load(cmd: list[str]) -> int:
     """Run the load in the foreground so its progress shows as it happens."""
     return subprocess.run(cmd, check=False).returncode
+
+
+def find_gitleaks() -> str | None:
+    """gitleaks on PATH, or in ~/.local/bin, which the pod's PATH leaves out.
+
+    When it is only in ~/.local/bin, that directory is put on this process's PATH, so
+    run_manifest.py and retro_load.py, which run gitleaks by name, find the same binary.
+    """
+    found = shutil.which("gitleaks")
+    if found:
+        return found
+    local = LOCAL_BIN / "gitleaks"
+    if local.is_file() and os.access(local, os.X_OK):
+        os.environ["PATH"] = f"{local.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+        return str(local)
+    return None
 
 
 def setup_problems(skip_git: bool = False) -> list[str]:
@@ -77,7 +96,7 @@ def setup_problems(skip_git: bool = False) -> list[str]:
         # The vendored hook reaches into SDK 4.x internals to backdate spans.
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
                         f"loader needs 4.x. Fix: run with {HERE / '.venv/bin/python'}")
-    if shutil.which("gitleaks") is None:
+    if find_gitleaks() is None:
         problems.append("gitleaks is not installed, and the redaction plan needs it. Fix: "
                         "install gitleaks 8.x from https://github.com/gitleaks/gitleaks/releases "
                         "into a directory on PATH, such as ~/.local/bin")
@@ -97,7 +116,12 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
     """(manifest entry, transcript path) for each of the person's sessions."""
     found = []
     for source in person["sources"]:
-        for path in build_manifest.find_jsonl_files(source["find_root"]):
+        try:
+            paths = build_manifest.find_jsonl_files(source["find_root"])
+        except build_manifest.DiscoveryFailed as exc:
+            raise SystemExit(f"could not list {person['person']}'s transcripts: {exc}. Fix the "
+                             "find_root in people.json, or its permissions; nothing was sent.") from exc
+        for path in paths:
             if sessions and path.stem not in sessions:
                 continue
             summary = build_manifest.dry_run_summary(path, event_day)
@@ -142,6 +166,7 @@ def summarize_plan(plan_path: Path, paths: list[Path]) -> dict:
     subjects = [inventory._subject_for(p) for p in paths]
     masks = [m for s in subjects for m in by_subject.get(s, []) if not m.cleared]
     return {"uncovered": [s for s in subjects if s not in headers],
+            "by_category": collections.Counter(m.category for m in masks),
             "by_pattern": collections.Counter(m.pattern for m in masks),
             "by_detector": collections.Counter(m.detector for m in masks),
             "blocking": sum(1 for m in masks if m.pointer is None),
@@ -224,7 +249,10 @@ def main() -> int:
               f"{turns} turns" + (f", {marked} already marked as sent" if marked else ""))
     print(f"redaction plan: {plan_path}")
     print(f"  {summary['total']} value(s) to mask" + (": " if summary["total"] else "")
-          + ", ".join(f"{k} {v}" for k, v in summary["by_pattern"].most_common()))
+          + ", ".join(f"{k} {v}" for k, v in summary["by_category"].most_common()))
+    if summary["total"]:
+        print("  by pattern: " + ", ".join(f"{k} {v}"
+                                           for k, v in summary["by_pattern"].most_common()))
     if summary["blocking"]:
         print(f"  {summary['blocking']} gitleaks finding(s) could not be pinned to a field. "
               "The load refuses these sessions until a reviewer clears or fixes them.")
