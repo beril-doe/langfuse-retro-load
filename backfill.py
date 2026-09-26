@@ -53,14 +53,18 @@ def find_gitleaks() -> str | None:
     """gitleaks on PATH, or in ~/.local/bin, which the pod's PATH leaves out.
 
     When it is only in ~/.local/bin, that directory is put on this process's PATH, so
-    run_manifest.py and retro_load.py, which run gitleaks by name, find the same binary.
+    inventory.gitleaks_findings(), which runs gitleaks by name while the plan is built,
+    finds the same binary.
     """
     found = shutil.which("gitleaks")
     if found:
         return found
     local = LOCAL_BIN / "gitleaks"
     if local.is_file() and os.access(local, os.X_OK):
-        os.environ["PATH"] = f"{local.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+        # An unset or empty PATH means the system default, so keep that rather than
+        # leaving only ~/.local/bin, which would hide find and the other system tools.
+        rest = os.environ.get("PATH") or os.defpath
+        os.environ["PATH"] = f"{local.parent}{os.pathsep}{rest}"
         return str(local)
     return None
 
@@ -146,10 +150,12 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
 
 
 def build_plan(paths: list[Path], out: Path) -> None:
+    import inventory
     import plan
     try:
         entries = [plan.build(path) for path in paths]
-    except plan.PlanError as e:
+    except (plan.PlanError, inventory.GitleaksFailed, OSError) as e:
+        # OSError covers a gitleaks that cannot start, such as one built for another CPU.
         raise SystemExit(f"could not build the redaction plan: {e}") from e
     out.parent.mkdir(parents=True, exist_ok=True)
     plan.write(out, entries)

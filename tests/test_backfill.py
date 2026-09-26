@@ -301,3 +301,28 @@ def test_the_preview_totals_masks_by_category(corpus, monkeypatch, capsys):
     out = preview_plan.output
     assert "1 value(s) to mask: person 1" in out
     assert "by pattern: email_personal 1" in out
+
+
+def test_an_empty_path_keeps_the_system_default(monkeypatch, tmp_path):
+    exe = tmp_path / "gitleaks"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(backfill.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backfill, "LOCAL_BIN", tmp_path)
+    monkeypatch.setenv("PATH", "")
+    backfill.find_gitleaks()
+    assert backfill.os.environ["PATH"] == f"{tmp_path}{backfill.os.pathsep}{backfill.os.defpath}"
+
+
+@pytest.mark.parametrize("error", [inventory.GitleaksFailed("gitleaks exited 1"),
+                                   OSError(8, "Exec format error")])
+def test_a_gitleaks_failure_is_a_clean_error(corpus, monkeypatch, error):
+    def broken(path):
+        raise error
+
+    monkeypatch.setattr(inventory, "gitleaks_findings", broken)
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus)
+    assert "could not build the redaction plan" in str(exc.value.code)
+    assert not list((corpus.parent / "plans").glob("*.jsonl")), "a plan was written anyway"
