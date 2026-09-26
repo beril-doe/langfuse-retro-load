@@ -101,8 +101,9 @@ def test_load_passes_only_the_previewed_sessions_to_run_manifest(corpus, monkeyp
     assert cmd[cmd.index("--min-idle-days") + 1] == "1.0", "a session in use could load half done"
 
 
-def test_setup_problems_stop_it_before_anything_is_read(corpus, monkeypatch, capsys):
+def test_setup_problems_stop_it_before_anything_is_read(corpus, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(backfill.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backfill, "LOCAL_BIN", tmp_path / "empty-bin")
 
     def must_not_run(*a, **k):
         raise AssertionError("looked for transcripts before the setup was fixed")
@@ -257,3 +258,71 @@ def test_a_malformed_orcid_is_a_clean_refusal(corpus, monkeypatch):
     monkeypatch.setattr(backfill, "discover", lambda *a: pytest.fail("scanned with a bad ORCID"))
     with pytest.raises(SystemExit, match="not a valid ORCID"):
         run(monkeypatch, corpus)
+
+
+def test_gitleaks_in_local_bin_is_found_and_put_on_path(monkeypatch, tmp_path):
+    # The pod's PATH leaves out ~/.local/bin, so a load printed without a PATH prefix
+    # used to refuse when the child processes could not find gitleaks.
+    local = tmp_path / "bin"
+    local.mkdir()
+    exe = local / "gitleaks"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(backfill.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backfill, "LOCAL_BIN", local)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert backfill.find_gitleaks() == str(exe)
+    assert backfill.os.environ["PATH"].split(backfill.os.pathsep)[0] == str(local)
+
+
+def test_a_non_executable_file_in_local_bin_is_not_gitleaks(monkeypatch, tmp_path):
+    (tmp_path / "gitleaks").write_text("not a program")
+    monkeypatch.setattr(backfill.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backfill, "LOCAL_BIN", tmp_path)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert backfill.find_gitleaks() is None
+    assert backfill.os.environ["PATH"] == "/usr/bin"
+
+
+def test_a_missing_find_root_is_a_clean_error(corpus, monkeypatch, capsys):
+    people = json.loads(corpus.read_text())
+    people[0]["sources"][0]["find_root"] = str(corpus.parent / "no-such-dir")
+    corpus.write_text(json.dumps(people))
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus)
+    message = str(exc.value.code)
+    assert "someone's transcripts" in message and "no-such-dir" in message
+    assert "nothing was sent" in message
+
+
+def test_the_preview_totals_masks_by_category(corpus, monkeypatch, capsys):
+    preview_plan(monkeypatch, corpus, capsys)
+    out = preview_plan.output
+    assert "1 value(s) to mask: person 1" in out
+    assert "by pattern: email_personal 1" in out
+
+
+def test_an_empty_path_keeps_the_system_default(monkeypatch, tmp_path):
+    exe = tmp_path / "gitleaks"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(backfill.shutil, "which", lambda name: None)
+    monkeypatch.setattr(backfill, "LOCAL_BIN", tmp_path)
+    monkeypatch.setenv("PATH", "")
+    backfill.find_gitleaks()
+    assert backfill.os.environ["PATH"] == f"{tmp_path}{backfill.os.pathsep}{backfill.os.defpath}"
+
+
+@pytest.mark.parametrize("error", [inventory.GitleaksFailed("gitleaks exited 1"),
+                                   OSError(8, "Exec format error")])
+def test_a_gitleaks_failure_is_a_clean_error(corpus, monkeypatch, error):
+    def broken(path):
+        raise error
+
+    monkeypatch.setattr(inventory, "gitleaks_findings", broken)
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus)
+    assert "could not build the redaction plan" in str(exc.value.code)
+    assert not list((corpus.parent / "plans").glob("*.jsonl")), "a plan was written anyway"
