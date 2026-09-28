@@ -17,6 +17,7 @@ than silently succeed at nothing.
 Usage:
 
     python3 langfuse_admin.py count  --project cmt1obua000uhad0dxp5tyu49
+    python3 langfuse_admin.py count  --project BERIL        # a prefix that names the project in .env
     python3 langfuse_admin.py delete --project <id> --type trace --all --dry-run
     python3 langfuse_admin.py delete --project <id> --type trace --name beril.artifact_snapshot --yes
     python3 langfuse_admin.py delete --project <id> --type trace --tag retro-load --dry-run
@@ -28,8 +29,9 @@ as an idempotency marker that records that work was done but not where it went.
 
 Credentials come from a `.env` beside this script if one exists, otherwise `~/.env`. That
 order matches the repo's documented setup, which puts a `.env` next to `retro_load.py` on
-the pod. The script looks for any `<PREFIX>_LANGFUSE_PROJECT_ID` equal to `--project` and
-uses that prefix's keys. Values are read in-process and never printed.
+the pod. `--project` takes a project id, or a prefix such as `BERIL` that names one
+through `BERIL_LANGFUSE_PROJECT_ID`. The script finds the `<PREFIX>_LANGFUSE_PROJECT_ID`
+equal to that id and uses that prefix's keys. Values are read in-process and never printed.
 
 The host follows the same prefix: `<PREFIX>_LANGFUSE_BASE_URL` or `<PREFIX>_LANGFUSE_HOST`,
 falling back to the unprefixed names and finally to US cloud. An EU or self-hosted project
@@ -151,6 +153,20 @@ def load_env() -> tuple[dict, Path | None]:
     return env, path
 
 
+def resolve_project(value: str) -> str:
+    """The project id `--project` names: a key prefix such as BERIL resolves through
+    BERIL_LANGFUSE_PROJECT_ID, and anything else is taken as the id itself.
+
+    A prefix is still an explicit choice of project, so this infers nothing. It exists
+    because the id lives in .env, where copying it onto a command line means reading a
+    value out of that file (https://github.com/beril-doe/langfuse-retro-load/issues/21).
+    """
+    env, _ = load_env()
+    matches = [k for k in env if k.endswith("_LANGFUSE_PROJECT_ID") and env[k]
+               and k.removesuffix("_LANGFUSE_PROJECT_ID").lower() == value.lower()]
+    return env[matches[0]] if len(matches) == 1 else value
+
+
 def auth_for_project(project_id: str) -> tuple[str, str]:
     """Find the key whose PROJECT_ID matches, and the host that goes with it.
 
@@ -170,8 +186,10 @@ def auth_for_project(project_id: str) -> tuple[str, str]:
             return header, host.rstrip("/")
     known = [p for p in prefixes if env.get(f"{p}_LANGFUSE_PROJECT_ID")]
     raise SystemExit(
-        f"no key in {source or '(no .env found)'} names project {project_id}.\n"
-        f"prefixes that name a project: {', '.join(known) or '(none)'}\n"
+        f"--project {project_id} is neither a project id nor a prefix in "
+        f"{source or '(no .env found)'}.\n"
+        "--project takes a project id, or a prefix that names one: "
+        f"{', '.join(known) or '(none in that file)'}\n"
         "count and delete need a PROJECT key for that project specifically. Add\n"
         "<PREFIX>_LANGFUSE_PROJECT_ID, _PUBLIC_KEY and _SECRET_KEY for it. An\n"
         "organization key does not help here; it is only used by `projects`."
@@ -629,6 +647,8 @@ def main() -> int:
     p.set_defaults(func=cmd_projects)
 
     args = ap.parse_args()
+    if getattr(args, "project", None) is not None:
+        args.project = resolve_project(args.project)
     return args.func(args)
 
 

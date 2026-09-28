@@ -67,7 +67,7 @@ def test_an_unknown_project_refuses_rather_than_falling_back(env):
     with pytest.raises(SystemExit) as excinfo:
         langfuse_admin.auth_for_project("proj-nonexistent")
     message = str(excinfo.value)
-    assert "no key" in message
+    assert "neither a project id nor a prefix" in message
     assert "ALPHA" in message and "BETA" in message, "say which prefixes do name a project"
     assert "pk-alpha" not in message and "sk-alpha" not in message, "never echo key values"
 
@@ -99,3 +99,33 @@ def test_no_env_at_all_refuses_and_says_so(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         langfuse_admin.auth_for_project("proj-alpha")
     assert "(no .env found)" in str(excinfo.value)
+
+
+
+# --- https://github.com/beril-doe/langfuse-retro-load/issues/21 -------------------------------
+
+@pytest.mark.parametrize("given", ["ALPHA", "alpha", "Alpha"])
+def test_a_prefix_resolves_to_its_project_id(env, given):
+    assert langfuse_admin.resolve_project(given) == "proj-alpha"
+    header, _ = langfuse_admin.auth_for_project(langfuse_admin.resolve_project(given))
+    assert header == expected_header("pk-alpha", "sk-alpha")
+
+
+def test_a_project_id_passes_through_unchanged(env):
+    assert langfuse_admin.resolve_project("proj-beta") == "proj-beta"
+
+
+def test_an_unknown_value_still_refuses_and_names_both_forms(env):
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project(langfuse_admin.resolve_project("GAMMA"))
+    message = str(excinfo.value)
+    assert "--project GAMMA is neither a project id nor a prefix" in message
+    assert "ALPHA" in message and "BETA" in message
+
+
+def test_count_accepts_a_prefix_on_the_command_line(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(langfuse_admin, "cmd_count", lambda args: seen.append(args.project) or 0)
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "count", "--project", "BETA"])
+    assert langfuse_admin.main() == 0
+    assert seen == ["proj-beta"]
