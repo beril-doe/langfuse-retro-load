@@ -24,7 +24,6 @@ import collections
 import datetime
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -73,33 +72,28 @@ def find_gitleaks() -> str | None:
 def locked_version(package: str) -> str | None:
     """The version uv.lock pins for `package`, or None when there is no uv.lock at all.
 
-    A lock that exists but cannot be read, or has no entry for `package`, raises ValueError:
-    falling back to a looser check there would turn off the exact pin without saying so
-    (second Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/54).
-    Parsed with tomllib where it exists (3.11 and later, which includes the pod).
+    Anything else that stops the pin being read raises ValueError, so the caller refuses
+    rather than falling back to a looser check: a lock that cannot be read or parsed, a
+    Python without tomllib (3.10), or no single non-empty version for `package`
+    (Copilot reviews of https://github.com/beril-doe/langfuse-retro-load/pull/54).
     """
     path = HERE / "uv.lock"
     if not path.exists():
         return None
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"{path} could not be read ({exc})") from exc
-    try:
         import tomllib
-    except ImportError:  # Python 3.10: the pattern below, without a full parse
-        match = re.search(rf'^name = "{re.escape(package)}"\nversion = "([^"]+)"', text, re.M)
-        versions = [match.group(1)] if match else []
-    else:
-        # A full parse, so a lock that uv sync --locked would reject is not trusted here
-        # either (third Copilot review of the same pull request).
-        try:
-            lock = tomllib.loads(text)
-        except tomllib.TOMLDecodeError as exc:
-            raise ValueError(f"{path} is not valid TOML ({exc})") from exc
-        versions = [entry.get("version") for entry in lock.get("package", [])
-                    if isinstance(entry, dict) and entry.get("name") == package]
-    if len(versions) != 1 or not isinstance(versions[0], str):
+    except ImportError as exc:
+        raise ValueError(f"this Python ({sys.version.split()[0]}) has no tomllib to read "
+                         f"{path}; use {HERE / '.venv/bin/python'}") from exc
+    try:
+        lock = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # TOMLDecodeError and UnicodeDecodeError are ValueErrors
+        raise ValueError(f"{path} could not be read as TOML ({exc})") from exc
+    packages = lock.get("package")
+    versions = ([entry.get("version") for entry in packages
+                 if isinstance(entry, dict) and entry.get("name") == package]
+                if isinstance(packages, list) else [])
+    if len(versions) != 1 or not isinstance(versions[0], str) or not versions[0]:
         raise ValueError(f"{path} has no single version for {package}")
     return versions[0]
 

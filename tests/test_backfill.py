@@ -201,6 +201,9 @@ def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     b"\xff\xfe not utf-8",
     b'version = 1\n[[package]]\nname = "other"\n',
     b'version = 1\n[[package]]\nname = "langfuse"\nversion = "4.15.2"\n[broken\n',
+    b"version = 1\npackage = 1\n",
+    b'version = 1\n[[package]]\nname = "langfuse"\nversion = ""\n',
+    b'version = 1\n[[package]]\nname = "langfuse"\nversion = "1"\n[[package]]\nname = "langfuse"\nversion = "2"\n',
 ])
 def test_an_unreadable_or_incomplete_lock_is_a_setup_problem(monkeypatch, tmp_path, content):
     """Fail closed: only a missing lock uses the 4.x fallback (second Copilot review of
@@ -364,3 +367,18 @@ def test_a_gitleaks_failure_is_a_clean_error(corpus, monkeypatch, error):
         run(monkeypatch, corpus)
     assert "could not build the redaction plan" in str(exc.value.code)
     assert not list((corpus.parent / "plans").glob("*.jsonl")), "a plan was written anyway"
+
+
+
+def test_a_python_without_tomllib_refuses_rather_than_guessing(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_tomllib(name, *a, **k):
+        if name == "tomllib":
+            raise ImportError("no tomllib")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_tomllib)
+    with pytest.raises(ValueError, match="has no tomllib"):
+        backfill.locked_version("langfuse")
