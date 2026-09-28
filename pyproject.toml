@@ -17,7 +17,7 @@ name = "langfuse-retro-load"
 version = "0.1.0"
 description = "Load already-completed Claude Code sessions into Langfuse, backdated to when they happened."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     # The range keeps a 5.x out. The committed uv.lock is what actually pins the 4.x,
     # because a range alone lets every `uv sync` resolve a different release and leaves

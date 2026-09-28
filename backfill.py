@@ -74,7 +74,8 @@ def locked_version(package: str) -> str | None:
 
     Anything else that stops the pin being read raises ValueError, so the caller refuses
     rather than falling back to a looser check: a lock that cannot be read or parsed, a
-    Python without tomllib (3.10), or no single non-empty version for `package`
+    Python without tomllib (below 3.11, which pyproject.toml excludes), or no single
+    non-empty version for `package`
     (Copilot reviews of https://github.com/beril-doe/langfuse-retro-load/pull/54).
     """
     path = HERE / "uv.lock"
