@@ -197,7 +197,11 @@ def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     assert problems and "--locked" not in problems[0], "--locked cannot work without a lock"
 
 
-@pytest.mark.parametrize("content", [b"\xff\xfe not utf-8", b'version = 1\n[[package]]\nname = "other"\n'])
+@pytest.mark.parametrize("content", [
+    b"\xff\xfe not utf-8",
+    b'version = 1\n[[package]]\nname = "other"\n',
+    b'version = 1\n[[package]]\nname = "langfuse"\nversion = "4.15.2"\n[broken\n',
+])
 def test_an_unreadable_or_incomplete_lock_is_a_setup_problem(monkeypatch, tmp_path, content):
     """Fail closed: only a missing lock uses the 4.x fallback (second Copilot review of
     https://github.com/beril-doe/langfuse-retro-load/pull/54)."""

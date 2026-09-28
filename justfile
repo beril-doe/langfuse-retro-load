@@ -30,7 +30,9 @@ setup:
     if [ ! -f pyproject.toml ]; then
       echo "no pyproject.toml on this branch; it is in pull request #8" >&2; exit 2
     fi
-    if command -v uv >/dev/null 2>&1; then uv sync
+    # --locked: a plain sync can rewrite uv.lock, and backfill.py trusts the lock's
+    # langfuse pin (Copilot review of pull request #54).
+    if command -v uv >/dev/null 2>&1; then uv sync --locked
     else echo "uv not installed; using the ambient python3 (issue #15)"; fi
 
 # Reads the roots from people.json rather than a hardcoded path, because

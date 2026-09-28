@@ -76,7 +76,7 @@ def locked_version(package: str) -> str | None:
     A lock that exists but cannot be read, or has no entry for `package`, raises ValueError:
     falling back to a looser check there would turn off the exact pin without saying so
     (second Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/54).
-    Read with a pattern rather than tomllib, which Python 3.10 lacks.
+    Parsed with tomllib where it exists (3.11 and later, which includes the pod).
     """
     path = HERE / "uv.lock"
     if not path.exists():
@@ -85,10 +85,23 @@ def locked_version(package: str) -> str | None:
         text = path.read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
         raise ValueError(f"{path} could not be read ({exc})") from exc
-    match = re.search(rf'^name = "{re.escape(package)}"\nversion = "([^"]+)"', text, re.M)
-    if not match:
-        raise ValueError(f"{path} has no version for {package}")
-    return match.group(1)
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10: the pattern below, without a full parse
+        match = re.search(rf'^name = "{re.escape(package)}"\nversion = "([^"]+)"', text, re.M)
+        versions = [match.group(1)] if match else []
+    else:
+        # A full parse, so a lock that uv sync --locked would reject is not trusted here
+        # either (third Copilot review of the same pull request).
+        try:
+            lock = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"{path} is not valid TOML ({exc})") from exc
+        versions = [entry.get("version") for entry in lock.get("package", [])
+                    if isinstance(entry, dict) and entry.get("name") == package]
+    if len(versions) != 1 or not isinstance(versions[0], str):
+        raise ValueError(f"{path} has no single version for {package}")
+    return versions[0]
 
 
 def setup_problems(skip_git: bool = False) -> list[str]:
