@@ -643,6 +643,12 @@ def redact(text, *, categories: frozenset[str] = DEFAULT_REDACT,
         return text, []
     key = new_key() if key is None else key
     findings = detect(text, key=key)
+    return _rewrite_spans(text, findings, categories), findings
+
+
+def _rewrite_spans(text: str, findings: list[Finding], categories: frozenset[str]) -> str:
+    """Replace the spans of the findings in `categories`. detect() returns findings sorted
+    and never overlapping, which is what lets one cursor walk them."""
     out, cursor = [], 0
     for f in findings:
         if f.category not in categories:
@@ -651,7 +657,7 @@ def redact(text, *, categories: frozenset[str] = DEFAULT_REDACT,
         out.append(f.placeholder)
         cursor = f.end
     out.append(text[cursor:])
-    return "".join(out), findings
+    return "".join(out)
 
 
 # ----------------------------------------------------------------------------------------
@@ -726,15 +732,20 @@ def _whole_value_finding(text: str, pattern: str, key: bytes) -> Finding:
                    masked=bool(MASKED_RE.search(text)) and is_masked(text))
 
 
-def _whole_or_spans(text: str, finding: Finding, categories: frozenset[str],
-                    key: bytes) -> str:
+def _whole_or_spans(text: str, finding: Finding, findings: list[Finding],
+                    categories: frozenset[str]) -> str:
     """The whole-value placeholder when secrets are being rewritten. Otherwise the value with
     only the requested non-secret spans rewritten, so asking for PERSON alone still masks an
     email address inside a value that also holds a secret
-    (https://github.com/beril-doe/langfuse-retro-load/issues/28)."""
+    (https://github.com/beril-doe/langfuse-retro-load/issues/28).
+
+    `findings` is the detect() result the caller already has, so the value is scanned once.
+    A personal detail that overlaps a secret is not among them, because detect() keeps the
+    higher-ranked secret, so a PERSON-only caller leaves that one in place.
+    """
     if SECRET in categories:
         return finding.placeholder
-    return redact(text, categories=categories, key=key)[0]
+    return _rewrite_spans(text, findings, categories)
 
 
 def redact_value(text, *, key_name: str | None = None,
@@ -771,8 +782,9 @@ def redact_value(text, *, key_name: str | None = None,
         finding = _whole_value_finding(text, CREDENTIAL_KEY, key)
         # The whole value is replaced, but a personal detail inside it is still reported, so
         # the inventory keeps one row per finding.
-        others = [f for f in detect(text, key=key) if f.category != SECRET]
-        return _whole_or_spans(text, finding, categories, key), [finding, *others]
+        detected = detect(text, key=key)
+        others = [f for f in detected if f.category != SECRET]
+        return _whole_or_spans(text, finding, detected, categories), [finding, *others]
 
     findings = detect(text, key=key)
     secrets = [f for f in findings if f.category == SECRET]
@@ -782,7 +794,7 @@ def redact_value(text, *, key_name: str | None = None,
         widest = max(secrets, key=lambda f: (f.length, -f.start))
         finding = _whole_value_finding(text, widest.pattern, key)
         others = [f for f in findings if f.category != SECRET]
-        return _whole_or_spans(text, finding, categories, key), [finding, *others]
+        return _whole_or_spans(text, finding, findings, categories), [finding, *others]
 
     return redact(text, categories=categories, key=key)
 

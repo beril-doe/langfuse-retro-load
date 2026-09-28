@@ -331,3 +331,17 @@ def test_asking_for_nothing_still_changes_nothing():
     clean, found = redaction.redact_value(value, key_name="password",
                                           categories=inventory.REPORT_ONLY, key=KEY)
     assert clean == value and found
+
+
+
+def test_a_value_is_scanned_once(monkeypatch):
+    """Second Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/52:
+    the PERSON-only path scanned the value a second time."""
+    calls = []
+    real = redaction.detect
+    monkeypatch.setattr(redaction, "detect", lambda *a, **k: calls.append(1) or real(*a, **k))
+    for key_name in ("password", None):
+        calls.clear()
+        redaction.redact_value("sk-ant-api03-" + "A" * 40 + " from jane.doe@gmail.com",
+                               key_name=key_name, categories=frozenset({redaction.PERSON}), key=KEY)
+        assert len(calls) == 1
