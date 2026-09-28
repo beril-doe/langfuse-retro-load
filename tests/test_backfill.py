@@ -193,7 +193,14 @@ def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     import langfuse
     monkeypatch.setattr(langfuse, "__version__", "5.0.0", raising=False)
     monkeypatch.setattr(backfill, "HERE", tmp_path)  # no uv.lock here
-    assert any("needs 4.x" in p for p in backfill.setup_problems(skip_git=True))
+    problems = [p for p in backfill.setup_problems(skip_git=True) if "needs 4.x" in p]
+    assert problems and "--locked" not in problems[0], "--locked cannot work without a lock"
+
+
+def test_an_unreadable_lock_falls_back_instead_of_crashing(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").write_bytes(b"\xff\xfe not utf-8")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    assert backfill.locked_version("langfuse") is None
 
 
 def test_the_repo_lock_pins_langfuse():

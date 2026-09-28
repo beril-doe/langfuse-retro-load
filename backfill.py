@@ -76,8 +76,8 @@ def locked_version(package: str) -> str | None:
     Read with a pattern rather than tomllib, which Python 3.10 lacks.
     """
     try:
-        text = (HERE / "uv.lock").read_text()
-    except OSError:
+        text = (HERE / "uv.lock").read_text(encoding="utf-8")
+    except (OSError, ValueError):  # ValueError covers a lock that is not valid UTF-8
         return None
     match = re.search(rf'^name = "{re.escape(package)}"\nversion = "([^"]+)"', text, re.M)
     return match.group(1) if match else None
@@ -107,7 +107,8 @@ def setup_problems(skip_git: bool = False) -> list[str]:
     except ImportError:
         version = None
     locked = locked_version("langfuse")
-    sync = f"cd {HERE} && uv sync --locked"
+    # --locked needs a lock; without one, a plain sync is the only fix that can succeed.
+    sync = f"cd {HERE} && uv sync" + (" --locked" if locked else "")
     if version is None:
         problems.append(f"this Python has no langfuse package. Fix: {sync}, then run with "
                         f"{HERE / '.venv/bin/python'}")
