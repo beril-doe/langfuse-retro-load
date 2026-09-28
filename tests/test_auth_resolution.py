@@ -124,11 +124,25 @@ def test_an_unknown_value_still_refuses_and_names_both_forms(env):
 
 
 def test_count_accepts_a_prefix_on_the_command_line(env, monkeypatch):
+    """The id and the chosen prefix both reach the credential lookup, so the keys used are
+    that prefix's own (third Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/53)."""
     seen = []
-    monkeypatch.setattr(langfuse_admin, "cmd_count", lambda args: seen.append(args.project) or 0)
-    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "count", "--project", "BETA"])
-    assert langfuse_admin.main() == 0
-    assert seen == ["proj-beta"]
+    monkeypatch.setattr(langfuse_admin, "auth_for_project",
+                        lambda project, prefix=None: seen.append((project, prefix)) or ("h", "x"))
+    monkeypatch.setattr(langfuse_admin, "confirm_project", lambda *a: "stop here")
+    class Stop(Exception):
+        pass
+
+    def stop(*a, **k):
+        raise Stop
+
+    for name in ("api", "observation_census"):
+        monkeypatch.setattr(langfuse_admin, name, stop)
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "count", "--project", "beta"])
+    with pytest.raises(Stop):
+        langfuse_admin.main()
+    assert seen == [("proj-beta", "BETA")]
 
 
 
