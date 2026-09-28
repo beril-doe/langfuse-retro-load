@@ -150,10 +150,21 @@ def setup_problems(skip_git: bool = False) -> list[str]:
     elif lock_ok and not locked and not version.startswith("4."):
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
                         f"loader needs 4.x. Fix: {sync}")
+    import inventory
+    want = ".".join(map(str, inventory.MIN_GITLEAKS))
     if find_gitleaks() is None:
         problems.append("gitleaks is not installed, and the redaction plan needs it. Fix: "
-                        "install gitleaks 8.x from https://github.com/gitleaks/gitleaks/releases "
+                        f"install gitleaks {want} or later from "
+                        "https://github.com/gitleaks/gitleaks/releases "
                         "into a directory on PATH, such as ~/.local/bin")
+    else:
+        have = inventory.gitleaks_version()
+        if have is None or have < inventory.MIN_GITLEAKS:
+            shown = ".".join(map(str, have)) if have else "an unreadable version"
+            problems.append(f"gitleaks is {shown}, and the plan needs {want} or later, which "
+                            "applies .gitleaks.toml's allowlist; an older one masks BioSample "
+                            f"accessions. Fix: install gitleaks {want} or later from "
+                            "https://github.com/gitleaks/gitleaks/releases")
     return problems
 
 

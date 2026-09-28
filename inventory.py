@@ -266,6 +266,25 @@ def _rows_from(found: list[redaction.Located], subject: str, kind: str,
 GITLEAKS_CONFIG = Path(__file__).resolve().parent / ".gitleaks.toml"
 
 
+#: The oldest gitleaks that applies GITLEAKS_CONFIG's allowlist to the value it matched:
+#: `regexTarget` arrived in 8.16.0 and was fixed for `[extend]` configs in 8.20.0
+#: (https://github.com/gitleaks/gitleaks/releases/tag/v8.20.0). An older one ignores it and
+#: masks BioSample accessions again (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/57).
+MIN_GITLEAKS = (8, 20, 0)
+
+
+def gitleaks_version() -> tuple[int, ...] | None:
+    """The installed gitleaks version, such as (8, 30, 1), or None if it can't be read."""
+    try:
+        out = subprocess.run(["gitleaks", "version"], capture_output=True, text=True,
+                             check=False).stdout
+    except OSError:
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return tuple(int(x) for x in match.groups()) if match else None
+
+
 def gitleaks_findings(path: Path) -> list[dict] | None:
     """gitleaks' raw findings for one file, or None when gitleaks is not installed.
 
