@@ -192,7 +192,7 @@ test:
       echo "The suite runs in CI on every push. To run it locally, install uv." >&2
       exit 2
     fi
-    uv run pytest -q
+    uv run --locked pytest -q
 
 # Lint with the narrow ruleset pinned in pyproject.toml, the same one CI runs.
 lint:
@@ -201,7 +201,7 @@ lint:
     if ! command -v uv >/dev/null 2>&1; then
       echo "uv is not installed here (issue #15). CI lints every push." >&2; exit 2
     fi
-    uv run ruff check .
+    uv run --locked ruff check .
 
 # What CI runs, in the order CI runs it.
 check: lint test

@@ -382,3 +382,20 @@ def test_a_python_without_tomllib_refuses_rather_than_guessing(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_tomllib)
     with pytest.raises(ValueError, match="has no tomllib"):
         backfill.locked_version("langfuse")
+
+
+
+def test_a_dangling_lock_symlink_is_broken_not_missing(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").symlink_to(tmp_path / "nowhere.lock")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    with pytest.raises(ValueError, match="could not be read"):
+        backfill.locked_version("langfuse")
+
+
+def test_a_broken_lock_never_suggests_an_unlocked_sync(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").write_bytes(b"[broken\n")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    monkeypatch.setitem(sys.modules, "langfuse", None)  # import langfuse now fails
+    problems = backfill.setup_problems(skip_git=True)
+    fixes = [p for p in problems if "no langfuse package" in p]
+    assert fixes and "uv sync --locked" in fixes[0]

@@ -78,7 +78,8 @@ def locked_version(package: str) -> str | None:
     (Copilot reviews of https://github.com/beril-doe/langfuse-retro-load/pull/54).
     """
     path = HERE / "uv.lock"
-    if not path.exists():
+    # A dangling symlink is a broken lock, not a missing one, so it must not fall back.
+    if not path.exists() and not path.is_symlink():
         return None
     try:
         import tomllib
@@ -128,8 +129,9 @@ def setup_problems(skip_git: bool = False) -> list[str]:
         lock_ok, locked = False, None
         problems.append(f"{exc}, so the exact langfuse pin cannot be checked. Fix: "
                         f"git -C {HERE} checkout origin/main -- uv.lock")
-    # --locked needs a lock; without one, a plain sync is the only fix that can succeed.
-    sync = f"cd {HERE} && uv sync" + (" --locked" if locked else "")
+    # --locked needs a lock; only when there is none at all is a plain sync the fix. A
+    # broken lock is restored first (the problem above says how), then synced --locked.
+    sync = f"cd {HERE} && uv sync" + (" --locked" if locked or not lock_ok else "")
     if version is None:
         problems.append(f"this Python has no langfuse package. Fix: {sync}, then run with "
                         f"{HERE / '.venv/bin/python'}")
