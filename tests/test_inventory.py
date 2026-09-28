@@ -309,3 +309,25 @@ def test_reveal_names_a_reference_and_a_placeholder_for_what_they_are(value, exp
         assert expected in out
     else:
         assert "reference" not in out and "placeholder" not in out
+
+
+# --- https://github.com/beril-doe/langfuse-retro-load/issues/28 -------------------------------
+
+@pytest.mark.parametrize("key_name, value", [
+    ("password", "hunter2hunter2 ask jane.doe@gmail.com"),
+    (None, "sk-ant-api03-" + "A" * 40 + " from jane.doe@gmail.com"),
+])
+def test_asking_for_person_only_still_masks_an_email_beside_a_secret(key_name, value):
+    clean, found = redaction.redact_value(value, key_name=key_name,
+                                          categories=frozenset({redaction.PERSON}), key=KEY)
+    assert "jane.doe@gmail.com" not in clean, "a requested PERSON span was left in place"
+    assert any(f.category == redaction.SECRET for f in found), "the secret is still reported"
+    secret_part = value.split(" ")[0]
+    assert secret_part in clean, "the secret was rewritten although SECRET was not requested"
+
+
+def test_asking_for_nothing_still_changes_nothing():
+    value = "hunter2hunter2 ask jane.doe@gmail.com"
+    clean, found = redaction.redact_value(value, key_name="password",
+                                          categories=inventory.REPORT_ONLY, key=KEY)
+    assert clean == value and found

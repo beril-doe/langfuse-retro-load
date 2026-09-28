@@ -726,6 +726,17 @@ def _whole_value_finding(text: str, pattern: str, key: bytes) -> Finding:
                    masked=bool(MASKED_RE.search(text)) and is_masked(text))
 
 
+def _whole_or_spans(text: str, finding: Finding, categories: frozenset[str],
+                    key: bytes) -> str:
+    """The whole-value placeholder when secrets are being rewritten. Otherwise the value with
+    only the requested non-secret spans rewritten, so asking for PERSON alone still masks an
+    email address inside a value that also holds a secret
+    (https://github.com/beril-doe/langfuse-retro-load/issues/28)."""
+    if SECRET in categories:
+        return finding.placeholder
+    return redact(text, categories=categories, key=key)[0]
+
+
 def redact_value(text, *, key_name: str | None = None,
                  categories: frozenset[str] = DEFAULT_REDACT, key: bytes | None = None):
     """Redact a string the caller has already delimited: one value, not a document.
@@ -761,7 +772,7 @@ def redact_value(text, *, key_name: str | None = None,
         # The whole value is replaced, but a personal detail inside it is still reported, so
         # the inventory keeps one row per finding.
         others = [f for f in detect(text, key=key) if f.category != SECRET]
-        return (finding.placeholder if SECRET in categories else text), [finding, *others]
+        return _whole_or_spans(text, finding, categories, key), [finding, *others]
 
     findings = detect(text, key=key)
     secrets = [f for f in findings if f.category == SECRET]
@@ -771,7 +782,7 @@ def redact_value(text, *, key_name: str | None = None,
         widest = max(secrets, key=lambda f: (f.length, -f.start))
         finding = _whole_value_finding(text, widest.pattern, key)
         others = [f for f in findings if f.category != SECRET]
-        return (finding.placeholder if SECRET in categories else text), [finding, *others]
+        return _whole_or_spans(text, finding, categories, key), [finding, *others]
 
     return redact(text, categories=categories, key=key)
 
