@@ -221,6 +221,10 @@ _CODE_EXPRESSION_RE = re.compile(
 
 _LITERAL_RE = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+#: Where the rest of the line stops being part of the same expression: a comment (`#`,
+#: `//`) or a statement separator (`;`). String literals come first in the alternation, so
+#: a `#` or `;` inside a quoted string does not count.
+_EXPRESSION_STOP_RE = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'|#|//|;")
 
 
 def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | None:
@@ -246,11 +250,17 @@ def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | No
     match = _CODE_EXPRESSION_RE.match(text, start)
     if not match or match.end() < end:
         return None
-    # Literals are checked to the end of the line, not only inside the call, so a value
-    # joined on after it is still found: `get_secret("PASSWORD") + "hunter2hunter2"`
-    # (fourth Copilot review of the same pull request).
+    # Literals are checked past the call, so a value joined on after it is still found:
+    # `get_secret("PASSWORD") + "hunter2hunter2"` (fourth Copilot review of the same pull
+    # request). The check stops at the end of the line, or earlier at a comment or a `;`,
+    # so a comment or a second statement on the same line is not masked
+    # (https://github.com/beril-doe/langfuse-retro-load/issues/44).
     line_end = text.find("\n", match.end())
     line_end = len(text) if line_end == -1 else line_end
+    for token in _EXPRESSION_STOP_RE.finditer(text, match.end(), line_end):
+        if token.group() in ("#", "//", ";"):
+            line_end = token.start()
+            break
     spans = []
     for literal in _LITERAL_RE.finditer(text, match.start(), line_end):
         group = 1 if literal.group(1) is not None else 2
