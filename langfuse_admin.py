@@ -193,6 +193,16 @@ def auth_for_project(project_id: str, prefix: str | None = None) -> tuple[str, s
                     or env.get("LANGFUSE_BASE_URL") or env.get("LANGFUSE_HOST") or DEFAULT_HOST)
             header = "Basic " + base64.b64encode(f"{public}:{secret}".encode()).decode()
             resolved[p] = (header, host.rstrip("/"))
+    incomplete = [p for p in naming if p not in resolved]
+    if resolved and incomplete:
+        # An incomplete prefix naming the same id may point at another host, so "every
+        # prefix agrees" cannot be checked. Refuse rather than drop it (Copilot review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/53).
+        raise SystemExit(
+            f"{', '.join(incomplete)} in {source} also names project {project_id} but lacks "
+            f"{incomplete[0]}_LANGFUSE_PUBLIC_KEY or {incomplete[0]}_LANGFUSE_SECRET_KEY, so "
+            "it cannot be checked against the others. Pass the prefix instead, e.g. "
+            f"--project {next(iter(resolved))}, or complete or remove {incomplete[0]}.")
     if len(set(resolved.values())) == 1:
         return next(iter(resolved.values()))
     if resolved:

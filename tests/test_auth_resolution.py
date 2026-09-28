@@ -193,3 +193,37 @@ def test_prefixes_that_differ_only_in_case_can_each_be_named(monkeypatch):
     assert langfuse_admin.resolve_project("alpha") == ("proj-lower", "alpha")
     # Neither spelling matches exactly, and the case-insensitive match is not unique.
     assert langfuse_admin.resolve_project("Alpha") == ("Alpha", None)
+
+
+
+def test_an_incomplete_prefix_sharing_the_id_is_not_silently_dropped(monkeypatch):
+    """Copilot review of 30f2382 on https://github.com/beril-doe/langfuse-retro-load/pull/53."""
+    env = dict(ENV)
+    env.update({"ALPHA2_LANGFUSE_PROJECT_ID": "proj-alpha",
+                "ALPHA2_LANGFUSE_BASE_URL": "https://elsewhere.example.test"})
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project("proj-alpha")
+    assert "ALPHA2 in /synthetic/.env also names project proj-alpha but lacks" in str(excinfo.value)
+    # Naming the complete prefix still works.
+    header, _ = langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("ALPHA"))
+    assert header == expected_header("pk-alpha", "sk-alpha")
+
+
+def test_delete_passes_the_id_and_prefix_before_any_request(env, monkeypatch):
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def lookup(project, prefix=None):
+        seen.append((project, prefix))
+        raise Stop
+
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lookup)
+    monkeypatch.setattr(langfuse_admin, "api", lambda *a, **k: pytest.fail("reached the network"))
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "delete", "--project",
+                                                     "beta", "--type", "trace", "--all", "--dry-run"])
+    with pytest.raises(Stop):
+        langfuse_admin.main()
+    assert seen == [("proj-beta", "BETA")]
