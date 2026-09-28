@@ -163,8 +163,11 @@ def resolve_project(value: str) -> tuple[str, str | None]:
     value out of that file (https://github.com/beril-doe/langfuse-retro-load/issues/21).
     """
     env, _ = load_env()
-    matches = [k for k in env if k.endswith("_LANGFUSE_PROJECT_ID") and env[k]
-               and k.removesuffix("_LANGFUSE_PROJECT_ID").lower() == value.lower()]
+    exact = f"{value}_LANGFUSE_PROJECT_ID"
+    # An exact prefix wins, so two prefixes that differ only in case can each be named.
+    matches = [exact] if env.get(exact) else [
+        k for k in env if k.endswith("_LANGFUSE_PROJECT_ID") and env[k]
+        and k.removesuffix("_LANGFUSE_PROJECT_ID").lower() == value.lower()]
     if len(matches) == 1:
         return env[matches[0]], matches[0].removesuffix("_LANGFUSE_PROJECT_ID")
     return value, None

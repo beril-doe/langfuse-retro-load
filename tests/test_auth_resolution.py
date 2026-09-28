@@ -181,3 +181,15 @@ def test_a_prefix_with_an_id_but_no_keys_says_so(monkeypatch):
     message = str(excinfo.value)
     assert "GAMMA in /synthetic/.env names project proj-gamma but lacks" in message
     assert "neither" not in message
+
+
+
+def test_prefixes_that_differ_only_in_case_can_each_be_named(monkeypatch):
+    env = dict(ENV)
+    env.update({"alpha_LANGFUSE_PROJECT_ID": "proj-lower",
+                "alpha_LANGFUSE_PUBLIC_KEY": "pk-lower", "alpha_LANGFUSE_SECRET_KEY": "sk-lower"})
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+    assert langfuse_admin.resolve_project("ALPHA") == ("proj-alpha", "ALPHA")
+    assert langfuse_admin.resolve_project("alpha") == ("proj-lower", "alpha")
+    # Neither spelling matches exactly, and the case-insensitive match is not unique.
+    assert langfuse_admin.resolve_project("Alpha") == ("Alpha", None)
