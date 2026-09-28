@@ -556,3 +556,47 @@ def test_a_credential_joined_after_a_harmless_call_is_masked():
 def test_the_next_line_is_not_read_as_part_of_the_call():
     text = 'file_token = env_vars.get("KBASE_AUTH_TOKEN", "")\nprint("hello world here")'
     assert redaction.detect(text) == []
+
+
+
+@pytest.mark.parametrize("rest", [
+    '  # "not a secret at all"',
+    '  // "not a secret at all"',
+    '; print("hello world here")',
+])
+def test_a_comment_or_next_statement_after_the_call_is_not_masked(rest):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/44"""
+    line = 'file_token = env_vars.get("KBASE_AUTH_TOKEN", "")' + rest
+    assert redaction.detect(line) == []
+
+
+@pytest.mark.parametrize("join", [" + ", " % ", ", ", " or "])
+def test_a_join_before_a_comment_is_still_masked(join):
+    secret = "hunter2" * 2
+    line = f'password = get_secret("PASSWORD"){join}"{secret}"  # "a comment here"'
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [secret]
+
+
+def test_a_hash_or_semicolon_inside_a_joined_string_does_not_stop_the_check():
+    secret = "hunter2#;x" * 2
+    line = f'password = get_secret("PASSWORD") + "{secret}"'
+    found = [line[f.start:f.end] for f in redaction.detect(line)
+             if f.category == redaction.SECRET]
+    assert found == [secret]
+
+
+
+@pytest.mark.parametrize("literal", [
+    r'"prefix\"#hunter2hunter2"',
+    r"'prefix\'#hunter2hunter2'",
+    r'"prefix\\\";hunter2hunter2"',
+])
+def test_an_escaped_quote_does_not_end_the_joined_string_early(literal):
+    """Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/51: the
+    escaped quote used to end the literal, so `#` looked like a comment and the rest leaked."""
+    line = f'password = get_secret("PASSWORD") + {literal}'
+    masked = "".join(line[f.start:f.end] for f in redaction.detect(line)
+                     if f.category == redaction.SECRET)
+    assert "hunter2hunter2" in masked
