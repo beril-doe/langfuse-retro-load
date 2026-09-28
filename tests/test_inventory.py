@@ -363,3 +363,26 @@ def test_reveal_hides_a_neighbour_that_crosses_the_window_edge(side):
         start, end = len(leaf) - len(target), len(leaf)
     out = reveal.context_for(leaf, start, end, show_values=False)
     assert "jane.doe" not in out and "gmail.com" not in out
+
+
+def test_reveal_hides_a_neighbour_whose_key_is_inside_the_finding():
+    """Review of https://github.com/beril-doe/langfuse-retro-load/pull/56: splitting the field
+    at the finding's edges left `"hunter2hunter2"` with no key beside it, so it was shown."""
+    import reveal
+    leaf = 'AKIAABCDEFGHIJKLMNOPtoken="hunter2hunter2" end'
+    found = [f for f in redaction.detect(leaf, key=KEY)]
+    target = next(f for f in found if "hunter2" not in leaf[f.start:f.end])
+    out = reveal.context_for(leaf, target.start, target.end, show_values=False)
+    assert "hunter2hunter2" not in out
+
+
+def test_reveal_scans_a_field_once_however_many_findings_it_has(monkeypatch):
+    import reveal
+    reveal._field_findings.cache_clear()
+    calls = []
+    real = redaction.detect
+    monkeypatch.setattr(redaction, "detect", lambda *a, **k: calls.append(1) or real(*a, **k))
+    leaf = " ".join(f"person{i}.name@gmail.com" for i in range(50))
+    for f in real(leaf, key=KEY):
+        reveal.context_for(leaf, f.start, f.end, show_values=False)
+    assert len(calls) == 1

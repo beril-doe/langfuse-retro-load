@@ -37,6 +37,7 @@ Usage, from ~/langfuse-retro-load on the pod:
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import re
 import sys
@@ -91,6 +92,32 @@ def resolve(document, pointer: str):
     return node
 
 
+#: One key for the whole run, so a field's scan can be reused across its findings.
+_KEY = redaction.new_key()
+
+
+@functools.lru_cache(maxsize=16)
+def _field_findings(leaf: str) -> tuple:
+    return tuple(redaction.detect(leaf, key=_KEY))
+
+
+def _hide(leaf: str, lo: int, hi: int, found) -> str:
+    """leaf[lo:hi] with every finding that touches it replaced, the part inside the range
+    only, so a finding cut by the range edge is still hidden."""
+    out, cursor = [], lo
+    for f in found:
+        if f.end <= lo or f.start >= hi:
+            continue
+        a, b = max(f.start, lo), min(f.end, hi)
+        if a < cursor:
+            continue
+        out.append(leaf[cursor:a])
+        out.append(f.placeholder)
+        cursor = b
+    out.append(leaf[cursor:hi])
+    return "".join(out)
+
+
 def context_for(leaf: str, start: int, end: int, *, show_values: bool,
                 raw_context: bool = False) -> str:
     """The text around a finding, with every neighbouring finding redacted.
@@ -100,13 +127,16 @@ def context_for(leaf: str, start: int, end: int, *, show_values: bool,
     or, with `--show-values`, as itself. `raw_context` leaves the two sides as they are, for
     `--plan --show-values`, where the reviewer asked to read the field as the transcript has it.
     """
-    before, after = leaf[:start], leaf[end:]
-    if not raw_context:
-        # Redact each whole side before cutting the window, so a neighbour that crosses the
-        # window's edge is still recognised and hidden in full, not shown in part
+    if raw_context:
+        before, after = leaf[:start], leaf[end:]
+    else:
+        # Neighbours come from one scan of the whole field, not of each side or of the
+        # window: a neighbour crossing the window's edge, or one whose key sits inside this
+        # finding's span, is still recognised and hidden in full, and a field with many
+        # findings is scanned once rather than once per finding
         # (https://github.com/beril-doe/langfuse-retro-load/issues/26).
-        before, _ = redaction.redact(before)
-        after, _ = redaction.redact(after)
+        found = _field_findings(leaf)
+        before, after = _hide(leaf, 0, start, found), _hide(leaf, end, len(leaf), found)
     before, after = before[max(0, len(before) - CONTEXT):], after[:CONTEXT]
     middle = leaf[start:end] if show_values else shape(leaf[start:end])
     return (before + middle + after).replace("\n", " ⏎ ")
