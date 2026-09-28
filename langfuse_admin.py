@@ -153,9 +153,10 @@ def load_env() -> tuple[dict, Path | None]:
     return env, path
 
 
-def resolve_project(value: str) -> str:
-    """The project id `--project` names: a key prefix such as BERIL resolves through
-    BERIL_LANGFUSE_PROJECT_ID, and anything else is taken as the id itself.
+def resolve_project(value: str) -> tuple[str, str | None]:
+    """(project id, prefix) for what `--project` names. A key prefix such as BERIL resolves
+    through BERIL_LANGFUSE_PROJECT_ID and is kept, so the keys used are that prefix's own;
+    anything else is taken as the id itself, with no prefix.
 
     A prefix is still an explicit choice of project, so this infers nothing. It exists
     because the id lives in .env, where copying it onto a command line means reading a
@@ -164,26 +165,46 @@ def resolve_project(value: str) -> str:
     env, _ = load_env()
     matches = [k for k in env if k.endswith("_LANGFUSE_PROJECT_ID") and env[k]
                and k.removesuffix("_LANGFUSE_PROJECT_ID").lower() == value.lower()]
-    return env[matches[0]] if len(matches) == 1 else value
+    if len(matches) == 1:
+        return env[matches[0]], matches[0].removesuffix("_LANGFUSE_PROJECT_ID")
+    return value, None
 
 
-def auth_for_project(project_id: str) -> tuple[str, str]:
+def auth_for_project(project_id: str, prefix: str | None = None) -> tuple[str, str]:
     """Find the key whose PROJECT_ID matches, and the host that goes with it.
 
-    Never falls back to "the only key present". Returns (auth header, host).
+    With `prefix`, only that prefix's keys are used. Without one, every prefix naming the
+    project must agree on key and host, or this refuses rather than pick one. Never falls
+    back to "the only key present". Returns (auth header, host).
     """
     env, source = load_env()
     prefixes = sorted({k.split("_LANGFUSE_")[0] for k in env if "_LANGFUSE_" in k})
-    for prefix in prefixes:
-        if env.get(f"{prefix}_LANGFUSE_PROJECT_ID") != project_id:
-            continue
-        public = env.get(f"{prefix}_LANGFUSE_PUBLIC_KEY")
-        secret = env.get(f"{prefix}_LANGFUSE_SECRET_KEY")
+    naming = [p for p in prefixes if env.get(f"{p}_LANGFUSE_PROJECT_ID") == project_id
+              and (prefix is None or p == prefix)]
+    resolved = {}
+    for p in naming:
+        public = env.get(f"{p}_LANGFUSE_PUBLIC_KEY")
+        secret = env.get(f"{p}_LANGFUSE_SECRET_KEY")
         if public and secret:
-            host = (env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get(f"{prefix}_LANGFUSE_HOST")
+            host = (env.get(f"{p}_LANGFUSE_BASE_URL") or env.get(f"{p}_LANGFUSE_HOST")
                     or env.get("LANGFUSE_BASE_URL") or env.get("LANGFUSE_HOST") or DEFAULT_HOST)
             header = "Basic " + base64.b64encode(f"{public}:{secret}".encode()).decode()
-            return header, host.rstrip("/")
+            resolved[p] = (header, host.rstrip("/"))
+    if len(set(resolved.values())) == 1:
+        return next(iter(resolved.values()))
+    if resolved:
+        # Two prefixes name this project with different keys or hosts. Picking one would
+        # decide the destination for the operator (Copilot review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/53).
+        raise SystemExit(
+            f"prefixes {', '.join(resolved)} in {source} all name project {project_id}, with "
+            "different keys or hosts. Pass the prefix instead, e.g. "
+            f"--project {next(iter(resolved))}, so the choice is yours.")
+    if naming:
+        raise SystemExit(
+            f"{', '.join(naming)} in {source} names project {project_id} but lacks "
+            f"{naming[0]}_LANGFUSE_PUBLIC_KEY or {naming[0]}_LANGFUSE_SECRET_KEY. "
+            "Add the project key pair for it.")
     known = [p for p in prefixes if env.get(f"{p}_LANGFUSE_PROJECT_ID")]
     raise SystemExit(
         f"--project {project_id} is neither a project id nor a prefix in "
@@ -389,7 +410,7 @@ def confirm_project(project_id: str, header: str, host: str) -> str:
 
 
 def cmd_count(args) -> int:
-    header, host = auth_for_project(args.project)
+    header, host = auth_for_project(args.project, getattr(args, "project_prefix", None))
     where = confirm_project(args.project, header, host)
     print(f"{where}  ({args.project})  at {host}\n")
     print(f"{'object':<20}{'count':>10}  {'note'}")
@@ -483,7 +504,7 @@ def cmd_delete(args) -> int:
               "or --all to mean every trace",
               file=sys.stderr)
         return 2
-    header, host = auth_for_project(args.project)
+    header, host = auth_for_project(args.project, getattr(args, "project_prefix", None))
     where = confirm_project(args.project, header, host)
 
     # Filter server-side, so a narrow deletion does not page the whole project.
@@ -648,7 +669,7 @@ def main() -> int:
 
     args = ap.parse_args()
     if getattr(args, "project", None) is not None:
-        args.project = resolve_project(args.project)
+        args.project, args.project_prefix = resolve_project(args.project)
     return args.func(args)
 
 

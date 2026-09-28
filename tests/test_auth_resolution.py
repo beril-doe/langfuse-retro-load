@@ -106,18 +106,18 @@ def test_no_env_at_all_refuses_and_says_so(monkeypatch):
 
 @pytest.mark.parametrize("given", ["ALPHA", "alpha", "Alpha"])
 def test_a_prefix_resolves_to_its_project_id(env, given):
-    assert langfuse_admin.resolve_project(given) == "proj-alpha"
-    header, _ = langfuse_admin.auth_for_project(langfuse_admin.resolve_project(given))
+    assert langfuse_admin.resolve_project(given) == ("proj-alpha", "ALPHA")
+    header, _ = langfuse_admin.auth_for_project(*langfuse_admin.resolve_project(given))
     assert header == expected_header("pk-alpha", "sk-alpha")
 
 
 def test_a_project_id_passes_through_unchanged(env):
-    assert langfuse_admin.resolve_project("proj-beta") == "proj-beta"
+    assert langfuse_admin.resolve_project("proj-beta") == ("proj-beta", None)
 
 
 def test_an_unknown_value_still_refuses_and_names_both_forms(env):
     with pytest.raises(SystemExit) as excinfo:
-        langfuse_admin.auth_for_project(langfuse_admin.resolve_project("GAMMA"))
+        langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("GAMMA"))
     message = str(excinfo.value)
     assert "--project GAMMA is neither a project id nor a prefix" in message
     assert "ALPHA" in message and "BETA" in message
@@ -129,3 +129,41 @@ def test_count_accepts_a_prefix_on_the_command_line(env, monkeypatch):
     monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "count", "--project", "BETA"])
     assert langfuse_admin.main() == 0
     assert seen == ["proj-beta"]
+
+
+
+def twin(monkeypatch, host):
+    """ALPHA2 names proj-alpha too, with its own key and the given host."""
+    env = dict(ENV)
+    env.update({"ALPHA2_LANGFUSE_PROJECT_ID": "proj-alpha",
+                "ALPHA2_LANGFUSE_PUBLIC_KEY": "pk-alpha2", "ALPHA2_LANGFUSE_SECRET_KEY": "sk-alpha2",
+                "ALPHA2_LANGFUSE_BASE_URL": host})
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+
+
+def test_a_chosen_prefix_uses_its_own_keys_when_two_prefixes_share_an_id(monkeypatch):
+    """Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/53."""
+    twin(monkeypatch, "https://elsewhere.example.test")
+    header, host = langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("ALPHA2"))
+    assert header == expected_header("pk-alpha2", "sk-alpha2")
+    assert host == "https://elsewhere.example.test"
+
+
+def test_an_id_shared_by_prefixes_that_disagree_is_refused(monkeypatch):
+    twin(monkeypatch, "https://elsewhere.example.test")
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project("proj-alpha")
+    message = str(excinfo.value)
+    assert "ALPHA, ALPHA2" in message and "Pass the prefix instead" in message
+    assert "pk-alpha" not in message and "sk-alpha" not in message
+
+
+def test_a_prefix_with_an_id_but_no_keys_says_so(monkeypatch):
+    env = dict(ENV)
+    env["GAMMA_LANGFUSE_PROJECT_ID"] = "proj-gamma"
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("GAMMA"))
+    message = str(excinfo.value)
+    assert "GAMMA in /synthetic/.env names project proj-gamma but lacks" in message
+    assert "neither" not in message
