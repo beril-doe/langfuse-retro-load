@@ -190,6 +190,7 @@ def test_a_failed_fetch_is_a_setup_problem(monkeypatch):
     assert any("could not fetch origin" in p for p in backfill.setup_problems())
 
 
+@pytest.mark.real_langfuse_check
 def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     import langfuse
     monkeypatch.setattr(langfuse, "__version__", "5.0.0", raising=False)
@@ -206,6 +207,7 @@ def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     b'version = 1\n[[package]]\nname = "langfuse"\nversion = ""\n',
     b'version = 1\n[[package]]\nname = "langfuse"\nversion = "1"\n[[package]]\nname = "langfuse"\nversion = "2"\n',
 ])
+@pytest.mark.real_langfuse_check
 def test_an_unreadable_or_incomplete_lock_is_a_setup_problem(monkeypatch, tmp_path, content):
     """Fail closed: only a missing lock uses the 4.x fallback (second Copilot review of
     https://github.com/beril-doe/langfuse-retro-load/pull/54)."""
@@ -221,6 +223,7 @@ def test_the_repo_lock_pins_langfuse():
     assert backfill.locked_version("langfuse") is not None
 
 
+@pytest.mark.real_langfuse_check
 def test_a_langfuse_other_than_the_locked_one_is_a_setup_problem(monkeypatch):
     """The pod's .venv had langfuse 4.15.4 against a lock of 4.15.2 on 2026-09-28
     (https://github.com/beril-doe/langfuse-retro-load/issues/15)."""
@@ -231,6 +234,7 @@ def test_a_langfuse_other_than_the_locked_one_is_a_setup_problem(monkeypatch):
     assert any(f"uv.lock pins {locked}" in p and "uv sync --locked" in p for p in problems)
 
 
+@pytest.mark.real_langfuse_check
 def test_the_locked_langfuse_is_not_a_setup_problem(monkeypatch):
     import langfuse
     monkeypatch.setattr(langfuse, "__version__", backfill.locked_version("langfuse"), raising=False)
@@ -393,6 +397,7 @@ def test_a_dangling_lock_symlink_is_broken_not_missing(monkeypatch, tmp_path):
         backfill.locked_version("langfuse")
 
 
+@pytest.mark.real_langfuse_check
 def test_a_broken_lock_never_suggests_an_unlocked_sync(monkeypatch, tmp_path):
     (tmp_path / "uv.lock").write_bytes(b"[broken\n")
     monkeypatch.setattr(backfill, "HERE", tmp_path)
@@ -426,3 +431,32 @@ def test_gitleaks_must_be_new_enough_for_the_allowlist(monkeypatch, version, ok)
     monkeypatch.setattr(inventory, "gitleaks_version", lambda: version)
     problems = [p for p in backfill.setup_problems(skip_git=True) if "gitleaks is" in p]
     assert (not problems) is ok
+
+
+
+@pytest.mark.real_langfuse_check
+def test_a_direct_load_refuses_a_langfuse_other_than_the_locked_one(monkeypatch, tmp_path, capsys):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/59"""
+    pytest.importorskip("dotenv")
+    import langfuse
+    import retro_load
+    monkeypatch.setattr(langfuse, "__version__", backfill.locked_version("langfuse") + ".post1",
+                        raising=False)
+    f = tmp_path / "s-1.jsonl"
+    f.write_text('{"type": "user", "uuid": "u-1", "message": {"content": "hi"}}\n')
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--without-plan"])
+    assert retro_load.main() == 2
+    assert "uv.lock pins" in capsys.readouterr().err
+
+
+@pytest.mark.real_langfuse_check
+def test_a_dry_run_does_not_need_the_locked_langfuse(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import langfuse
+    import retro_load
+    monkeypatch.setattr(langfuse, "__version__", "0.0.0", raising=False)
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "markers")
+    f = tmp_path / "s-1.jsonl"
+    f.write_text('{"type": "user", "uuid": "u-1", "message": {"content": "hi"}}\n')
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run"])
+    assert retro_load.main() == 0

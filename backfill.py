@@ -105,24 +105,12 @@ def locked_version(package: str) -> str | None:
     return versions[0]
 
 
-def setup_problems(skip_git: bool = False) -> list[str]:
-    """Everything that would make a load fail or send the wrong thing, with its fix."""
+def langfuse_problems() -> list[str]:
+    """Why this Python's langfuse can't be used for a load, with the fix; empty when it can.
+
+    Shared with retro_load.py, so a load run directly checks the pin too
+    (https://github.com/beril-doe/langfuse-retro-load/issues/59)."""
     problems = []
-    if not skip_git:
-        branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        fetched = git("fetch", "-q", "origin", "main")
-        head = git("rev-parse", "HEAD").stdout.strip()
-        main = git("rev-parse", "origin/main").stdout.strip()
-        if fetched.returncode != 0:
-            # A stale origin/main can equal HEAD, so without a fetch "current" is unknown.
-            problems.append(f"could not fetch origin to check that main is current "
-                            f"({fetched.stderr.strip()[:200] or 'git fetch failed'}). Fix: "
-                            f"check the network, then git -C {HERE} pull --ff-only")
-        elif branch != "main":
-            problems.append(f"this checkout is on '{branch}', not main. Fix: "
-                            f"git -C {HERE} switch main && git -C {HERE} pull --ff-only")
-        elif head != main:
-            problems.append(f"main is not current. Fix: git -C {HERE} pull --ff-only")
     try:
         import langfuse
         version = getattr(langfuse, "__version__", "")
@@ -150,6 +138,28 @@ def setup_problems(skip_git: bool = False) -> list[str]:
     elif lock_ok and not locked and not version.startswith("4."):
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
                         f"loader needs 4.x. Fix: {sync}")
+    return problems
+
+
+def setup_problems(skip_git: bool = False) -> list[str]:
+    """Everything that would make a load fail or send the wrong thing, with its fix."""
+    problems = []
+    if not skip_git:
+        branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        fetched = git("fetch", "-q", "origin", "main")
+        head = git("rev-parse", "HEAD").stdout.strip()
+        main = git("rev-parse", "origin/main").stdout.strip()
+        if fetched.returncode != 0:
+            # A stale origin/main can equal HEAD, so without a fetch "current" is unknown.
+            problems.append(f"could not fetch origin to check that main is current "
+                            f"({fetched.stderr.strip()[:200] or 'git fetch failed'}). Fix: "
+                            f"check the network, then git -C {HERE} pull --ff-only")
+        elif branch != "main":
+            problems.append(f"this checkout is on '{branch}', not main. Fix: "
+                            f"git -C {HERE} switch main && git -C {HERE} pull --ff-only")
+        elif head != main:
+            problems.append(f"main is not current. Fix: git -C {HERE} pull --ff-only")
+    problems += langfuse_problems()
     import inventory
     want = ".".join(map(str, inventory.MIN_GITLEAKS))
     if find_gitleaks() is None:

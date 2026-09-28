@@ -357,6 +357,17 @@ def main() -> int:
         print("--inventory names the transcript; refusing to overwrite it", file=sys.stderr)
         return 1
 
+    if not args.dry_run:
+        # backfill.py checks this before it starts a load; a load run directly must too, or
+        # a .venv that drifted from uv.lock sends through the vendored hook unchecked
+        # (https://github.com/beril-doe/langfuse-retro-load/issues/59).
+        import backfill
+        problems = backfill.langfuse_problems()
+        if problems:
+            for problem in problems:
+                print(f"refusing to load: {problem}", file=sys.stderr)
+            return 2
+
     session_id = args.session_id or transcript_path.stem
     tags = ["claude-code", "retro-load"] + args.tag
 
