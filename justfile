@@ -4,8 +4,8 @@
 # delete from it. A command you half remember is how the wrong thing gets sent,
 # so each one lives here rather than in someone's shell history.
 #
-# uv is not yet installed on the BERDL pod, where these actually run. Until it
-# is, PY resolves to plain python3 there. See issue #15.
+# uv is required. It is installed on the BERDL pod, where these run
+# (/opt/conda/bin/uv, checked 2026-09-28). See issue #15.
 #
 # Two recipes call scripts that are not on main yet: scan and scan-detail need
 # scan_transcript.py from pull request #6, and count, projects, delete-dry and
@@ -15,14 +15,16 @@
 # Two forms, because they are not interchangeable. PY runs a script file.
 # PYBIN is an interpreter you can pass -c to: `uv run -c ...` is not valid, uv
 # reads -c as its own flag.
-PY := `command -v uv >/dev/null 2>&1 && echo "uv run" || echo "python3"`
-PYBIN := `command -v uv >/dev/null 2>&1 && echo "uv run python" || echo "python3"`
+# uv is required: an ambient python3 would run whatever langfuse happens to be installed,
+# and --locked keeps uv run from rewriting uv.lock (Copilot review of pull request #54).
+PY := "uv run --locked"
+PYBIN := "uv run --locked python"
 
 # List the targets.
 default:
     @just --list
 
-# Reproduce the environment. No-op where uv is unavailable.
+# Reproduce the locked environment. Fails where uv is unavailable.
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -32,8 +34,10 @@ setup:
     fi
     # --locked: a plain sync can rewrite uv.lock, and backfill.py trusts the lock's
     # langfuse pin (Copilot review of pull request #54).
-    if command -v uv >/dev/null 2>&1; then uv sync --locked
-    else echo "uv not installed; using the ambient python3 (issue #15)"; fi
+    if ! command -v uv >/dev/null 2>&1; then
+      echo "uv is not installed; see https://docs.astral.sh/uv/ (issue #15)" >&2; exit 2
+    fi
+    uv sync --locked
 
 # Reads the roots from people.json rather than a hardcoded path, because
 # build_manifest.py loads all of them and a partial scan reports clean.
