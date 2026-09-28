@@ -100,10 +100,14 @@ def context_for(leaf: str, start: int, end: int, *, show_values: bool,
     or, with `--show-values`, as itself. `raw_context` leaves the two sides as they are, for
     `--plan --show-values`, where the reviewer asked to read the field as the transcript has it.
     """
-    before, after = leaf[max(0, start - CONTEXT):start], leaf[end:end + CONTEXT]
+    before, after = leaf[:start], leaf[end:]
     if not raw_context:
+        # Redact each whole side before cutting the window, so a neighbour that crosses the
+        # window's edge is still recognised and hidden in full, not shown in part
+        # (https://github.com/beril-doe/langfuse-retro-load/issues/26).
         before, _ = redaction.redact(before)
         after, _ = redaction.redact(after)
+    before, after = before[max(0, len(before) - CONTEXT):], after[:CONTEXT]
     middle = leaf[start:end] if show_values else shape(leaf[start:end])
     return (before + middle + after).replace("\n", " ⏎ ")
 

@@ -345,3 +345,21 @@ def test_a_value_is_scanned_once(monkeypatch):
         redaction.redact_value("sk-ant-api03-" + "A" * 40 + " from jane.doe@gmail.com",
                                key_name=key_name, categories=frozenset({redaction.PERSON}), key=KEY)
         assert len(calls) == 1
+
+
+@pytest.mark.parametrize("side", ["after", "before"])
+def test_reveal_hides_a_neighbour_that_crosses_the_window_edge(side):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/26: only the window used to be
+    redacted, so a neighbour cut by its edge was not recognised and showed in part."""
+    import reveal
+    email = "jane.doe.person@gmail.com"
+    target = f"TOKEN={'ab12' * 8}"
+    pad = "x " * ((reveal.CONTEXT - 10) // 2)
+    if side == "after":
+        leaf = target + " " + pad + email + " tail"
+        start, end = 0, len(target)
+    else:
+        leaf = "head " + email + " " + pad + target
+        start, end = len(leaf) - len(target), len(leaf)
+    out = reveal.context_for(leaf, start, end, show_values=False)
+    assert "jane.doe" not in out and "gmail.com" not in out
