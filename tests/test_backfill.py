@@ -399,3 +399,19 @@ def test_a_broken_lock_never_suggests_an_unlocked_sync(monkeypatch, tmp_path):
     problems = backfill.setup_problems(skip_git=True)
     fixes = [p for p in problems if "no langfuse package" in p]
     assert fixes and "uv sync --locked" in fixes[0]
+
+
+
+def test_a_lock_that_cannot_be_inspected_is_broken_not_missing(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").write_text("")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    real_lstat = backfill.Path.lstat
+
+    def denied(self):
+        if self.name == "uv.lock":
+            raise PermissionError(13, "Permission denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(backfill.Path, "lstat", denied)
+    with pytest.raises(ValueError, match="could not be read"):
+        backfill.locked_version("langfuse")

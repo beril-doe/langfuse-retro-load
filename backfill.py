@@ -79,9 +79,14 @@ def locked_version(package: str) -> str | None:
     (Copilot reviews of https://github.com/beril-doe/langfuse-retro-load/pull/54).
     """
     path = HERE / "uv.lock"
-    # A dangling symlink is a broken lock, not a missing one, so it must not fall back.
-    if not path.exists() and not path.is_symlink():
+    # Only a lock that is not there at all falls back. A dangling symlink or one that
+    # cannot be inspected is a broken lock (Copilot reviews of the same pull request).
+    try:
+        path.lstat()
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise ValueError(f"{path} could not be read ({exc})") from exc
     try:
         import tomllib
     except ImportError as exc:
