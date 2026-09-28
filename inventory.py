@@ -260,6 +260,12 @@ def _rows_from(found: list[redaction.Located], subject: str, kind: str,
     ]
 
 
+#: gitleaks' default rules plus an allowlist for public identifiers it mistakes for keys, such
+#: as BioSample accessions in `WHERE accession = 'SAMN...'`. Passed explicitly: gitleaks scans a
+#: single transcript here, so it would not find the file by looking in the scanned directory.
+GITLEAKS_CONFIG = Path(__file__).resolve().parent / ".gitleaks.toml"
+
+
 def gitleaks_findings(path: Path) -> list[dict] | None:
     """gitleaks' raw findings for one file, or None when gitleaks is not installed.
 
@@ -272,6 +278,7 @@ def gitleaks_findings(path: Path) -> list[dict] | None:
             # --exit-code 2 separates "found something" from "failed": gitleaks exits 1
             # for both by default, and a failure read as no output looks clean.
             ["gitleaks", "detect", "--no-git", "--no-banner", "--exit-code", "2",
+             "--config", str(GITLEAKS_CONFIG),
              "--report-format", "json", "--report-path", "-", "--source", str(path)],
             capture_output=True, text=True, check=False,
         )
