@@ -557,6 +557,25 @@ def test_writing_a_plan_never_touches_an_input_named_like_the_staging_file(tmp_p
     assert not list(tmp_path.glob(".plan.jsonl.*.partial"))
 
 
+
+@pytest.mark.parametrize("fail_at", ["serialise", "rename"])
+def test_a_failed_plan_write_leaves_no_staging_file(monkeypatch, tmp_path, fail_at):
+    path = _transcript(tmp_path, [{"x": 1}])
+    entry = plan.build(path, use_gitleaks=False)
+    out = tmp_path / "plan.jsonl"
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    if fail_at == "serialise":
+        monkeypatch.setattr(plan.json, "dumps", boom)
+    else:
+        monkeypatch.setattr(plan.os, "replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        plan.write(out, [entry])
+    assert not out.exists()
+    assert not list(tmp_path.glob(".plan.jsonl.*.partial"))
+
 def test_a_local_only_plan_does_not_mark_the_load_fully_planned(loader, monkeypatch, tmp_path):
     path = _session(tmp_path, "hi")
     out = tmp_path / "plan.jsonl"

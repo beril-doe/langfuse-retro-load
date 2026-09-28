@@ -280,13 +280,18 @@ def write(out: Path, entries: list[tuple[Header, list[Mask]]]) -> None:
     # existing file such as an input transcript.
     fd, tmp_name = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".partial", dir=out.parent)
     tmp = Path(tmp_name)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        for header, masks in entries:
-            header = replace(header, masks=len(masks))
-            handle.write(json.dumps(asdict(header), sort_keys=True) + "\n")
-            for mask in masks:
-                handle.write(json.dumps(asdict(mask), sort_keys=True) + "\n")
-    os.replace(tmp, out)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for header, masks in entries:
+                header = replace(header, masks=len(masks))
+                handle.write(json.dumps(asdict(header), sort_keys=True) + "\n")
+                for mask in masks:
+                    handle.write(json.dumps(asdict(mask), sort_keys=True) + "\n")
+        os.replace(tmp, out)
+    finally:
+        # After a successful rename this finds nothing; after a failure it removes the
+        # staging file, so repeated failed builds don't leave .partial files behind.
+        tmp.unlink(missing_ok=True)
 
 
 def read(path: Path) -> tuple[dict[str, Header], dict[str, list[Mask]]]:
