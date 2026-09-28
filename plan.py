@@ -62,6 +62,11 @@ class Header:
     #: after its header would otherwise read as a clean one.
     masks: int = -1
     kind: str = "transcript"
+    #: SHA-256 over this transcript's mask rows as written. The loader recomputes it, so a
+    #: plan edited after it was built (a row marked cleared by hand, or offsets changed) is
+    #: refused. It catches edits, not a forger, who can recompute it: the plan is not signed
+    #: (https://github.com/beril-doe/langfuse-retro-load/issues/29).
+    rows_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -273,6 +278,15 @@ def _place_gitleaks(finding: dict, records: list, numbers: dict[int, int], subje
     return placed or [unplaceable]
 
 
+def _mask_line(mask: Mask) -> str:
+    return json.dumps(asdict(mask), sort_keys=True)
+
+
+def rows_digest(masks: list[Mask]) -> str:
+    """The digest a header records for its mask rows, in plan order."""
+    return hashlib.sha256("\n".join(_mask_line(m) for m in masks).encode("utf-8")).hexdigest()
+
+
 def write(out: Path, entries: list[tuple[Header, list[Mask]]]) -> None:
     """Write to a temporary file beside `out` and rename it into place, so a reader sees the
     whole plan or none of it."""
@@ -283,10 +297,10 @@ def write(out: Path, entries: list[tuple[Header, list[Mask]]]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             for header, masks in entries:
-                header = replace(header, masks=len(masks))
+                header = replace(header, masks=len(masks), rows_sha256=rows_digest(masks))
                 handle.write(json.dumps(asdict(header), sort_keys=True) + "\n")
                 for mask in masks:
-                    handle.write(json.dumps(asdict(mask), sort_keys=True) + "\n")
+                    handle.write(_mask_line(mask) + "\n")
         os.replace(tmp, out)
     finally:
         # After a successful rename this finds nothing; after a failure it removes the
@@ -339,6 +353,13 @@ def load(plan_path: Path, transcript: Path, *, data: bytes | None = None) -> tup
     if header.masks != len(rows):
         raise PlanError(f"{plan_path.name} is incomplete for {subject}: its header lists "
                         f"{header.masks} mask(s) and {len(rows)} follow; rebuild the plan")
+    if not header.rows_sha256:
+        raise PlanError(f"{plan_path.name} was built before plans recorded a digest of their "
+                        f"rows, so an edit to {subject}'s rows can't be detected; rebuild the plan")
+    if rows_digest(rows) != header.rows_sha256:
+        raise PlanError(f"{plan_path.name}: {subject}'s mask rows changed after the plan was "
+                        "built. Clear a finding with --clearances when building, not by "
+                        "editing the plan; rebuild the plan")
     unplaceable = [m for m in rows if m.pointer is None and not m.cleared]
     if unplaceable:
         raise PlanError(f"{len(unplaceable)} finding(s) in {subject} could not be pinned to a "
