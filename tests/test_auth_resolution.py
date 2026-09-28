@@ -67,7 +67,7 @@ def test_an_unknown_project_refuses_rather_than_falling_back(env):
     with pytest.raises(SystemExit) as excinfo:
         langfuse_admin.auth_for_project("proj-nonexistent")
     message = str(excinfo.value)
-    assert "no key" in message
+    assert "neither a project id nor a prefix" in message
     assert "ALPHA" in message and "BETA" in message, "say which prefixes do name a project"
     assert "pk-alpha" not in message and "sk-alpha" not in message, "never echo key values"
 
@@ -99,3 +99,131 @@ def test_no_env_at_all_refuses_and_says_so(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         langfuse_admin.auth_for_project("proj-alpha")
     assert "(no .env found)" in str(excinfo.value)
+
+
+
+# --- https://github.com/beril-doe/langfuse-retro-load/issues/21 -------------------------------
+
+@pytest.mark.parametrize("given", ["ALPHA", "alpha", "Alpha"])
+def test_a_prefix_resolves_to_its_project_id(env, given):
+    assert langfuse_admin.resolve_project(given) == ("proj-alpha", "ALPHA")
+    header, _ = langfuse_admin.auth_for_project(*langfuse_admin.resolve_project(given))
+    assert header == expected_header("pk-alpha", "sk-alpha")
+
+
+def test_a_project_id_passes_through_unchanged(env):
+    assert langfuse_admin.resolve_project("proj-beta") == ("proj-beta", None)
+
+
+def test_an_unknown_value_still_refuses_and_names_both_forms(env):
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("GAMMA"))
+    message = str(excinfo.value)
+    assert "--project GAMMA is neither a project id nor a prefix" in message
+    assert "ALPHA" in message and "BETA" in message
+
+
+def test_count_accepts_a_prefix_on_the_command_line(env, monkeypatch):
+    """The id and the chosen prefix both reach the credential lookup, so the keys used are
+    that prefix's own (third Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/53)."""
+    seen = []
+    monkeypatch.setattr(langfuse_admin, "auth_for_project",
+                        lambda project, prefix=None: seen.append((project, prefix)) or ("h", "x"))
+    monkeypatch.setattr(langfuse_admin, "confirm_project", lambda *a: "stop here")
+    class Stop(Exception):
+        pass
+
+    def stop(*a, **k):
+        raise Stop
+
+    for name in ("api", "observation_census"):
+        monkeypatch.setattr(langfuse_admin, name, stop)
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "count", "--project", "beta"])
+    with pytest.raises(Stop):
+        langfuse_admin.main()
+    assert seen == [("proj-beta", "BETA")]
+
+
+
+def twin(monkeypatch, host):
+    """ALPHA2 names proj-alpha too, with its own key and the given host."""
+    env = dict(ENV)
+    env.update({"ALPHA2_LANGFUSE_PROJECT_ID": "proj-alpha",
+                "ALPHA2_LANGFUSE_PUBLIC_KEY": "pk-alpha2", "ALPHA2_LANGFUSE_SECRET_KEY": "sk-alpha2",
+                "ALPHA2_LANGFUSE_BASE_URL": host})
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+
+
+def test_a_chosen_prefix_uses_its_own_keys_when_two_prefixes_share_an_id(monkeypatch):
+    """Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/53."""
+    twin(monkeypatch, "https://elsewhere.example.test")
+    header, host = langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("ALPHA2"))
+    assert header == expected_header("pk-alpha2", "sk-alpha2")
+    assert host == "https://elsewhere.example.test"
+
+
+def test_an_id_shared_by_prefixes_that_disagree_is_refused(monkeypatch):
+    twin(monkeypatch, "https://elsewhere.example.test")
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project("proj-alpha")
+    message = str(excinfo.value)
+    assert "ALPHA, ALPHA2" in message and "Pass the prefix instead" in message
+    assert "pk-alpha" not in message and "sk-alpha" not in message
+
+
+def test_a_prefix_with_an_id_but_no_keys_says_so(monkeypatch):
+    env = dict(ENV)
+    env["GAMMA_LANGFUSE_PROJECT_ID"] = "proj-gamma"
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("GAMMA"))
+    message = str(excinfo.value)
+    assert "GAMMA in /synthetic/.env names project proj-gamma but lacks" in message
+    assert "neither" not in message
+
+
+
+def test_prefixes_that_differ_only_in_case_can_each_be_named(monkeypatch):
+    env = dict(ENV)
+    env.update({"alpha_LANGFUSE_PROJECT_ID": "proj-lower",
+                "alpha_LANGFUSE_PUBLIC_KEY": "pk-lower", "alpha_LANGFUSE_SECRET_KEY": "sk-lower"})
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+    assert langfuse_admin.resolve_project("ALPHA") == ("proj-alpha", "ALPHA")
+    assert langfuse_admin.resolve_project("alpha") == ("proj-lower", "alpha")
+    # Neither spelling matches exactly, and the case-insensitive match is not unique.
+    assert langfuse_admin.resolve_project("Alpha") == ("Alpha", None)
+
+
+
+def test_an_incomplete_prefix_sharing_the_id_is_not_silently_dropped(monkeypatch):
+    """Copilot review of 30f2382 on https://github.com/beril-doe/langfuse-retro-load/pull/53."""
+    env = dict(ENV)
+    env.update({"ALPHA2_LANGFUSE_PROJECT_ID": "proj-alpha",
+                "ALPHA2_LANGFUSE_BASE_URL": "https://elsewhere.example.test"})
+    monkeypatch.setattr(langfuse_admin, "load_env", lambda: (env, Path("/synthetic/.env")))
+    with pytest.raises(SystemExit) as excinfo:
+        langfuse_admin.auth_for_project("proj-alpha")
+    assert "ALPHA2 in /synthetic/.env also names project proj-alpha but lacks" in str(excinfo.value)
+    # Naming the complete prefix still works.
+    header, _ = langfuse_admin.auth_for_project(*langfuse_admin.resolve_project("ALPHA"))
+    assert header == expected_header("pk-alpha", "sk-alpha")
+
+
+def test_delete_passes_the_id_and_prefix_before_any_request(env, monkeypatch):
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def lookup(project, prefix=None):
+        seen.append((project, prefix))
+        raise Stop
+
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lookup)
+    monkeypatch.setattr(langfuse_admin, "api", lambda *a, **k: pytest.fail("reached the network"))
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "delete", "--project",
+                                                     "beta", "--type", "trace", "--all", "--dry-run"])
+    with pytest.raises(Stop):
+        langfuse_admin.main()
+    assert seen == [("proj-beta", "BETA")]

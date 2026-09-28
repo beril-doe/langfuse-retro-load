@@ -104,7 +104,7 @@ def test_no_removed_route_is_read(monkeypatch, capsys):
         return 200, {"data": [], "meta": {"totalItems": 0}}
 
     monkeypatch.setattr(langfuse_admin, "api", answer)
-    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("h", "https://x"))
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p, prefix=None: ("h", "https://x"))
     monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "O / P")
     langfuse_admin.cmd_count(type("A", (), {"project": "p"})())
     removed = {"/api/public/traces", "/api/public/observations", "/api/public/sessions",
@@ -152,7 +152,7 @@ def test_the_earliest_start_is_chosen_by_time_not_by_string(monkeypatch):
 def test_a_dry_run_with_no_timestamps_still_reports(monkeypatch, capsys):
     fake = FakeLangfuse([obs(1, "a", "s", start=None)])
     monkeypatch.setattr(langfuse_admin, "api", fake)
-    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("h", "https://x"))
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p, prefix=None: ("h", "https://x"))
     monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "O / P")
     args = type("A", (), dict(project="p", type="trace", name=None, all=True,
                               dry_run=True, yes=False, record=None))()
@@ -184,7 +184,7 @@ def delete_args(**kw):
 
 def wired(monkeypatch, fake):
     monkeypatch.setattr(langfuse_admin, "api", fake)
-    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p: ("h", "https://x"))
+    monkeypatch.setattr(langfuse_admin, "auth_for_project", lambda p, prefix=None: ("h", "https://x"))
     monkeypatch.setattr(langfuse_admin, "confirm_project", lambda p, h, host: "O / P")
 
 

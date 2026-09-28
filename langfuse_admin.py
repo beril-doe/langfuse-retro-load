@@ -17,6 +17,7 @@ than silently succeed at nothing.
 Usage:
 
     python3 langfuse_admin.py count  --project cmt1obua000uhad0dxp5tyu49
+    python3 langfuse_admin.py count  --project BERIL        # a prefix that names the project in .env
     python3 langfuse_admin.py delete --project <id> --type trace --all --dry-run
     python3 langfuse_admin.py delete --project <id> --type trace --name beril.artifact_snapshot --yes
     python3 langfuse_admin.py delete --project <id> --type trace --tag retro-load --dry-run
@@ -28,8 +29,9 @@ as an idempotency marker that records that work was done but not where it went.
 
 Credentials come from a `.env` beside this script if one exists, otherwise `~/.env`. That
 order matches the repo's documented setup, which puts a `.env` next to `retro_load.py` on
-the pod. The script looks for any `<PREFIX>_LANGFUSE_PROJECT_ID` equal to `--project` and
-uses that prefix's keys. Values are read in-process and never printed.
+the pod. `--project` takes a project id, or a prefix such as `BERIL` that names one
+through `BERIL_LANGFUSE_PROJECT_ID`. The script finds the `<PREFIX>_LANGFUSE_PROJECT_ID`
+equal to that id and uses that prefix's keys. Values are read in-process and never printed.
 
 The host follows the same prefix: `<PREFIX>_LANGFUSE_BASE_URL` or `<PREFIX>_LANGFUSE_HOST`,
 falling back to the unprefixed names and finally to US cloud. An EU or self-hosted project
@@ -151,27 +153,77 @@ def load_env() -> tuple[dict, Path | None]:
     return env, path
 
 
-def auth_for_project(project_id: str) -> tuple[str, str]:
+def resolve_project(value: str) -> tuple[str, str | None]:
+    """(project id, prefix) for what `--project` names. A key prefix such as BERIL resolves
+    through BERIL_LANGFUSE_PROJECT_ID and is kept, so the keys used are that prefix's own;
+    anything else is taken as the id itself, with no prefix.
+
+    A prefix is still an explicit choice of project, so this infers nothing. It exists
+    because the id lives in .env, where copying it onto a command line means reading a
+    value out of that file (https://github.com/beril-doe/langfuse-retro-load/issues/21).
+    """
+    env, _ = load_env()
+    exact = f"{value}_LANGFUSE_PROJECT_ID"
+    # An exact prefix wins, so two prefixes that differ only in case can each be named.
+    matches = [exact] if env.get(exact) else [
+        k for k in env if k.endswith("_LANGFUSE_PROJECT_ID") and env[k]
+        and k.removesuffix("_LANGFUSE_PROJECT_ID").lower() == value.lower()]
+    if len(matches) == 1:
+        return env[matches[0]], matches[0].removesuffix("_LANGFUSE_PROJECT_ID")
+    return value, None
+
+
+def auth_for_project(project_id: str, prefix: str | None = None) -> tuple[str, str]:
     """Find the key whose PROJECT_ID matches, and the host that goes with it.
 
-    Never falls back to "the only key present". Returns (auth header, host).
+    With `prefix`, only that prefix's keys are used. Without one, every prefix naming the
+    project must agree on key and host, or this refuses rather than pick one. Never falls
+    back to "the only key present". Returns (auth header, host).
     """
     env, source = load_env()
     prefixes = sorted({k.split("_LANGFUSE_")[0] for k in env if "_LANGFUSE_" in k})
-    for prefix in prefixes:
-        if env.get(f"{prefix}_LANGFUSE_PROJECT_ID") != project_id:
-            continue
-        public = env.get(f"{prefix}_LANGFUSE_PUBLIC_KEY")
-        secret = env.get(f"{prefix}_LANGFUSE_SECRET_KEY")
+    naming = [p for p in prefixes if env.get(f"{p}_LANGFUSE_PROJECT_ID") == project_id
+              and (prefix is None or p == prefix)]
+    resolved = {}
+    for p in naming:
+        public = env.get(f"{p}_LANGFUSE_PUBLIC_KEY")
+        secret = env.get(f"{p}_LANGFUSE_SECRET_KEY")
         if public and secret:
-            host = (env.get(f"{prefix}_LANGFUSE_BASE_URL") or env.get(f"{prefix}_LANGFUSE_HOST")
+            host = (env.get(f"{p}_LANGFUSE_BASE_URL") or env.get(f"{p}_LANGFUSE_HOST")
                     or env.get("LANGFUSE_BASE_URL") or env.get("LANGFUSE_HOST") or DEFAULT_HOST)
             header = "Basic " + base64.b64encode(f"{public}:{secret}".encode()).decode()
-            return header, host.rstrip("/")
+            resolved[p] = (header, host.rstrip("/"))
+    incomplete = [p for p in naming if p not in resolved]
+    if resolved and incomplete:
+        # An incomplete prefix naming the same id may point at another host, so "every
+        # prefix agrees" cannot be checked. Refuse rather than drop it (Copilot review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/53).
+        raise SystemExit(
+            f"{', '.join(incomplete)} in {source} also names project {project_id} but lacks "
+            f"{incomplete[0]}_LANGFUSE_PUBLIC_KEY or {incomplete[0]}_LANGFUSE_SECRET_KEY, so "
+            "it cannot be checked against the others. Pass the prefix instead, e.g. "
+            f"--project {next(iter(resolved))}, or complete or remove {incomplete[0]}.")
+    if len(set(resolved.values())) == 1:
+        return next(iter(resolved.values()))
+    if resolved:
+        # Two prefixes name this project with different keys or hosts. Picking one would
+        # decide the destination for the operator (Copilot review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/53).
+        raise SystemExit(
+            f"prefixes {', '.join(resolved)} in {source} all name project {project_id}, with "
+            "different keys or hosts. Pass the prefix instead, e.g. "
+            f"--project {next(iter(resolved))}, so the choice is yours.")
+    if naming:
+        raise SystemExit(
+            f"{', '.join(naming)} in {source} names project {project_id} but lacks "
+            f"{naming[0]}_LANGFUSE_PUBLIC_KEY or {naming[0]}_LANGFUSE_SECRET_KEY. "
+            "Add the project key pair for it.")
     known = [p for p in prefixes if env.get(f"{p}_LANGFUSE_PROJECT_ID")]
     raise SystemExit(
-        f"no key in {source or '(no .env found)'} names project {project_id}.\n"
-        f"prefixes that name a project: {', '.join(known) or '(none)'}\n"
+        f"--project {project_id} is neither a project id nor a prefix in "
+        f"{source or '(no .env found)'}.\n"
+        "--project takes a project id, or a prefix that names one: "
+        f"{', '.join(known) or '(none in that file)'}\n"
         "count and delete need a PROJECT key for that project specifically. Add\n"
         "<PREFIX>_LANGFUSE_PROJECT_ID, _PUBLIC_KEY and _SECRET_KEY for it. An\n"
         "organization key does not help here; it is only used by `projects`."
@@ -371,7 +423,7 @@ def confirm_project(project_id: str, header: str, host: str) -> str:
 
 
 def cmd_count(args) -> int:
-    header, host = auth_for_project(args.project)
+    header, host = auth_for_project(args.project, getattr(args, "project_prefix", None))
     where = confirm_project(args.project, header, host)
     print(f"{where}  ({args.project})  at {host}\n")
     print(f"{'object':<20}{'count':>10}  {'note'}")
@@ -465,7 +517,7 @@ def cmd_delete(args) -> int:
               "or --all to mean every trace",
               file=sys.stderr)
         return 2
-    header, host = auth_for_project(args.project)
+    header, host = auth_for_project(args.project, getattr(args, "project_prefix", None))
     where = confirm_project(args.project, header, host)
 
     # Filter server-side, so a narrow deletion does not page the whole project.
@@ -629,6 +681,8 @@ def main() -> int:
     p.set_defaults(func=cmd_projects)
 
     args = ap.parse_args()
+    if getattr(args, "project", None) is not None:
+        args.project, args.project_prefix = resolve_project(args.project)
     return args.func(args)
 
 
