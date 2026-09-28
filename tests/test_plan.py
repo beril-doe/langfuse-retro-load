@@ -696,3 +696,49 @@ def test_reveal_rejects_turn_with_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan",
                                       str(tmp_path / "p.jsonl"), "--turn", "1"])
     assert reveal.main() == 2
+
+
+# --- https://github.com/beril-doe/langfuse-retro-load/issues/29 -------------------------------
+
+def _planned(tmp_path):
+    path = _transcript(tmp_path, [{"message": {"content": "token=" + FAKE}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    return path, out
+
+
+def _edit_mask_row(out, change):
+    lines = out.read_text().splitlines()
+    for i, line in enumerate(lines):
+        row = json.loads(line)
+        if row["kind"] == "mask":
+            change(row)
+            lines[i] = json.dumps(row, sort_keys=True)
+            break
+    out.write_text("\n".join(lines) + "\n")
+
+
+def test_an_unedited_plan_loads(tmp_path):
+    path, out = _planned(tmp_path)
+    assert len(plan.for_transcript(out, path)) == 1
+
+
+@pytest.mark.parametrize("change", [
+    lambda row: row.update(cleared=True),        # clearing by hand instead of --clearances
+    lambda row: row.update(end=row["end"] - 4),  # shrinking the span so part of it is sent
+])
+def test_a_mask_row_edited_after_building_is_refused(tmp_path, change):
+    path, out = _planned(tmp_path)
+    _edit_mask_row(out, change)
+    with pytest.raises(plan.PlanError, match="changed after the plan was built"):
+        plan.for_transcript(out, path)
+
+
+def test_a_plan_from_before_row_digests_is_refused(tmp_path):
+    path, out = _planned(tmp_path)
+    lines = [json.loads(line) for line in out.read_text().splitlines()]
+    for row in lines:
+        row.pop("rows_sha256", None)
+    out.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in lines))
+    with pytest.raises(plan.PlanError, match="before plans recorded a digest"):
+        plan.for_transcript(out, path)

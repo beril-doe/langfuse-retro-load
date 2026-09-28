@@ -186,10 +186,12 @@ A real load without `--plan` is refused. `--without-plan` loads with the local p
 and says so; it is for tests, not backfill. A plan built with `--no-gitleaks`
 also needs explicit `--allow-plan-without-gitleaks` at load time.
 
-The transcript hash and mask count check source consistency and truncation;
-they do not prove that a person reviewed the plan or that its mask rows have
-not been edited since review. That remaining contract is tracked in
-[issue #29](https://github.com/beril-doe/langfuse-retro-load/issues/29).
+The transcript hash and mask count check source consistency and truncation. Each
+transcript's header also records a digest of its mask rows, and the loader refuses a
+plan whose rows changed after it was built, so clear a finding with `--clearances` when
+building, never by editing the plan. The digest catches edits, not forgery: the plan is
+not signed, and nothing records that a person reviewed it. That remaining question is
+tracked in https://github.com/beril-doe/langfuse-retro-load/issues/29.
 
 ## Not sending a session twice
 
