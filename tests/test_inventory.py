@@ -364,6 +364,7 @@ def test_gitleaks_runs_with_the_repo_config(monkeypatch, tmp_path):
     assert inventory.GITLEAKS_CONFIG.is_file()
 
 
+@pytest.mark.real_gitleaks_version
 @pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
 def test_biosample_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
     """A yguo7829 workshop session's SQL `WHERE accession = 'SAMN12345678'` was masked as a
@@ -378,3 +379,18 @@ def test_biosample_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
     assert not secrets & {"SAMN12345678", "SAMEA7654321", "SAMD00012345"}
     assert key in secrets
     assert any(s.startswith("SAMN12345678x9") for s in secrets), "anchored: a longer value is still a key"
+
+
+
+@pytest.mark.real_gitleaks_version
+@pytest.mark.parametrize("version", [(8, 19, 9), None])
+def test_every_scan_refuses_an_old_gitleaks(monkeypatch, tmp_path, version):
+    """Review of https://github.com/beril-doe/langfuse-retro-load/pull/57: the version check
+    lived only in backfill.py, so `plan.py build` could run with an old gitleaks."""
+    monkeypatch.setattr(inventory.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr=""))
+    monkeypatch.setattr(inventory, "gitleaks_version", lambda: version)
+    f = tmp_path / "t.jsonl"
+    f.write_text("{}\n")
+    with pytest.raises(inventory.GitleaksFailed, match="8.20.0 or later"):
+        inventory.gitleaks_findings(f)

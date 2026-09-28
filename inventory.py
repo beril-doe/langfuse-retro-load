@@ -53,6 +53,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import subprocess
@@ -285,6 +286,22 @@ def gitleaks_version() -> tuple[int, ...] | None:
     return tuple(int(x) for x in match.groups()) if match else None
 
 
+@functools.lru_cache(maxsize=1)
+def _gitleaks_too_old() -> str | None:
+    """Why the installed gitleaks can't be used, or None when it can. Checked once per run.
+
+    Here rather than only in backfill.py's setup check, so `plan.py build` and
+    `artifacts.py` refuse an old gitleaks too. gitleaks's own `minVersion` config key only
+    logs a warning (checked with 8.30.1), so it can't enforce this."""
+    have = gitleaks_version()
+    if have is not None and have >= MIN_GITLEAKS:
+        return None
+    want = ".".join(map(str, MIN_GITLEAKS))
+    shown = ".".join(map(str, have)) if have else "an unreadable version"
+    return (f"gitleaks is {shown}; {want} or later is needed to apply {GITLEAKS_CONFIG.name}'s "
+            "allowlist")
+
+
 def gitleaks_findings(path: Path) -> list[dict] | None:
     """gitleaks' raw findings for one file, or None when gitleaks is not installed.
 
@@ -303,6 +320,9 @@ def gitleaks_findings(path: Path) -> list[dict] | None:
         )
     except FileNotFoundError:
         return None
+    too_old = _gitleaks_too_old()
+    if too_old:
+        raise GitleaksFailed(f"{too_old}; findings for {path.name} are missing, not empty")
     if result.returncode not in (0, 2):
         raise GitleaksFailed(f"gitleaks exited {result.returncode} on {path.name}; "
                              f"its findings for this file are missing, not empty")
