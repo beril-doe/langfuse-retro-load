@@ -69,6 +69,42 @@ def find_gitleaks() -> str | None:
     return None
 
 
+def locked_version(package: str) -> str | None:
+    """The version uv.lock pins for `package`, or None when there is no uv.lock at all.
+
+    Anything else that stops the pin being read raises ValueError, so the caller refuses
+    rather than falling back to a looser check: a lock that cannot be read or parsed, a
+    Python without tomllib (below 3.11, which pyproject.toml excludes), or no single
+    non-empty version for `package`
+    (Copilot reviews of https://github.com/beril-doe/langfuse-retro-load/pull/54).
+    """
+    path = HERE / "uv.lock"
+    # Only a lock that is not there at all falls back. A dangling symlink or one that
+    # cannot be inspected is a broken lock (Copilot reviews of the same pull request).
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"{path} could not be read ({exc})") from exc
+    try:
+        import tomllib
+    except ImportError as exc:
+        raise ValueError(f"this Python ({sys.version.split()[0]}) has no tomllib to read "
+                         f"{path}; use {HERE / '.venv/bin/python'}") from exc
+    try:
+        lock = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # TOMLDecodeError and UnicodeDecodeError are ValueErrors
+        raise ValueError(f"{path} could not be read as TOML ({exc})") from exc
+    packages = lock.get("package")
+    versions = ([entry.get("version") for entry in packages
+                 if isinstance(entry, dict) and entry.get("name") == package]
+                if isinstance(packages, list) else [])
+    if len(versions) != 1 or not isinstance(versions[0], str) or not versions[0]:
+        raise ValueError(f"{path} has no single version for {package}")
+    return versions[0]
+
+
 def setup_problems(skip_git: bool = False) -> list[str]:
     """Everything that would make a load fail or send the wrong thing, with its fix."""
     problems = []
@@ -92,14 +128,28 @@ def setup_problems(skip_git: bool = False) -> list[str]:
         version = getattr(langfuse, "__version__", "")
     except ImportError:
         version = None
+    lock_ok = True
+    try:
+        locked = locked_version("langfuse")
+    except ValueError as exc:
+        lock_ok, locked = False, None
+        problems.append(f"{exc}, so the exact langfuse pin cannot be checked. Fix: "
+                        f"git -C {HERE} checkout origin/main -- uv.lock")
+    # --locked needs a lock; only when there is none at all is a plain sync the fix. A
+    # broken lock is restored first (the problem above says how), then synced --locked.
+    sync = f"cd {HERE} && uv sync" + (" --locked" if locked or not lock_ok else "")
     if version is None:
-        problems.append(f"this Python has no langfuse package. Fix: run with "
-                        f"{HERE / '.venv/bin/python'}, or create it with "
-                        f"'uv sync' in {HERE}")
-    elif not version.startswith("4."):
-        # The vendored hook reaches into SDK 4.x internals to backdate spans.
+        problems.append(f"this Python has no langfuse package. Fix: {sync}, then run with "
+                        f"{HERE / '.venv/bin/python'}")
+    elif locked and version != locked:
+        # The vendored hook reaches into private SDK attributes to backdate spans, and a
+        # renamed one makes it record nothing without raising, so the pin is exact
+        # (https://github.com/beril-doe/langfuse-retro-load/issues/15).
+        problems.append(f"this Python has langfuse {version or '(unknown version)'}, and "
+                        f"uv.lock pins {locked}. Fix: {sync}")
+    elif lock_ok and not locked and not version.startswith("4."):
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
-                        f"loader needs 4.x. Fix: run with {HERE / '.venv/bin/python'}")
+                        f"loader needs 4.x. Fix: {sync}")
     if find_gitleaks() is None:
         problems.append("gitleaks is not installed, and the redaction plan needs it. Fix: "
                         "install gitleaks 8.x from https://github.com/gitleaks/gitleaks/releases "

@@ -189,10 +189,51 @@ def test_a_failed_fetch_is_a_setup_problem(monkeypatch):
     assert any("could not fetch origin" in p for p in backfill.setup_problems())
 
 
-def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch):
+def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     import langfuse
     monkeypatch.setattr(langfuse, "__version__", "5.0.0", raising=False)
-    assert any("needs 4.x" in p for p in backfill.setup_problems(skip_git=True))
+    monkeypatch.setattr(backfill, "HERE", tmp_path)  # no uv.lock here
+    problems = [p for p in backfill.setup_problems(skip_git=True) if "needs 4.x" in p]
+    assert problems and "--locked" not in problems[0], "--locked cannot work without a lock"
+
+
+@pytest.mark.parametrize("content", [
+    b"\xff\xfe not utf-8",
+    b'version = 1\n[[package]]\nname = "other"\n',
+    b'version = 1\n[[package]]\nname = "langfuse"\nversion = "4.15.2"\n[broken\n',
+    b"version = 1\npackage = 1\n",
+    b'version = 1\n[[package]]\nname = "langfuse"\nversion = ""\n',
+    b'version = 1\n[[package]]\nname = "langfuse"\nversion = "1"\n[[package]]\nname = "langfuse"\nversion = "2"\n',
+])
+def test_an_unreadable_or_incomplete_lock_is_a_setup_problem(monkeypatch, tmp_path, content):
+    """Fail closed: only a missing lock uses the 4.x fallback (second Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/54)."""
+    (tmp_path / "uv.lock").write_bytes(content)
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    monkeypatch.setattr(backfill, "find_gitleaks", lambda: None)
+    problems = backfill.setup_problems(skip_git=True)
+    assert any("exact langfuse pin cannot be checked" in p for p in problems)
+    assert any("gitleaks is not installed" in p for p in problems), "later checks still run"
+
+
+def test_the_repo_lock_pins_langfuse():
+    assert backfill.locked_version("langfuse") is not None
+
+
+def test_a_langfuse_other_than_the_locked_one_is_a_setup_problem(monkeypatch):
+    """The pod's .venv had langfuse 4.15.4 against a lock of 4.15.2 on 2026-09-28
+    (https://github.com/beril-doe/langfuse-retro-load/issues/15)."""
+    import langfuse
+    locked = backfill.locked_version("langfuse")
+    monkeypatch.setattr(langfuse, "__version__", locked + ".post1", raising=False)
+    problems = backfill.setup_problems(skip_git=True)
+    assert any(f"uv.lock pins {locked}" in p and "uv sync --locked" in p for p in problems)
+
+
+def test_the_locked_langfuse_is_not_a_setup_problem(monkeypatch):
+    import langfuse
+    monkeypatch.setattr(langfuse, "__version__", backfill.locked_version("langfuse"), raising=False)
+    assert not any("langfuse" in p for p in backfill.setup_problems(skip_git=True))
 
 
 def test_every_session_gets_a_review_command(corpus, monkeypatch, capsys):
@@ -326,3 +367,51 @@ def test_a_gitleaks_failure_is_a_clean_error(corpus, monkeypatch, error):
         run(monkeypatch, corpus)
     assert "could not build the redaction plan" in str(exc.value.code)
     assert not list((corpus.parent / "plans").glob("*.jsonl")), "a plan was written anyway"
+
+
+
+def test_a_python_without_tomllib_refuses_rather_than_guessing(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_tomllib(name, *a, **k):
+        if name == "tomllib":
+            raise ImportError("no tomllib")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_tomllib)
+    with pytest.raises(ValueError, match="has no tomllib"):
+        backfill.locked_version("langfuse")
+
+
+
+def test_a_dangling_lock_symlink_is_broken_not_missing(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").symlink_to(tmp_path / "nowhere.lock")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    with pytest.raises(ValueError, match="could not be read"):
+        backfill.locked_version("langfuse")
+
+
+def test_a_broken_lock_never_suggests_an_unlocked_sync(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").write_bytes(b"[broken\n")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    monkeypatch.setitem(sys.modules, "langfuse", None)  # import langfuse now fails
+    problems = backfill.setup_problems(skip_git=True)
+    fixes = [p for p in problems if "no langfuse package" in p]
+    assert fixes and "uv sync --locked" in fixes[0]
+
+
+
+def test_a_lock_that_cannot_be_inspected_is_broken_not_missing(monkeypatch, tmp_path):
+    (tmp_path / "uv.lock").write_text("")
+    monkeypatch.setattr(backfill, "HERE", tmp_path)
+    real_lstat = backfill.Path.lstat
+
+    def denied(self):
+        if self.name == "uv.lock":
+            raise PermissionError(13, "Permission denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(backfill.Path, "lstat", denied)
+    with pytest.raises(ValueError, match="could not be read"):
+        backfill.locked_version("langfuse")
