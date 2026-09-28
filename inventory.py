@@ -53,6 +53,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import subprocess
@@ -260,6 +261,47 @@ def _rows_from(found: list[redaction.Located], subject: str, kind: str,
     ]
 
 
+#: gitleaks' default rules plus an allowlist for public identifiers it mistakes for keys, such
+#: as BioSample accessions in `WHERE accession = 'SAMN...'`. Passed explicitly: gitleaks scans a
+#: single transcript here, so it would not find the file by looking in the scanned directory.
+GITLEAKS_CONFIG = Path(__file__).resolve().parent / ".gitleaks.toml"
+
+
+#: The oldest gitleaks that applies GITLEAKS_CONFIG's allowlist to the value it matched:
+#: `regexTarget` arrived in 8.16.0 and was fixed for `[extend]` configs in 8.20.0
+#: (https://github.com/gitleaks/gitleaks/releases/tag/v8.20.0). An older one ignores it and
+#: masks BioSample accessions again (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/57).
+MIN_GITLEAKS = (8, 20, 0)
+
+
+def gitleaks_version() -> tuple[int, ...] | None:
+    """The installed gitleaks version, such as (8, 30, 1), or None if it can't be read."""
+    try:
+        out = subprocess.run(["gitleaks", "version"], capture_output=True, text=True,
+                             check=False).stdout
+    except OSError:
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return tuple(int(x) for x in match.groups()) if match else None
+
+
+@functools.lru_cache(maxsize=1)
+def _gitleaks_too_old() -> str | None:
+    """Why the installed gitleaks can't be used, or None when it can. Checked once per run.
+
+    Here rather than only in backfill.py's setup check, so `plan.py build` and
+    `artifacts.py` refuse an old gitleaks too. gitleaks's own `minVersion` config key only
+    logs a warning (checked with 8.30.1), so it can't enforce this."""
+    have = gitleaks_version()
+    if have is not None and have >= MIN_GITLEAKS:
+        return None
+    want = ".".join(map(str, MIN_GITLEAKS))
+    shown = ".".join(map(str, have)) if have else "an unreadable version"
+    return (f"gitleaks is {shown}; {want} or later is needed to apply {GITLEAKS_CONFIG.name}'s "
+            "allowlist")
+
+
 def gitleaks_findings(path: Path) -> list[dict] | None:
     """gitleaks' raw findings for one file, or None when gitleaks is not installed.
 
@@ -272,11 +314,15 @@ def gitleaks_findings(path: Path) -> list[dict] | None:
             # --exit-code 2 separates "found something" from "failed": gitleaks exits 1
             # for both by default, and a failure read as no output looks clean.
             ["gitleaks", "detect", "--no-git", "--no-banner", "--exit-code", "2",
+             "--config", str(GITLEAKS_CONFIG),
              "--report-format", "json", "--report-path", "-", "--source", str(path)],
             capture_output=True, text=True, check=False,
         )
     except FileNotFoundError:
         return None
+    too_old = _gitleaks_too_old()
+    if too_old:
+        raise GitleaksFailed(f"{too_old}; findings for {path.name} are missing, not empty")
     if result.returncode not in (0, 2):
         raise GitleaksFailed(f"gitleaks exited {result.returncode} on {path.name}; "
                              f"its findings for this file are missing, not empty")

@@ -45,6 +45,7 @@ def corpus(tmp_path, monkeypatch):
     # here runs everywhere; the setup test below replaces this with "not installed".
     monkeypatch.setattr(backfill.shutil, "which", lambda name: f"/usr/local/bin/{name}")
     monkeypatch.setattr(inventory, "gitleaks_findings", lambda path: [])
+    monkeypatch.setattr(inventory, "gitleaks_version", lambda: inventory.MIN_GITLEAKS)
     return people
 
 
@@ -415,3 +416,13 @@ def test_a_lock_that_cannot_be_inspected_is_broken_not_missing(monkeypatch, tmp_
     monkeypatch.setattr(backfill.Path, "lstat", denied)
     with pytest.raises(ValueError, match="could not be read"):
         backfill.locked_version("langfuse")
+
+
+
+@pytest.mark.parametrize("version, ok", [((8, 19, 9), False), (None, False), ((8, 20, 0), True), ((8, 30, 1), True)])
+def test_gitleaks_must_be_new_enough_for_the_allowlist(monkeypatch, version, ok):
+    import inventory
+    monkeypatch.setattr(backfill, "find_gitleaks", lambda: "/usr/local/bin/gitleaks")
+    monkeypatch.setattr(inventory, "gitleaks_version", lambda: version)
+    problems = [p for p in backfill.setup_problems(skip_git=True) if "gitleaks is" in p]
+    assert (not problems) is ok

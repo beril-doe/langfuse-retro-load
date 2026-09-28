@@ -20,7 +20,7 @@ On the pod, from this repository:
 `<person>` is a `person` in the roster: `people.json` by default, or a private roster
 on the pod passed with `--people <file>`, which is where consenters belong (see "Adding a
 person" below). The preview says what to fix if the setup
-is not ready: an old branch, a `langfuse` other than the version `uv.lock` pins, or missing `gitleaks`.
+is not ready: an old branch, a `langfuse` other than the version `uv.lock` pins, or a missing `gitleaks` or one older than 8.20.0.
 Otherwise it writes a redaction plan under `plans/`, prints what would be sent, and
 prints the exact load command. Review the plan with `reveal.py --plan PLAN --transcript
 FILE`, then run that command; `--load` uses the reviewed plan and never builds a new

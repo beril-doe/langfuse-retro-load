@@ -1,0 +1,12 @@
+# gitleaks configuration for the redaction plan. inventory.gitleaks_findings() passes it with
+# --config, because gitleaks scans single transcript files here, not a repository.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public identifiers that gitleaks' generic-api-key rule mistakes for keys"
+# INSDC BioSample accessions (NCBI SAMN, EBI SAMEA, DDBJ SAMD). In SQL such as
+# `WHERE accession = 'SAMN12345678'` the "access" in "accession" reads as a key name.
+# Anchored, so only a value that is entirely an accession is allowed.
+regexTarget = "secret"
+regexes = ['''^SAM(N|EA|D)[0-9]{5,12}$''']

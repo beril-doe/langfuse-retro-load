@@ -6,6 +6,7 @@ on purpose, because a test for a credential pattern has to contain one; neither 
 value and neither came from a real system.
 """
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -345,6 +346,54 @@ def test_a_value_is_scanned_once(monkeypatch):
         redaction.redact_value("sk-ant-api03-" + "A" * 40 + " from jane.doe@gmail.com",
                                key_name=key_name, categories=frozenset({redaction.PERSON}), key=KEY)
         assert len(calls) == 1
+
+
+def test_gitleaks_runs_with_the_repo_config(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(inventory.subprocess, "run", fake_run)
+    f = tmp_path / "t.jsonl"
+    f.write_text("{}\n")
+    assert inventory.gitleaks_findings(f) == []
+    cmd = seen[0]
+    assert cmd[cmd.index("--config") + 1] == str(inventory.GITLEAKS_CONFIG)
+    assert inventory.GITLEAKS_CONFIG.is_file()
+
+
+@pytest.mark.real_gitleaks_version
+@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
+def test_biosample_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
+    """A yguo7829 workshop session's SQL `WHERE accession = 'SAMN12345678'` was masked as a
+    generic API key, hiding the BioSample IDs the session is about (2026-09-28)."""
+    key = "x8Kq2Lm9" + "Pz4Rt7Vw1Yb5Nc3Hd6Jf0Gs"  # split so this file's own scan stays clean
+    f = tmp_path / "t.txt"
+    f.write_text("WHERE accession = 'SAMN12345678'\n"
+                 "WHERE accession IN ('SAMEA7654321', 'SAMD00012345')\n"
+                 f"api_key = '{key}'\n"
+                 "access_key = 'SAMN12345678" + "x9Kq2Lm9Pz4Rt7'\n")
+    secrets = {x["Secret"] for x in inventory.gitleaks_findings(f)}
+    assert not secrets & {"SAMN12345678", "SAMEA7654321", "SAMD00012345"}
+    assert key in secrets
+    assert any(s.startswith("SAMN12345678x9") for s in secrets), "anchored: a longer value is still a key"
+
+
+
+@pytest.mark.real_gitleaks_version
+@pytest.mark.parametrize("version", [(8, 19, 9), None])
+def test_every_scan_refuses_an_old_gitleaks(monkeypatch, tmp_path, version):
+    """Review of https://github.com/beril-doe/langfuse-retro-load/pull/57: the version check
+    lived only in backfill.py, so `plan.py build` could run with an old gitleaks."""
+    monkeypatch.setattr(inventory.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr=""))
+    monkeypatch.setattr(inventory, "gitleaks_version", lambda: version)
+    f = tmp_path / "t.jsonl"
+    f.write_text("{}\n")
+    with pytest.raises(inventory.GitleaksFailed, match="8.20.0 or later"):
+        inventory.gitleaks_findings(f)
 
 
 @pytest.mark.parametrize("side", ["after", "before"])
