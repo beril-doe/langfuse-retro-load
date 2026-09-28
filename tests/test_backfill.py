@@ -197,10 +197,16 @@ def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     assert problems and "--locked" not in problems[0], "--locked cannot work without a lock"
 
 
-def test_an_unreadable_lock_falls_back_instead_of_crashing(monkeypatch, tmp_path):
-    (tmp_path / "uv.lock").write_bytes(b"\xff\xfe not utf-8")
+@pytest.mark.parametrize("content", [b"\xff\xfe not utf-8", b'version = 1\n[[package]]\nname = "other"\n'])
+def test_an_unreadable_or_incomplete_lock_is_a_setup_problem(monkeypatch, tmp_path, content):
+    """Fail closed: only a missing lock uses the 4.x fallback (second Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/54)."""
+    (tmp_path / "uv.lock").write_bytes(content)
     monkeypatch.setattr(backfill, "HERE", tmp_path)
-    assert backfill.locked_version("langfuse") is None
+    monkeypatch.setattr(backfill, "find_gitleaks", lambda: None)
+    problems = backfill.setup_problems(skip_git=True)
+    assert any("exact langfuse pin cannot be checked" in p for p in problems)
+    assert any("gitleaks is not installed" in p for p in problems), "later checks still run"
 
 
 def test_the_repo_lock_pins_langfuse():

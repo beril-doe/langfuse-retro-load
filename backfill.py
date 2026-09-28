@@ -71,16 +71,24 @@ def find_gitleaks() -> str | None:
 
 
 def locked_version(package: str) -> str | None:
-    """The version uv.lock pins for `package`, or None when there is no lock or no entry.
+    """The version uv.lock pins for `package`, or None when there is no uv.lock at all.
 
+    A lock that exists but cannot be read, or has no entry for `package`, raises ValueError:
+    falling back to a looser check there would turn off the exact pin without saying so
+    (second Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/54).
     Read with a pattern rather than tomllib, which Python 3.10 lacks.
     """
-    try:
-        text = (HERE / "uv.lock").read_text(encoding="utf-8")
-    except (OSError, ValueError):  # ValueError covers a lock that is not valid UTF-8
+    path = HERE / "uv.lock"
+    if not path.exists():
         return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path} could not be read ({exc})") from exc
     match = re.search(rf'^name = "{re.escape(package)}"\nversion = "([^"]+)"', text, re.M)
-    return match.group(1) if match else None
+    if not match:
+        raise ValueError(f"{path} has no version for {package}")
+    return match.group(1)
 
 
 def setup_problems(skip_git: bool = False) -> list[str]:
@@ -106,7 +114,13 @@ def setup_problems(skip_git: bool = False) -> list[str]:
         version = getattr(langfuse, "__version__", "")
     except ImportError:
         version = None
-    locked = locked_version("langfuse")
+    lock_ok = True
+    try:
+        locked = locked_version("langfuse")
+    except ValueError as exc:
+        lock_ok, locked = False, None
+        problems.append(f"{exc}, so the exact langfuse pin cannot be checked. Fix: "
+                        f"git -C {HERE} checkout origin/main -- uv.lock")
     # --locked needs a lock; without one, a plain sync is the only fix that can succeed.
     sync = f"cd {HERE} && uv sync" + (" --locked" if locked else "")
     if version is None:
@@ -118,7 +132,7 @@ def setup_problems(skip_git: bool = False) -> list[str]:
         # (https://github.com/beril-doe/langfuse-retro-load/issues/15).
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and "
                         f"uv.lock pins {locked}. Fix: {sync}")
-    elif not locked and not version.startswith("4."):
+    elif lock_ok and not locked and not version.startswith("4."):
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
                         f"loader needs 4.x. Fix: {sync}")
     if find_gitleaks() is None:
