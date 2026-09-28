@@ -189,10 +189,31 @@ def test_a_failed_fetch_is_a_setup_problem(monkeypatch):
     assert any("could not fetch origin" in p for p in backfill.setup_problems())
 
 
-def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch):
+def test_a_langfuse_outside_4x_is_a_setup_problem(monkeypatch, tmp_path):
     import langfuse
     monkeypatch.setattr(langfuse, "__version__", "5.0.0", raising=False)
+    monkeypatch.setattr(backfill, "HERE", tmp_path)  # no uv.lock here
     assert any("needs 4.x" in p for p in backfill.setup_problems(skip_git=True))
+
+
+def test_the_repo_lock_pins_langfuse():
+    assert backfill.locked_version("langfuse") is not None
+
+
+def test_a_langfuse_other_than_the_locked_one_is_a_setup_problem(monkeypatch):
+    """The pod's .venv had langfuse 4.15.4 against a lock of 4.15.2 on 2026-09-28
+    (https://github.com/beril-doe/langfuse-retro-load/issues/15)."""
+    import langfuse
+    locked = backfill.locked_version("langfuse")
+    monkeypatch.setattr(langfuse, "__version__", locked + ".post1", raising=False)
+    problems = backfill.setup_problems(skip_git=True)
+    assert any(f"uv.lock pins {locked}" in p and "uv sync --locked" in p for p in problems)
+
+
+def test_the_locked_langfuse_is_not_a_setup_problem(monkeypatch):
+    import langfuse
+    monkeypatch.setattr(langfuse, "__version__", backfill.locked_version("langfuse"), raising=False)
+    assert not any("langfuse" in p for p in backfill.setup_problems(skip_git=True))
 
 
 def test_every_session_gets_a_review_command(corpus, monkeypatch, capsys):

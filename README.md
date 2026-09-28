@@ -94,14 +94,14 @@ forty turns in printed an environment variable.
 
 ```
 # Screen only: no Langfuse calls, writes the inventory and a report
-python3 inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.jsonl
+.venv/bin/python inventory.py --out inv.jsonl --report report.md ~/.claude/projects/*/*.jsonl
 
 # Screen a project snapshot before attaching it as Langfuse media
-python3 inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
+.venv/bin/python inventory.py --out assets.jsonl --asset-root projects/ projects/p1/**/*
 
 # Build and review a plan first (see the next section), then load it. Keep the
 # load inventory separate: the loader would overwrite the preflight inventory.
-python3 retro_load.py --plan plan.jsonl --inventory load-inv.jsonl session.jsonl
+.venv/bin/python retro_load.py --plan plan.jsonl --inventory load-inv.jsonl session.jsonl
 ```
 
 Each row is addressed by session id, record number, and an RFC 6901 JSON
@@ -156,13 +156,13 @@ On the pod:
 
 ```
 # 1. Scan: both detectors, one row per value to mask, no values in the file
-python3 plan.py build --out plan.jsonl [--clearances clearances.jsonl] SESSION.jsonl
+.venv/bin/python plan.py build --out plan.jsonl [--clearances clearances.jsonl] SESSION.jsonl
 
 # 2. Review: every planned mask in context, value hidden unless --show-values in a terminal
-python3 reveal.py --transcript SESSION.jsonl --plan plan.jsonl
+.venv/bin/python reveal.py --transcript SESSION.jsonl --plan plan.jsonl
 
 # 3. Load: applies the plan, then checks for uncleared local findings
-python3 retro_load.py --plan plan.jsonl SESSION.jsonl
+.venv/bin/python retro_load.py --plan plan.jsonl SESSION.jsonl
 ```
 
 Three files, three jobs. The **inventory** (`inventory.py`) is everything a scan found,
@@ -292,17 +292,24 @@ boundary and needs to reach the repository too.
 
 ## Running it
 
-`pyproject.toml` and `uv.lock` describe the intended environment. They are not yet in
-use on the pod, because `uv` is not installed there; see the setup issue in this repo.
-Until that lands, the commands below run against whatever Python the pod provides,
-which is the reproducibility gap the lockfile exists to close.
+`pyproject.toml` and `uv.lock` pin the environment, including an exact langfuse version,
+because the vendored hook uses private SDK attributes and a renamed one makes it record
+nothing without raising. Set it up once, and again whenever `uv.lock` changes:
+
+```bash
+cd ~/langfuse-retro-load && uv sync --locked
+```
+
+`uv` is at `/opt/conda/bin/uv` on the pod (0.8.17, checked 2026-09-28). Run every script
+with `.venv/bin/python`, as below. `backfill.py` refuses to start when the installed
+langfuse differs from the one `uv.lock` pins, and prints the command above as the fix.
 
 ```bash
 # 1. Regenerate the manifest from current state (content-safe, no Langfuse calls)
-python3 build_manifest.py
+.venv/bin/python build_manifest.py
 
 # 2. Sanity check before spending anything for real
-python3 run_manifest.py --dry-run
+.venv/bin/python run_manifest.py --dry-run
 
 # 3. Credentials -- .env next to these scripts, LANGFUSE_PUBLIC_KEY /
 #    LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL (LANGFUSE_HOST is also read), for whichever Langfuse project
@@ -311,8 +318,8 @@ python3 run_manifest.py --dry-run
 
 # 4. The real thing. Backgrounded, since a browser/terminal hiccup shouldn't
 #    kill a run partway through -- it's resumable via the markers either way.
-python3 plan.py build --out plan.jsonl <the manifest's transcripts>   # then review with reveal.py
-nohup python3 run_manifest.py --plan plan.jsonl > full_load_run.txt 2>&1 &
+.venv/bin/python plan.py build --out plan.jsonl <the manifest's transcripts>   # then review with reveal.py
+nohup .venv/bin/python run_manifest.py --plan plan.jsonl > full_load_run.txt 2>&1 &
 
 # 5. Verify independently against Langfuse's own API, not just this
 #    script's own "OK" output. Count the observations carrying your batch tag.
@@ -347,9 +354,7 @@ The key resolver is tested separately, against a synthetic environment rather th
 replaced function, because the guarantee there is that it never falls back to whichever
 key happens to be present. A test that replaced the resolver could not see that change.
 
-Both recipes need `uv`, which is not on the pod yet
-(https://github.com/beril-doe/langfuse-retro-load/issues/15). CI runs them on every
-push regardless.
+Both recipes need `uv`, which the pod has (see "Running it"). CI runs them on every push.
 
 ## Known gaps (tracked as issues, not fixed here)
 

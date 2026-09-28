@@ -24,6 +24,7 @@ import collections
 import datetime
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -69,6 +70,19 @@ def find_gitleaks() -> str | None:
     return None
 
 
+def locked_version(package: str) -> str | None:
+    """The version uv.lock pins for `package`, or None when there is no lock or no entry.
+
+    Read with a pattern rather than tomllib, which Python 3.10 lacks.
+    """
+    try:
+        text = (HERE / "uv.lock").read_text()
+    except OSError:
+        return None
+    match = re.search(rf'^name = "{re.escape(package)}"\nversion = "([^"]+)"', text, re.M)
+    return match.group(1) if match else None
+
+
 def setup_problems(skip_git: bool = False) -> list[str]:
     """Everything that would make a load fail or send the wrong thing, with its fix."""
     problems = []
@@ -92,14 +106,20 @@ def setup_problems(skip_git: bool = False) -> list[str]:
         version = getattr(langfuse, "__version__", "")
     except ImportError:
         version = None
+    locked = locked_version("langfuse")
+    sync = f"cd {HERE} && uv sync --locked"
     if version is None:
-        problems.append(f"this Python has no langfuse package. Fix: run with "
-                        f"{HERE / '.venv/bin/python'}, or create it with "
-                        f"'uv sync' in {HERE}")
-    elif not version.startswith("4."):
-        # The vendored hook reaches into SDK 4.x internals to backdate spans.
+        problems.append(f"this Python has no langfuse package. Fix: {sync}, then run with "
+                        f"{HERE / '.venv/bin/python'}")
+    elif locked and version != locked:
+        # The vendored hook reaches into private SDK attributes to backdate spans, and a
+        # renamed one makes it record nothing without raising, so the pin is exact
+        # (https://github.com/beril-doe/langfuse-retro-load/issues/15).
+        problems.append(f"this Python has langfuse {version or '(unknown version)'}, and "
+                        f"uv.lock pins {locked}. Fix: {sync}")
+    elif not locked and not version.startswith("4."):
         problems.append(f"this Python has langfuse {version or '(unknown version)'}, and the "
-                        f"loader needs 4.x. Fix: run with {HERE / '.venv/bin/python'}")
+                        f"loader needs 4.x. Fix: {sync}")
     if find_gitleaks() is None:
         problems.append("gitleaks is not installed, and the redaction plan needs it. Fix: "
                         "install gitleaks 8.x from https://github.com/gitleaks/gitleaks/releases "
