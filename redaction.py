@@ -219,12 +219,16 @@ _CODE_EXPRESSION_RE = re.compile(
     r"|\[(?:\"[^\"\n]*\"|'[^'\n]*'|\d+|[A-Za-z_]\w*)\])")
 
 
-_LITERAL_RE = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
+#: A backslash escapes the next character, so `"a\\"b"` is one literal, not `"a\\"` and an
+#: unterminated rest. Without that, an escaped quote ended the literal early and left the
+#: rest of the string unchecked (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/51).
+_LITERAL_RE = re.compile(r"\"((?:[^\"\\\n]|\\.)*)\"|'((?:[^'\\\n]|\\.)*)'")
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 #: Where the rest of the line stops being part of the same expression: a comment (`#`,
 #: `//`) or a statement separator (`;`). String literals come first in the alternation, so
 #: a `#` or `;` inside a quoted string does not count.
-_EXPRESSION_STOP_RE = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'|#|//|;")
+_EXPRESSION_STOP_RE = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|#|//|;")
 
 
 def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | None:

@@ -585,3 +585,18 @@ def test_a_hash_or_semicolon_inside_a_joined_string_does_not_stop_the_check():
     found = [line[f.start:f.end] for f in redaction.detect(line)
              if f.category == redaction.SECRET]
     assert found == [secret]
+
+
+
+@pytest.mark.parametrize("literal", [
+    r'"prefix\"#hunter2hunter2"',
+    r"'prefix\'#hunter2hunter2'",
+    r'"prefix\\\";hunter2hunter2"',
+])
+def test_an_escaped_quote_does_not_end_the_joined_string_early(literal):
+    """Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/51: the
+    escaped quote used to end the literal, so `#` looked like a comment and the rest leaked."""
+    line = f'password = get_secret("PASSWORD") + {literal}'
+    masked = "".join(line[f.start:f.end] for f in redaction.detect(line)
+                     if f.category == redaction.SECRET)
+    assert "hunter2hunter2" in masked
