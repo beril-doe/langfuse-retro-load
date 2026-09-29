@@ -105,14 +105,17 @@ deleted.
 The artifact spans from step 8 don't carry the batch tag, so that doesn't remove them. They
 also carry the session ids, and a reload skips any session that Langfuse already holds
 observations for, even with `--force`. So after uploading artifacts, a full redo needs
-their spans removed too. Select them by name:
+their spans removed too. Select them by tags, never by name alone: the live hook uploads
+spans with the same name, but only retro-loaded ones carry `retro-load`.
 
 ```bash
-python3 langfuse_admin.py delete --project beril --type trace --name "BERIL artifacts — <project>" --dry-run
+python3 langfuse_admin.py delete --project beril --type trace --tag retro-load --tag artifacts --tag <project> --dry-run
 ```
 
-Check that the listed sessions and user id are only this person's before deleting: a
-live-hook upload for the same project would match the name too. Then run it with `--yes`
-and `--record <file>`. Finally reload with `--force`, because the load left markers saying
-those sessions were sent. A simpler, tag-scoped undo is part of
+`--tag` repeats and every tag must match, so this lists only retro-loaded artifact spans for
+that BERIL project. Check that the users line shows only this person's ORCID before running
+it with `--yes` and `--record <file>`. Then reload the turns with `backfill.py ... --load
+--force` and the artifacts with `artifacts.py ... --load --force`. Each script keeps its
+own "already sent" markers, so each needs `--force`.
+A simpler, tag-scoped undo is part of
 https://github.com/beril-doe/langfuse-retro-load/issues/62.
