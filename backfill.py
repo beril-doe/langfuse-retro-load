@@ -285,7 +285,17 @@ def write_state(person: str, plan_path: Path, paths: list[Path], command: str) -
     state = {"plan": str(plan_path), "load_command": command, "sessions": sessions}
     target = state_path(person)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(state, indent=2) + "\n")
+    # Staged and renamed, as plan.write() does, so an interrupted write never leaves a
+    # truncated file where the last good preview was (Codex review of
+    # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".partial", dir=target.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
     return sum(1 for s in sessions if s["masks"])
 
 
@@ -306,7 +316,8 @@ def review(person: str) -> int:
     state = json.loads(target.read_text())
     todo = [s for s in state["sessions"] if s["masks"]]
     if not todo:
-        print(f"the latest preview for {person} masks nothing; nothing to review")
+        print(f"the latest preview for {person} masks nothing; nothing to review. To load what "
+              f"was previewed:\n  {state['load_command']}")
         return 0
     for n, session in enumerate(todo, 1):
         print(f"\n=== session {n} of {len(todo)}: {session['subject']} ({session['masks']} mask(s))")

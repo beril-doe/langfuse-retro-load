@@ -594,3 +594,32 @@ def test_an_empty_day_is_refused_not_dropped(script):
     for bad in ("", "2026-5-7"):
         with pytest.raises(argparse.ArgumentTypeError):
             module._day(bad)
+
+
+def test_review_of_a_mask_free_preview_still_prints_the_load_command(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus, "--session", "s-2") == 0
+    capsys.readouterr()
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    assert run(monkeypatch, corpus, "--review") == 0
+    out = capsys.readouterr().out
+    assert "masks nothing" in out and "--load --plan" in out
+
+
+def test_a_failed_state_write_keeps_the_previous_state(corpus, monkeypatch, tmp_path):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    target = backfill.state_path("someone")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{"plan": "old"}\n')
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(backfill.os, "replace", boom)
+    plan_path = tmp_path / "p.jsonl"
+    plan_path.write_text("")
+    with pytest.raises(OSError):
+        backfill.write_state("someone", plan_path, [], "cmd")
+    assert target.read_text() == '{"plan": "old"}\n'
+    assert not list(target.parent.glob(".someone-latest.json.*.partial"))

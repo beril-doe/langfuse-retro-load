@@ -14,16 +14,20 @@ On the pod, from this repository:
 
 ```
 .venv/bin/python backfill.py <person>                       # preview: sends nothing
+.venv/bin/python backfill.py <person> --review              # the preview's masks, with values
 .venv/bin/python backfill.py <person> --load --plan PLAN    # load, with the plan you reviewed
 ```
 
-`<person>` is a `person` in the roster: `people.json` by default, or a private roster
-on the pod passed with `--people <file>`, which is where consenters belong (see "Adding a
-person" below). The preview says what to fix if the setup
+The step-by-step procedure is [docs/backfill-runbook.md](docs/backfill-runbook.md).
+
+`<person>` is a `person` in the roster. The default is the private roster on the pod,
+`~/beril-backfill-roster.json`, when that file exists, which is where consenters belong;
+otherwise it's this repository's `people.json`. `--people <file>` names another (see
+"Adding a person" below). The preview says what to fix if the setup
 is not ready: an old branch, a `langfuse` other than the version `uv.lock` pins, or a missing `gitleaks` or one older than 8.20.0.
 Otherwise it writes a redaction plan under `plans/`, prints what would be sent, and
-prints the exact load command. Review the plan with `reveal.py --plan PLAN --transcript
-FILE`, then run that command; `--load` uses the reviewed plan and never builds a new
+prints the exact load command. Review the plan with `backfill.py <person> --review`, which
+shows each session that has masks, then run that command; `--load` uses the reviewed plan and never builds a new
 one. `--session <id>` limits the run. `--force` loads sessions an earlier load marked
 as sent, and still skips any whose traces are in Langfuse, so delete those first with
 `langfuse_admin.py delete`. Run a long load under `nohup ... > backfill-<person>.log
