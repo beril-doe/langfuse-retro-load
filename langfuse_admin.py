@@ -498,6 +498,13 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def _on_day(timestamp, day: str) -> bool:
+    """Whether a trace timestamp falls on `day` (UTC). An unreadable timestamp counts as not,
+    so --outside-day keeps it in the deletion list and the dry run shows it."""
+    moment = instant(timestamp)
+    return moment is not None and moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d") == day
+
+
 def cmd_delete(args) -> int:
     if args.type in UNDELETABLE_REASON:
         print(f"{args.type}: {UNDELETABLE_REASON[args.type]}", file=sys.stderr)
@@ -536,6 +543,14 @@ def cmd_delete(args) -> int:
         scope = f"tagged {' + '.join(tags)}"
     else:
         targets, scope = [t for t in traces if t.get("name") == args.name], f"matching {args.name!r}"
+    # Narrowing filters, applied after the selector. They can only remove traces from the
+    # target list, never add any.
+    if getattr(args, "user_id", None):
+        targets = [t for t in targets if t.get("userId") == args.user_id]
+        scope += f", user {args.user_id}"
+    if getattr(args, "outside_day", None):
+        targets = [t for t in targets if not _on_day(t.get("timestamp"), args.outside_day)]
+        scope += f", not dated {args.outside_day} (UTC)"
     print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
     print("  (found through their observations; a trace with none is not listed)")
     if not targets:
@@ -671,6 +686,10 @@ def main() -> int:
     selector.add_argument("--all", action="store_true", help="every trace in the project")
     selector.add_argument("--tag", action="append",
                           help="match traces carrying this tag; repeat to require several")
+    d.add_argument("--user-id", help="narrow to traces with this user id, e.g. an ORCID")
+    d.add_argument("--outside-day", metavar="YYYY-MM-DD",
+                   help="narrow to traces NOT dated this day (UTC), e.g. to remove turns "
+                        "from other days than the workshop")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--yes", action="store_true", help="required for a real delete")
     d.add_argument("--record", help="write a manifest of what is deleted to this path")

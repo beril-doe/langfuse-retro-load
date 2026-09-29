@@ -75,6 +75,8 @@ def main() -> int:
                     help="passed to retro_load.py: send sessions the project already holds")
     ap.add_argument("--min-idle-days", type=float, default=None,
                     help="passed to retro_load.py: skip sessions touched more recently than this")
+    ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD",
+                    help="passed to retro_load.py: send only turns dated this day (UTC)")
     ap.add_argument("--batch-tag", default="full-load-2026-08-20",
                      help="tag identifying this run as a batch, so it's filterable/auditable later "
                           "(default matches the 2026-08-20 full load; override for any later run)")
@@ -129,6 +131,8 @@ def main() -> int:
             cmd += ["--plan", str(args.plan)]
         if args.min_idle_days is not None:
             cmd += ["--min-idle-days", str(args.min_idle_days)]
+        if args.only_day:
+            cmd += ["--only-day", args.only_day]
         cmd.append(str(path))
         # check=False: a failed load is collected into `failed` and reported with its
         # own stdout and stderr at the end. Raising here would abandon the rest of the run.

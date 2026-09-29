@@ -308,6 +308,21 @@ def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
     return None
 
 
+def _day(value: str) -> str:
+    """argparse type: a YYYY-MM-DD date, returned as given."""
+    try:
+        datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    return value
+
+
+def on_day(turn, day: str) -> bool:
+    """Whether a turn's user message is dated `day` (UTC)."""
+    ts = parse_ts(turn.user_msg)
+    return ts is not None and ts.astimezone(timezone.utc).strftime("%Y-%m-%d") == day
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("transcript", type=Path, help="path to a Claude Code .jsonl transcript")
@@ -339,6 +354,10 @@ def main() -> int:
     ap.add_argument("--without-plan", action="store_true",
                     help="load with the local patterns only and no reviewed plan. Says so in the "
                          "output; meant for tests and emergencies, not for backfill")
+    ap.add_argument("--only-day", type=_day, default=None, metavar="YYYY-MM-DD",
+                    help="send only turns whose user message is dated this day (UTC), such as "
+                         "the workshop day. Other turns are left out, and turns with no "
+                         "timestamp too. Off by default")
     ap.add_argument("--inventory", type=Path, default=None,
                     help="write a JSONL row per finding here: what kind, which record, "
                          "which JSON pointer. Carries no matched text and no values")
@@ -485,6 +504,12 @@ def main() -> int:
 
     turns = build_turns(msgs)
     print(f"{transcript_path.name}: {len(msgs)} jsonl lines -> {len(turns)} turns")
+    # Each turn keeps its position in the session, so a turn's number is the same whether or
+    # not other days' turns were left out.
+    numbered = list(enumerate(turns, 1))
+    if args.only_day:
+        numbered = [(i, t) for i, t in numbered if on_day(t, args.only_day)]
+        print(f"  --only-day {args.only_day}: {len(numbered)} of {len(turns)} turns dated that day")
     if args.redact:
         found = ", ".join(f"{k}={v}" for k, v in sorted(summary.items())) or "nothing"
         print(f"  screened: {found}"
@@ -493,7 +518,7 @@ def main() -> int:
         print("  NOT screened: --no-redact was passed, values go out verbatim")
 
     if args.dry_run:
-        for i, t in enumerate(turns, 1):
+        for i, t in numbered:
             ts = parse_ts(t.user_msg)
             print(f"  turn {i}: {ts.isoformat() if ts else '(no timestamp)'} "
                   f"assistant_msgs={len(t.assistant_msgs)}")
@@ -520,7 +545,7 @@ def main() -> int:
     safe_transcript_path = Path(f"{session_id}.jsonl")
 
     emitted = 0
-    for i, t in enumerate(turns, 1):
+    for i, t in numbered:
         try:
             with propagate_attributes(**propagate_kwargs):
                 emit_turn(langfuse, session_id, i, t, safe_transcript_path)
@@ -531,8 +556,8 @@ def main() -> int:
     langfuse.flush()
     langfuse.shutdown()
 
-    if emitted < len(turns):
-        print(f"FAILED: only {emitted}/{len(turns)} turns emitted to {host} as session_id={session_id}; "
+    if emitted < len(numbered):
+        print(f"FAILED: only {emitted}/{len(numbered)} turns emitted to {host} as session_id={session_id}; "
               f"not writing a marker so this counts as not-yet-loaded. A re-run re-emits all "
               f"turns from scratch (no per-turn state is kept, and Langfuse has no create-time "
               f"dedupe), it does not retry only the missing ones.", file=sys.stderr)
@@ -545,7 +570,7 @@ def main() -> int:
                  # --allow-plan-without-gitleaks must not satisfy a later normal planned run.
                  planned=bool(args.plan) and header is not None
                  and "gitleaks" in header.detectors)
-    print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
+    print(f"emitted {emitted}/{len(numbered)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0
 

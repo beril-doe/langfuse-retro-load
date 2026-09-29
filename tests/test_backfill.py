@@ -460,3 +460,38 @@ def test_a_dry_run_does_not_need_the_locked_langfuse(monkeypatch, tmp_path):
     f.write_text('{"type": "user", "uuid": "u-1", "message": {"content": "hi"}}\n')
     monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run"])
     assert retro_load.main() == 0
+
+
+def test_workshop_day_only_is_passed_to_the_load(corpus, monkeypatch, capsys):
+    plan_path, command = preview_plan(monkeypatch, corpus, capsys, "--workshop-day-only")
+    assert "--workshop-day-only" in command, "the printed load command keeps the filter"
+    seen = {}
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: seen.setdefault("cmd", cmd) and 0)
+    assert run(monkeypatch, corpus, "--workshop-day-only", "--load", "--plan", str(plan_path),
+               "--force", "--batch-tag", "backfill-test") == 0
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--only-day") + 1] == "2026-05-07"
+
+
+def test_without_the_flag_every_day_is_sent(corpus, monkeypatch, capsys):
+    plan_path, _ = preview_plan(monkeypatch, corpus, capsys)
+    seen = {}
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: seen.setdefault("cmd", cmd) and 0)
+    assert run(monkeypatch, corpus, "--load", "--plan", str(plan_path), "--force",
+               "--batch-tag", "backfill-test") == 0
+    assert "--only-day" not in seen["cmd"]
+
+
+def test_retro_load_only_day_keeps_that_days_turns(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import retro_load
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "markers")
+    lines = turn("s-9", "before the workshop", "2026-05-05T17:00:00Z") + \
+        turn("s-9", "on the day", "2026-05-07T17:00:00Z")
+    f = tmp_path / "s-9.jsonl"
+    f.write_text("".join(json.dumps(r) + "\n" for r in lines))
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run", "--only-day", "2026-05-07"])
+    assert retro_load.main() == 0
+    out = capsys.readouterr().out
+    assert "1 of 2 turns dated that day" in out
+    assert "turn 2: 2026-05-07" in out and "turn 1:" not in out, "turns keep their numbers"

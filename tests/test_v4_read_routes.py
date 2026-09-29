@@ -249,3 +249,22 @@ def test_scores_are_looked_up_for_all_targets_in_one_comma_separated_filter(monk
     langfuse_admin.count_trace_scores(["a", "b", "c"], "h", "x")
     params = dict(urllib.parse.parse_qsl(fake.paths[0].partition("?")[2]))
     assert params["traceId"] == "a,b,c"
+
+
+def dated(i, trace, day, user):
+    o = obs(i, trace, start=f"{day}T18:00:00Z")
+    o["tags"], o["userId"] = ["retro-load", "batch-x"], user
+    return o
+
+
+def test_outside_day_and_user_id_only_narrow_the_targets(monkeypatch, capsys):
+    """Removing turns from days other than the workshop day, for one person, keeps everyone
+    else's traces and that person's workshop-day turns (Mark, 2026-09-29)."""
+    wired(monkeypatch, FakeLangfuse([dated(1, "a", "2026-05-07", "p1"), dated(2, "b", "2026-04-30", "p1"),
+                                     dated(3, "c", "2026-05-05", "p1"), dated(4, "d", "2026-04-30", "p2")]))
+    args = delete_args(tag=["retro-load"])
+    args.user_id, args.outside_day = "p1", "2026-05-07"
+    assert langfuse_admin.cmd_delete(args) == 0
+    out = capsys.readouterr().out
+    assert "4 traces tagged retro-load, user p1, not dated 2026-05-07 (UTC), 2 to delete" in out
+    assert "p1 (2)" in out and "p2" not in out

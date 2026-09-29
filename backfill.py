@@ -270,6 +270,9 @@ def main() -> int:
                     help="skip a session written to more recently than this, so a session "
                          "still in use is not loaded half finished (default 1)")
     ap.add_argument("--event-day", default="2026-05-07")
+    ap.add_argument("--workshop-day-only", action="store_true",
+                    help="send only turns dated --event-day (UTC). Off by default; the printed "
+                         "load command keeps it, so the load sends what the preview described")
     ap.add_argument("--people", type=Path, default=HERE / "people.json")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -324,6 +327,9 @@ def main() -> int:
         marked = sum(1 for _, p in items if valid_marker(already_loaded(p.resolve())))
         print(f"  {source} (consent: {consent or 'not recorded'}): {len(items)} sessions, "
               f"{turns} turns" + (f", {marked} already marked as sent" if marked else ""))
+    if args.workshop_day_only:
+        print(f"  --workshop-day-only: only turns dated {args.event_day} (UTC) are sent; the "
+              "turn counts above include every day")
     print(f"redaction plan: {plan_path}")
     print(f"  {summary['total']} value(s) to mask" + (": " if summary["total"] else "")
           + ", ".join(f"{k} {v}" for k, v in summary["by_category"].most_common()))
@@ -375,6 +381,8 @@ def main() -> int:
     cmd = [sys.executable, str(HERE / "run_manifest.py"), "--manifest", manifest_path,
            "--plan", str(plan_path), "--batch-tag", tag,
            "--min-idle-days", str(args.min_idle_days)]
+    if args.workshop_day_only:
+        cmd += ["--only-day", args.event_day]
     if args.force:
         cmd.append("--force")
     print(f"\nloading {len(found)} sessions")
