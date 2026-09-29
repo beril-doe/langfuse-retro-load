@@ -444,6 +444,11 @@ def main() -> int:
 
     if not args.load:
         again = [a for a in sys.argv[1:]]
+        if "--people" not in again:
+            # Pin the roster the preview used, so the load can't fall back to a different one
+            # if the default roster moves (Codex review of
+            # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+            again += ["--people", str(args.people)]
         if args.batch_tag is None:
             # The default tag has today's date in it; pin it so a load after midnight UTC
             # carries the tag this preview showed.

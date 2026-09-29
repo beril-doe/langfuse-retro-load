@@ -623,3 +623,13 @@ def test_a_failed_state_write_keeps_the_previous_state(corpus, monkeypatch, tmp_
         backfill.write_state("someone", plan_path, [], "cmd")
     assert target.read_text() == '{"plan": "old"}\n'
     assert not list(target.parent.glob(".someone-latest.json.*.partial"))
+
+
+def test_the_printed_load_command_pins_the_default_roster(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "DEFAULT_ROSTER", corpus)
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--skip-git-check"])
+    assert backfill.main() == 0
+    command = capsys.readouterr().out.strip().splitlines()[-1]
+    assert f"--people {corpus}" in command
