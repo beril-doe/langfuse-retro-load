@@ -166,7 +166,8 @@ def _valid_summary(summary) -> bool:
 
 
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
-                   session_id: str, *, screened: bool = True, planned: bool = False) -> bool:
+                   session_id: str, *, screened: bool = True, planned: bool = False,
+                   only_day: str | None = None) -> bool:
     """True only for a marker written by a load of this session into this host and project.
 
     A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
@@ -183,13 +184,20 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
     # rely on: what went out was never screened.
     if screened and prior.get("redacted") is None:
         return False
+    # A load limited to one day sent only part of the session, so it only completes a run
+    # with the same limit; a run for another day, or for every day, still has turns to send
+    # (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64). Markers
+    # from before this field existed hold every day's turns, so they read as None.
+    if prior.get("only_day") != only_day:
+        return False
     return bool(prior) and prior.get("host") == host and bool(public_key) \
         and prior.get("public_key") == public_key and prior.get("session_id") == session_id
 
 
 def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
                  redaction_summary: dict | None = None, *, host: str | None = None,
-                 public_key: str | None = None, planned: bool = False) -> None:
+                 public_key: str | None = None, planned: bool = False,
+                 only_day: str | None = None) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
@@ -201,6 +209,8 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
                 # Whether a reviewed redaction plan was applied. A --without-plan load never
                 # satisfies a later planned run.
                 "planned": planned,
+                # The day a --only-day load was limited to, or None when every day was sent.
+                "only_day": only_day,
                 "turns_emitted": turn_count,
                 "tags": tags,
                 # What was rewritten before this went out, by category. A marker that says
@@ -308,6 +318,25 @@ def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
     return None
 
 
+def _day(value: str) -> str:
+    """argparse type: a YYYY-MM-DD date, returned as given."""
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    # strptime accepts 2026-5-7, which would then match no turn's canonical date and send
+    # nothing (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64).
+    if parsed.strftime("%Y-%m-%d") != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
+def on_day(turn, day: str) -> bool:
+    """Whether a turn's user message is dated `day` (UTC)."""
+    ts = parse_ts(turn.user_msg)
+    return ts is not None and ts.astimezone(timezone.utc).strftime("%Y-%m-%d") == day
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("transcript", type=Path, help="path to a Claude Code .jsonl transcript")
@@ -339,6 +368,10 @@ def main() -> int:
     ap.add_argument("--without-plan", action="store_true",
                     help="load with the local patterns only and no reviewed plan. Says so in the "
                          "output; meant for tests and emergencies, not for backfill")
+    ap.add_argument("--only-day", type=_day, default=None, metavar="YYYY-MM-DD",
+                    help="send only turns whose user message is dated this day (UTC), such as "
+                         "the workshop day. Other turns are left out, and turns with no "
+                         "timestamp too. Off by default")
     ap.add_argument("--inventory", type=Path, default=None,
                     help="write a JSONL row per finding here: what kind, which record, "
                          "which JSON pointer. Carries no matched text and no values")
@@ -377,7 +410,7 @@ def main() -> int:
 
     prior = already_loaded(transcript_path)
     if marker_matches(prior, host, public_key, session_id, screened=args.redact,
-                      planned=bool(args.plan)) and not args.force:
+                      planned=bool(args.plan), only_day=args.only_day) and not args.force:
         # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
         # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
         print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
@@ -485,6 +518,12 @@ def main() -> int:
 
     turns = build_turns(msgs)
     print(f"{transcript_path.name}: {len(msgs)} jsonl lines -> {len(turns)} turns")
+    # Each turn keeps its position in the session, so a turn's number is the same whether or
+    # not other days' turns were left out.
+    numbered = list(enumerate(turns, 1))
+    if args.only_day is not None:
+        numbered = [(i, t) for i, t in numbered if on_day(t, args.only_day)]
+        print(f"  --only-day {args.only_day}: {len(numbered)} of {len(turns)} turns dated that day")
     if args.redact:
         found = ", ".join(f"{k}={v}" for k, v in sorted(summary.items())) or "nothing"
         print(f"  screened: {found}"
@@ -493,8 +532,13 @@ def main() -> int:
         print("  NOT screened: --no-redact was passed, values go out verbatim")
 
     if args.dry_run:
-        for i, t in enumerate(turns, 1):
+        for i, t in numbered:
             ts = parse_ts(t.user_msg)
+            # In UTC, the zone --only-day compares in, so build_manifest's per-day count from
+            # these lines agrees with the filter (Codex review of
+            # https://github.com/beril-doe/langfuse-retro-load/pull/64).
+            if ts is not None and ts.tzinfo is not None:
+                ts = ts.astimezone(timezone.utc)
             print(f"  turn {i}: {ts.isoformat() if ts else '(no timestamp)'} "
                   f"assistant_msgs={len(t.assistant_msgs)}")
         print("(dry run — nothing sent to Langfuse)")
@@ -520,7 +564,7 @@ def main() -> int:
     safe_transcript_path = Path(f"{session_id}.jsonl")
 
     emitted = 0
-    for i, t in enumerate(turns, 1):
+    for i, t in numbered:
         try:
             with propagate_attributes(**propagate_kwargs):
                 emit_turn(langfuse, session_id, i, t, safe_transcript_path)
@@ -531,8 +575,8 @@ def main() -> int:
     langfuse.flush()
     langfuse.shutdown()
 
-    if emitted < len(turns):
-        print(f"FAILED: only {emitted}/{len(turns)} turns emitted to {host} as session_id={session_id}; "
+    if emitted < len(numbered):
+        print(f"FAILED: only {emitted}/{len(numbered)} turns emitted to {host} as session_id={session_id}; "
               f"not writing a marker so this counts as not-yet-loaded. A re-run re-emits all "
               f"turns from scratch (no per-turn state is kept, and Langfuse has no create-time "
               f"dedupe), it does not retry only the missing ones.", file=sys.stderr)
@@ -544,8 +588,9 @@ def main() -> int:
                  # Fully planned only with gitleaks in the plan: a local-only plan loaded with
                  # --allow-plan-without-gitleaks must not satisfy a later normal planned run.
                  planned=bool(args.plan) and header is not None
-                 and "gitleaks" in header.detectors)
-    print(f"emitted {emitted}/{len(turns)} turns to {host} as session_id={session_id}, tags={tags}")
+                 and "gitleaks" in header.detectors,
+                 only_day=args.only_day)
+    print(f"emitted {emitted}/{len(numbered)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0
 

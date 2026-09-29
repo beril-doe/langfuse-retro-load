@@ -5,11 +5,14 @@
 replacement: one cursor walk of v2/observations for observations, traces and sessions,
 v3/scores for scores, and v2/metrics as an independent check on the walk.
 """
+import argparse
 import json
 import sys
 import urllib.error
 import urllib.parse
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import langfuse_admin
@@ -249,3 +252,63 @@ def test_scores_are_looked_up_for_all_targets_in_one_comma_separated_filter(monk
     langfuse_admin.count_trace_scores(["a", "b", "c"], "h", "x")
     params = dict(urllib.parse.parse_qsl(fake.paths[0].partition("?")[2]))
     assert params["traceId"] == "a,b,c"
+
+
+def dated(i, trace, day, user):
+    o = obs(i, trace, start=f"{day}T18:00:00Z")
+    o["tags"], o["userId"] = ["retro-load", "batch-x"], user
+    return o
+
+
+def test_outside_day_and_user_id_only_narrow_the_targets(monkeypatch, capsys):
+    """Removing turns from days other than the workshop day, for one person, keeps everyone
+    else's traces and that person's workshop-day turns (Mark, 2026-09-29)."""
+    wired(monkeypatch, FakeLangfuse([dated(1, "a", "2026-05-07", "p1"), dated(2, "b", "2026-04-30", "p1"),
+                                     dated(3, "c", "2026-05-05", "p1"), dated(4, "d", "2026-04-30", "p2")]))
+    args = delete_args(tag=["retro-load"])
+    args.user_id, args.outside_day = "p1", "2026-05-07"
+    assert langfuse_admin.cmd_delete(args) == 0
+    out = capsys.readouterr().out
+    assert "4 traces tagged retro-load, user p1, not dated 2026-05-07 (UTC), 2 to delete" in out
+    assert "p1 (2)" in out and "p2" not in out
+
+
+@pytest.mark.parametrize("bad", ["2026-02-30", "2026-5-7", "20260507", "tomorrow"])
+def test_outside_day_rejects_anything_but_a_real_date(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an impossible
+    date matched no trace, so --outside-day selected everything."""
+    with pytest.raises(argparse.ArgumentTypeError):
+        langfuse_admin._iso_day(bad)
+    assert langfuse_admin._iso_day("2026-05-07") == "2026-05-07"
+
+
+def test_the_record_states_the_narrowing_filters(monkeypatch, tmp_path):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: the record
+    listed only the tag, not the user and day that narrowed what was deleted."""
+    fake = DeletingFake([dated(1, "a", "2026-04-30", "p1"), dated(2, "b", "2026-05-07", "p1")],
+                        scores=[])
+    wired(monkeypatch, fake)
+    record = tmp_path / "deleted.json"
+    args = delete_args(tag=["retro-load"], dry_run=False, yes=True, record=str(record))
+    args.user_id, args.outside_day = "p1", "2026-05-07"
+    assert langfuse_admin.cmd_delete(args) == 0
+    written = json.loads(record.read_text())
+    assert written["narrowed_by"] == {"user_id": "p1", "outside_day": "2026-05-07"}
+    assert [t["id"] for t in written["traces"]] == ["a"]
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_user_id_refuses_an_empty_value(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an unset
+    variable made --user-id empty, which turned the narrowing off and widened the delete."""
+    with pytest.raises(argparse.ArgumentTypeError):
+        langfuse_admin._non_empty(bad)
+
+
+def test_an_empty_user_id_on_the_command_line_is_refused(monkeypatch, capsys):
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "delete", "--project", "p",
+                                                     "--type", "trace", "--tag", "x", "--user-id", "",
+                                                     "--dry-run"])
+    with pytest.raises(SystemExit) as exc:
+        langfuse_admin.main()
+    assert exc.value.code == 2 and "must not be empty" in capsys.readouterr().err

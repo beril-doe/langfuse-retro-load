@@ -250,6 +250,18 @@ def summarize_plan(plan_path: Path, paths: list[Path]) -> dict:
             "total": len(masks)}
 
 
+def _day(value: str) -> str:
+    """argparse type: a canonical YYYY-MM-DD date, never empty (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -269,7 +281,10 @@ def main() -> int:
     ap.add_argument("--min-idle-days", type=float, default=1.0,
                     help="skip a session written to more recently than this, so a session "
                          "still in use is not loaded half finished (default 1)")
-    ap.add_argument("--event-day", default="2026-05-07")
+    ap.add_argument("--event-day", default="2026-05-07", type=_day)
+    ap.add_argument("--workshop-day-only", action="store_true",
+                    help="send only turns dated --event-day (UTC). Off by default; the printed "
+                         "load command keeps it, so the load sends what the preview described")
     ap.add_argument("--people", type=Path, default=HERE / "people.json")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -324,6 +339,15 @@ def main() -> int:
         marked = sum(1 for _, p in items if valid_marker(already_loaded(p.resolve())))
         print(f"  {source} (consent: {consent or 'not recorded'}): {len(items)} sessions, "
               f"{turns} turns" + (f", {marked} already marked as sent" if marked else ""))
+    if args.workshop_day_only:
+        # What the load will send, so the check after the load has a number to compare against
+        # (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64).
+        counts = [e.get("turns_on_event_day") for e, _ in found]
+        known = sum(c for c in counts if c is not None)
+        unknown = sum(1 for c in counts if c is None)
+        print(f"  --workshop-day-only: {known} turns dated {args.event_day} (UTC) will be sent"
+              + (f"; {unknown} session(s) already marked as sent have no per-day count"
+                 if unknown else ""))
     print(f"redaction plan: {plan_path}")
     print(f"  {summary['total']} value(s) to mask" + (": " if summary["total"] else "")
           + ", ".join(f"{k} {v}" for k, v in summary["by_category"].most_common()))
@@ -375,6 +399,8 @@ def main() -> int:
     cmd = [sys.executable, str(HERE / "run_manifest.py"), "--manifest", manifest_path,
            "--plan", str(plan_path), "--batch-tag", tag,
            "--min-idle-days", str(args.min_idle_days)]
+    if args.workshop_day_only:
+        cmd += ["--only-day", args.event_day]
     if args.force:
         cmd.append("--force")
     print(f"\nloading {len(found)} sessions")

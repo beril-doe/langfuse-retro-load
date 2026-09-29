@@ -352,6 +352,32 @@ def upload(langfuse, snap: Snapshot, masked: dict, user_id: str) -> None:
         span.end(end_time=hook._to_ns(ended) if ended else None)
 
 
+def _day(value: str) -> str:
+    """argparse type: a canonical YYYY-MM-DD date. An empty value, as from an unset shell
+    variable, would otherwise switch the filter off and upload every day (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
+def ended_on(snap: Snapshot, day: str) -> bool:
+    """Whether a snapshot's session ended on `day` (UTC). An unreadable end counts as not."""
+    if not snap.ended:
+        return False
+    try:
+        end = datetime.datetime.fromisoformat(snap.ended)
+    except ValueError:
+        return False
+    if end.tzinfo is not None:
+        end = end.astimezone(datetime.timezone.utc)
+    return end.strftime("%Y-%m-%d") == day
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -359,6 +385,10 @@ def main() -> int:
     ap.add_argument("--people", type=Path, default=HERE / "people.json")
     ap.add_argument("--load", action="store_true", help="upload after the preview")
     ap.add_argument("--force", action="store_true", help="upload snapshots already marked as sent")
+    ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD", type=_day,
+                    help="upload only snapshots from sessions that ended this day (UTC), such as "
+                         "the workshop day. Every session is still replayed, so the files are "
+                         "exact; only the upload is limited. Off by default")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -383,6 +413,11 @@ def main() -> int:
         snaps = snapshots(paths)
     except ValueError as exc:
         raise SystemExit(f"{exc}. Nothing was read further or sent.") from exc
+    if args.only_day is not None:
+        kept = [s for s in snaps if ended_on(s, args.only_day)]
+        print(f"--only-day {args.only_day}: {len(kept)} of {len(snaps)} snapshot(s) from sessions "
+              "that ended that day")
+        snaps = kept
     print(f"person   : {args.person}\nuser_id  : {user_id}\nsessions : {len(paths)} scanned, "
           f"{len({s.session_id for s in snaps})} changed a BERIL project's artifacts")
     ready = []

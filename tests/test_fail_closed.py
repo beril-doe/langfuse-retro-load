@@ -218,7 +218,7 @@ def test_a_marked_session_still_gets_a_manifest_turn_count(manifest_env, monkeyp
     retro_load.write_marker(path, "s-1", 4, ["claude-code", "event_day:2026-05-07"],
                             redaction_summary={}, host="https://a.test", public_key="pk-a")
     summary = manifest_env.dry_run_summary(path, "2026-05-07")
-    assert summary == {"turns": 4, "event_day": True, "failed": False}
+    assert summary == {"turns": 4, "event_day": True, "day_turns": None, "failed": False}
 
 
 def test_one_unreadable_timestamp_makes_last_activity_unknown(retro_load):

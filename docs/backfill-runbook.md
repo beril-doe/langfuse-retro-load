@@ -38,8 +38,12 @@ prints its fix.
 ## 4. Preview (sends nothing)
 
 ```bash
-cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json | tee ~/backfill-<person>-preview.log
+cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --workshop-day-only | tee ~/backfill-<person>-preview.log
 ```
+
+`--workshop-day-only` sends only turns dated the workshop day (2026-05-07, in UTC). That is
+Mark's scope for consenters as of 2026-09-29. It's optional; leave it off to send every day.
+The load command the preview prints keeps it.
 
 It prints the sessions and turns it would send, the redaction plan it wrote under `plans/`,
 the masks by category and pattern, and the exact load command. Only the sessions listed
@@ -66,7 +70,7 @@ Copy the load command the preview printed, and run it in the background so a clo
 can't stop it:
 
 ```bash
-cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
+cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --workshop-day-only --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
 ```
 
 `PYTHONUNBUFFERED=1` makes the log show progress as it happens. Unlike `python -u`, it also
@@ -89,8 +93,8 @@ sessions touched and the user id. The trace count should equal the preview's tur
 ## 8. Artifacts
 
 ```bash
-cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --people ~/beril-backfill-roster.json          # preview
-cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --people ~/beril-backfill-roster.json --load   # upload
+cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --people ~/beril-backfill-roster.json --only-day 2026-05-07          # preview
+cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --people ~/beril-backfill-roster.json --only-day 2026-05-07 --load   # upload
 ```
 
 This uploads one "BERIL artifacts — <project>" span for each session that changed a BERIL

@@ -498,6 +498,35 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def _non_empty(value: str) -> str:
+    """argparse type: refuse an empty value. An unset shell variable passed as
+    `--user-id "$ORCID"` would otherwise turn the narrowing off and widen a delete to every
+    user (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must not be empty")
+    return value
+
+
+def _iso_day(value: str) -> str:
+    """argparse type: a real YYYY-MM-DD date. A typo such as 2026-02-30 would otherwise match
+    no trace's day, so --outside-day would select everything (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a real YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
+def _on_day(timestamp, day: str) -> bool:
+    """Whether a trace timestamp falls on `day` (UTC). An unreadable timestamp counts as not,
+    so --outside-day keeps it in the deletion list and the dry run shows it."""
+    moment = instant(timestamp)
+    return moment is not None and moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d") == day
+
+
 def cmd_delete(args) -> int:
     if args.type in UNDELETABLE_REASON:
         print(f"{args.type}: {UNDELETABLE_REASON[args.type]}", file=sys.stderr)
@@ -536,6 +565,14 @@ def cmd_delete(args) -> int:
         scope = f"tagged {' + '.join(tags)}"
     else:
         targets, scope = [t for t in traces if t.get("name") == args.name], f"matching {args.name!r}"
+    # Narrowing filters, applied after the selector. They can only remove traces from the
+    # target list, never add any.
+    if getattr(args, "user_id", None) is not None:
+        targets = [t for t in targets if t.get("userId") == args.user_id]
+        scope += f", user {args.user_id}"
+    if getattr(args, "outside_day", None) is not None:
+        targets = [t for t in targets if not _on_day(t.get("timestamp"), args.outside_day)]
+        scope += f", not dated {args.outside_day} (UTC)"
     print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
     print("  (found through their observations; a trace with none is not listed)")
     if not targets:
@@ -582,6 +619,9 @@ def cmd_delete(args) -> int:
             "planned_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "project": args.project, "where": where, "host": host,
             "match": "all" if args.all else {"tags": tags} if tags else args.name,
+            # The narrowing filters too, so the record states the predicate that was reviewed.
+            "narrowed_by": {"user_id": getattr(args, "user_id", None),
+                            "outside_day": getattr(args, "outside_day", None)},
             "count": len(targets),
             "traces": [{"id": t["id"], "sessionId": t.get("sessionId"),
                         "userId": t.get("userId"), "name": t.get("name"),
@@ -671,6 +711,11 @@ def main() -> int:
     selector.add_argument("--all", action="store_true", help="every trace in the project")
     selector.add_argument("--tag", action="append",
                           help="match traces carrying this tag; repeat to require several")
+    d.add_argument("--user-id", type=_non_empty,
+                   help="narrow to traces with this user id, e.g. an ORCID")
+    d.add_argument("--outside-day", metavar="YYYY-MM-DD", type=_iso_day,
+                   help="narrow to traces NOT dated this day (UTC), e.g. to remove turns "
+                        "from other days than the workshop")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--yes", action="store_true", help="required for a real delete")
     d.add_argument("--record", help="write a manifest of what is deleted to this path")

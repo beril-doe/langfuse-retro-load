@@ -460,3 +460,97 @@ def test_a_dry_run_does_not_need_the_locked_langfuse(monkeypatch, tmp_path):
     f.write_text('{"type": "user", "uuid": "u-1", "message": {"content": "hi"}}\n')
     monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run"])
     assert retro_load.main() == 0
+
+
+def test_workshop_day_only_is_passed_to_the_load(corpus, monkeypatch, capsys):
+    plan_path, command = preview_plan(monkeypatch, corpus, capsys, "--workshop-day-only")
+    assert "--workshop-day-only" in command, "the printed load command keeps the filter"
+    seen = {}
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: seen.setdefault("cmd", cmd) and 0)
+    assert run(monkeypatch, corpus, "--workshop-day-only", "--load", "--plan", str(plan_path),
+               "--force", "--batch-tag", "backfill-test") == 0
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--only-day") + 1] == "2026-05-07"
+
+
+def test_without_the_flag_every_day_is_sent(corpus, monkeypatch, capsys):
+    plan_path, _ = preview_plan(monkeypatch, corpus, capsys)
+    seen = {}
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: seen.setdefault("cmd", cmd) and 0)
+    assert run(monkeypatch, corpus, "--load", "--plan", str(plan_path), "--force",
+               "--batch-tag", "backfill-test") == 0
+    assert "--only-day" not in seen["cmd"]
+
+
+def test_retro_load_only_day_keeps_that_days_turns(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import retro_load
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "markers")
+    lines = turn("s-9", "before the workshop", "2026-05-05T17:00:00Z") + \
+        turn("s-9", "on the day", "2026-05-07T17:00:00Z")
+    f = tmp_path / "s-9.jsonl"
+    f.write_text("".join(json.dumps(r) + "\n" for r in lines))
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run", "--only-day", "2026-05-07"])
+    assert retro_load.main() == 0
+    out = capsys.readouterr().out
+    assert "1 of 2 turns dated that day" in out
+    assert "turn 2: 2026-05-07" in out and "turn 1:" not in out, "turns keep their numbers"
+
+
+def test_a_marker_only_completes_a_run_for_the_same_day():
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: a day-limited
+    load must not satisfy a later run for another day, or for every day."""
+    pytest.importorskip("dotenv")
+    import retro_load
+    base = {"session_id": "s", "host": "h", "public_key": "pk", "planned": True, "turns_emitted": 3,
+            "tags": [], "redacted": {}}
+    day = dict(base, only_day="2026-05-07")
+    assert retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day="2026-05-07")
+    assert not retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day=None)
+    assert not retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day="2026-05-08")
+    assert retro_load.marker_matches(base, "h", "pk", "s", planned=True, only_day=None), \
+        "an older marker, without the field, still means every day was sent"
+
+
+@pytest.mark.parametrize("bad", ["2026-5-7", "2026-02-30", "20260507"])
+def test_only_day_rejects_non_canonical_dates(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: 2026-5-7
+    parsed, then matched no turn, so a load sent nothing and marked the session done."""
+    pytest.importorskip("dotenv")
+    import argparse
+    import retro_load
+    with pytest.raises(argparse.ArgumentTypeError):
+        retro_load._day(bad)
+
+
+def test_the_workshop_preview_counts_the_turns_it_will_send(corpus, monkeypatch, capsys):
+    preview_plan(monkeypatch, corpus, capsys, "--workshop-day-only")
+    assert "--workshop-day-only: 2 turns dated 2026-05-07 (UTC) will be sent" in preview_plan.output
+
+
+def test_dry_run_dates_turns_in_utc_so_the_count_matches_the_filter(monkeypatch, tmp_path, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an offset
+    timestamp on the evening before is the next day in UTC, which is how --only-day decides."""
+    pytest.importorskip("dotenv")
+    import retro_load
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "markers")
+    lines = turn("s-8", "evening, Pacific", "2026-05-06T20:00:00-07:00")
+    f = tmp_path / "s-8.jsonl"
+    f.write_text("".join(json.dumps(r) + "\n" for r in lines))
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run", "--only-day", "2026-05-07"])
+    assert retro_load.main() == 0
+    out = capsys.readouterr().out
+    assert "1 of 1 turns dated that day" in out
+    assert "turn 1: 2026-05-07T03:00:00+00:00" in out
+
+
+@pytest.mark.parametrize("script", ["run_manifest", "backfill"])
+def test_an_empty_day_is_refused_not_dropped(script):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an empty
+    day from an unset variable was dropped, so a workshop-only load sent every day."""
+    import argparse
+    import importlib
+    module = importlib.import_module(script)
+    for bad in ("", "2026-5-7"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            module._day(bad)
