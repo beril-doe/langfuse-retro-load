@@ -140,9 +140,8 @@ def test_a_malformed_plan_line_is_a_plan_error(tmp_path):
 
 def test_build_uses_real_gitleaks_when_installed(tmp_path):
     """End to end with the real binary, skipped where it is not installed."""
-    import shutil
-    if shutil.which("gitleaks") is None:
-        pytest.skip("gitleaks not installed")
+    from conftest import require_gitleaks
+    require_gitleaks()
     record = {"message": {"content": "export GITHUB_TOKEN=" + FAKE}}
     path = _transcript(tmp_path, [record])
     header, masks = plan.build(path)

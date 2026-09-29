@@ -1,3 +1,5 @@
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -36,3 +38,14 @@ def _langfuse_is_locked(monkeypatch, request):
     pin check would refuse them. Treat the install as locked unless a test asks otherwise."""
     if "real_langfuse_check" not in request.keywords:
         monkeypatch.setattr(backfill, "langfuse_problems", lambda: [])
+
+
+def require_gitleaks():
+    """Skip a test that needs the real gitleaks binary where it isn't installed, except in
+    CI, which sets REQUIRE_GITLEAKS so a missing binary fails the run instead of quietly
+    skipping the only tests of .gitleaks.toml
+    (https://github.com/beril-doe/langfuse-retro-load/issues/58)."""
+    if shutil.which("gitleaks") is None:
+        if os.environ.get("REQUIRE_GITLEAKS"):
+            pytest.fail("REQUIRE_GITLEAKS is set but gitleaks is not on PATH")
+        pytest.skip("gitleaks not installed")
