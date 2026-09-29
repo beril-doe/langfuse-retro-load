@@ -498,6 +498,15 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def _non_empty(value: str) -> str:
+    """argparse type: refuse an empty value. An unset shell variable passed as
+    `--user-id "$ORCID"` would otherwise turn the narrowing off and widen a delete to every
+    user (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must not be empty")
+    return value
+
+
 def _iso_day(value: str) -> str:
     """argparse type: a real YYYY-MM-DD date. A typo such as 2026-02-30 would otherwise match
     no trace's day, so --outside-day would select everything (Codex review of
@@ -558,10 +567,10 @@ def cmd_delete(args) -> int:
         targets, scope = [t for t in traces if t.get("name") == args.name], f"matching {args.name!r}"
     # Narrowing filters, applied after the selector. They can only remove traces from the
     # target list, never add any.
-    if getattr(args, "user_id", None):
+    if getattr(args, "user_id", None) is not None:
         targets = [t for t in targets if t.get("userId") == args.user_id]
         scope += f", user {args.user_id}"
-    if getattr(args, "outside_day", None):
+    if getattr(args, "outside_day", None) is not None:
         targets = [t for t in targets if not _on_day(t.get("timestamp"), args.outside_day)]
         scope += f", not dated {args.outside_day} (UTC)"
     print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
@@ -702,7 +711,8 @@ def main() -> int:
     selector.add_argument("--all", action="store_true", help="every trace in the project")
     selector.add_argument("--tag", action="append",
                           help="match traces carrying this tag; repeat to require several")
-    d.add_argument("--user-id", help="narrow to traces with this user id, e.g. an ORCID")
+    d.add_argument("--user-id", type=_non_empty,
+                   help="narrow to traces with this user id, e.g. an ORCID")
     d.add_argument("--outside-day", metavar="YYYY-MM-DD", type=_iso_day,
                    help="narrow to traces NOT dated this day (UTC), e.g. to remove turns "
                         "from other days than the workshop")

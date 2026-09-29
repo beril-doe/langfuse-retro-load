@@ -413,7 +413,7 @@ def main() -> int:
         snaps = snapshots(paths)
     except ValueError as exc:
         raise SystemExit(f"{exc}. Nothing was read further or sent.") from exc
-    if args.only_day:
+    if args.only_day is not None:
         kept = [s for s in snaps if ended_on(s, args.only_day)]
         print(f"--only-day {args.only_day}: {len(kept)} of {len(snaps)} snapshot(s) from sessions "
               "that ended that day")

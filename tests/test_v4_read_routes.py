@@ -295,3 +295,20 @@ def test_the_record_states_the_narrowing_filters(monkeypatch, tmp_path):
     written = json.loads(record.read_text())
     assert written["narrowed_by"] == {"user_id": "p1", "outside_day": "2026-05-07"}
     assert [t["id"] for t in written["traces"]] == ["a"]
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_user_id_refuses_an_empty_value(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an unset
+    variable made --user-id empty, which turned the narrowing off and widened the delete."""
+    with pytest.raises(argparse.ArgumentTypeError):
+        langfuse_admin._non_empty(bad)
+
+
+def test_an_empty_user_id_on_the_command_line_is_refused(monkeypatch, capsys):
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "delete", "--project", "p",
+                                                     "--type", "trace", "--tag", "x", "--user-id", "",
+                                                     "--dry-run"])
+    with pytest.raises(SystemExit) as exc:
+        langfuse_admin.main()
+    assert exc.value.code == 2 and "must not be empty" in capsys.readouterr().err

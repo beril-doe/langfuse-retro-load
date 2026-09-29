@@ -521,7 +521,7 @@ def main() -> int:
     # Each turn keeps its position in the session, so a turn's number is the same whether or
     # not other days' turns were left out.
     numbered = list(enumerate(turns, 1))
-    if args.only_day:
+    if args.only_day is not None:
         numbered = [(i, t) for i, t in numbered if on_day(t, args.only_day)]
         print(f"  --only-day {args.only_day}: {len(numbered)} of {len(turns)} turns dated that day")
     if args.redact:

@@ -250,6 +250,18 @@ def summarize_plan(plan_path: Path, paths: list[Path]) -> dict:
             "total": len(masks)}
 
 
+def _day(value: str) -> str:
+    """argparse type: a canonical YYYY-MM-DD date, never empty (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -269,7 +281,7 @@ def main() -> int:
     ap.add_argument("--min-idle-days", type=float, default=1.0,
                     help="skip a session written to more recently than this, so a session "
                          "still in use is not loaded half finished (default 1)")
-    ap.add_argument("--event-day", default="2026-05-07")
+    ap.add_argument("--event-day", default="2026-05-07", type=_day)
     ap.add_argument("--workshop-day-only", action="store_true",
                     help="send only turns dated --event-day (UTC). Off by default; the printed "
                          "load command keeps it, so the load sends what the preview described")

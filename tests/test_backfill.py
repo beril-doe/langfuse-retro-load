@@ -542,3 +542,15 @@ def test_dry_run_dates_turns_in_utc_so_the_count_matches_the_filter(monkeypatch,
     out = capsys.readouterr().out
     assert "1 of 1 turns dated that day" in out
     assert "turn 1: 2026-05-07T03:00:00+00:00" in out
+
+
+@pytest.mark.parametrize("script", ["run_manifest", "backfill"])
+def test_an_empty_day_is_refused_not_dropped(script):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an empty
+    day from an unset variable was dropped, so a workshop-only load sent every day."""
+    import argparse
+    import importlib
+    module = importlib.import_module(script)
+    for bad in ("", "2026-5-7"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            module._day(bad)

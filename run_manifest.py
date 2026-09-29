@@ -62,6 +62,20 @@ def compute_tags(entry: dict, batch_tag: str) -> list[str]:
     return tags
 
 
+def _day(value: str) -> str:
+    """argparse type: a canonical YYYY-MM-DD date. An empty value, as from an unset shell
+    variable, would otherwise drop the filter and send every day (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    import datetime
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="manifest.json")
@@ -75,7 +89,7 @@ def main() -> int:
                     help="passed to retro_load.py: send sessions the project already holds")
     ap.add_argument("--min-idle-days", type=float, default=None,
                     help="passed to retro_load.py: skip sessions touched more recently than this")
-    ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD",
+    ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD", type=_day,
                     help="passed to retro_load.py: send only turns dated this day (UTC)")
     ap.add_argument("--batch-tag", default="full-load-2026-08-20",
                      help="tag identifying this run as a batch, so it's filterable/auditable later "
@@ -131,7 +145,7 @@ def main() -> int:
             cmd += ["--plan", str(args.plan)]
         if args.min_idle_days is not None:
             cmd += ["--min-idle-days", str(args.min_idle_days)]
-        if args.only_day:
+        if args.only_day is not None:
             cmd += ["--only-day", args.only_day]
         cmd.append(str(path))
         # check=False: a failed load is collected into `failed` and reported with its
