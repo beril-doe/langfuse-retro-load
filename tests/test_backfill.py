@@ -3,6 +3,7 @@
 https://github.com/beril-doe/langfuse-retro-load/issues/38
 """
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -51,7 +52,7 @@ def corpus(tmp_path, monkeypatch):
 
 def review_run(monkeypatch, *argv):
     """--review takes no --people: it reads the latest preview's saved state."""
-    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--review", "--skip-git-check", *argv])
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--review", *argv])
     return backfill.main()
 
 
@@ -655,13 +656,39 @@ def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys
     assert review_run(monkeypatch) == 2
 
 
-@pytest.mark.parametrize("flag", [["--session", "s-1"], ["--workshop-day-only"], ["--force"],
-                                  ["--batch-tag", "x"]])
-def test_review_refuses_flags_it_would_ignore(corpus, monkeypatch, flag):
-    """Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+def _every_other_option():
+    """Every option the parser knows except --review and help, with a value where it takes one,
+    so a new option is covered here without editing a list."""
+    for action in backfill.build_parser()._actions:
+        for opt in action.option_strings:
+            if opt in ("--review", "-h", "--help"):
+                continue
+            takes_value = action.nargs != 0
+            yield [opt, "2026-05-07"] if takes_value else [opt]
+
+
+@pytest.mark.parametrize("flag", list(_every_other_option()) + [["--peop", "x"], ["--people=x"],
+                                                                   ["--min-idle-days=0"]])
+def test_review_refuses_every_option_it_would_ignore(corpus, monkeypatch, flag):
+    """Codex and Fable reviews of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
     with pytest.raises(SystemExit) as exc:
         review_run(monkeypatch, *flag)
     assert exc.value.code == 2
+
+
+def test_the_printed_load_command_reparses_to_what_the_preview_used(corpus, monkeypatch, capsys):
+    """The command is built from the parsed arguments, so abbreviations and --flag=value forms
+    come out as one canonical flag each (Fable review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/67)."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", f"--peop={corpus}", "--work",
+                                      "--min-idle-days=2", "--skip-git-check"])
+    assert backfill.main() == 0
+    command = shlex.split(capsys.readouterr().out.strip().splitlines()[-1])
+    parsed = backfill.build_parser().parse_args(command[2:])
+    assert parsed.people == corpus and parsed.workshop_day_only and parsed.min_idle_days == 2.0
+    assert parsed.load and parsed.plan is not None and parsed.batch_tag.startswith("backfill-someone-")
+    assert command.count("--people") == 1
 
 
 @pytest.mark.parametrize("stop", [KeyboardInterrupt, EOFError])
@@ -722,4 +749,19 @@ def test_an_empty_preview_clears_the_saved_state(corpus, monkeypatch, capsys):
     assert backfill.state_path("someone").exists()
     monkeypatch.setattr(backfill, "discover", lambda *a: [])
     assert run(monkeypatch, corpus) == 0
+    assert not backfill.state_path("someone").exists()
+
+
+def test_a_preview_that_stops_part_way_leaves_no_older_state(corpus, monkeypatch, capsys):
+    """Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    assert backfill.state_path("someone").exists()
+
+    def fail(*a):
+        raise SystemExit("could not build the redaction plan: boom")
+
+    monkeypatch.setattr(backfill, "build_plan", fail)
+    with pytest.raises(SystemExit):
+        run(monkeypatch, corpus)
     assert not backfill.state_path("someone").exists()

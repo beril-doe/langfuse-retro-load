@@ -354,7 +354,7 @@ def review(person: str) -> int:
     return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("person", help="the person's account name in the roster")
@@ -383,24 +383,26 @@ def main() -> int:
                     help="show, one session at a time, what the latest preview's plan masks, "
                          "with values. Only sessions with masks are shown. Needs a terminal")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
+    return ap
+
+
+def main() -> int:
+    ap = build_parser()
     args = ap.parse_args()
-    people_given = args.people is not None
-    if args.people is None and not args.review:
-        args.people = default_roster()
     if args.review:
-        # --review shows the latest preview as it was written; these would change nothing,
-        # so refuse them rather than ignore them (Fable review of
-        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
-        other = [flag for flag, given in (("--load", args.load), ("--plan", args.plan is not None),
-                                          ("--session", bool(args.session)),
-                                          ("--workshop-day-only", args.workshop_day_only),
-                                          ("--force", args.force),
-                                          ("--batch-tag", args.batch_tag is not None),
-                                          ("--people", people_given)) if given]
-        if other:
-            ap.error(f"--review only shows the latest preview; {', '.join(other)} belong to the "
-                     "preview or the load")
+        # Only what review() uses is accepted, checked by a parser that knows nothing else, so
+        # abbreviations, --flag=value and new options are all refused without a hand-kept
+        # list (Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        rp = argparse.ArgumentParser(add_help=False)
+        rp.add_argument("person")
+        rp.add_argument("--review", action="store_true")
+        _, extra = rp.parse_known_args()
+        if extra:
+            ap.error(f"--review only shows the latest preview; {shlex.join(extra)} belongs to "
+                     "the preview or the load")
         return review(args.person)
+    if args.people is None:
+        args.people = default_roster()
     if args.load and args.plan is None:
         ap.error("--load needs --plan: run the preview first, review its plan, then load "
                  "with the command the preview prints")
@@ -428,13 +430,16 @@ def main() -> int:
         raise SystemExit(f"{exc}. Fix it in {args.people.name}; nothing was read or sent.") from exc
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     tag = args.batch_tag or f"backfill-{args.person}-{today}"
+    if not args.load:
+        # A new preview replaces the last one from the start, so a preview that finds nothing
+        # or stops part way never leaves an older one for --review (Codex and Fable reviews of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        state_path(args.person).unlink(missing_ok=True)
     found = discover(person, set(args.session), args.event_day)
     if not found:
         # An empty preview is still the latest preview, so the saved state from an earlier one
         # must not stay behind for --review or a later load (Codex review of
         # https://github.com/beril-doe/langfuse-retro-load/pull/67).
-        if not args.load:
-            state_path(args.person).unlink(missing_ok=True)
         print(f"no transcripts found for {args.person}")
         return 0
     paths = [path for _, path in found]
@@ -481,21 +486,22 @@ def main() -> int:
               "refuses until they parse or are left out with --session")
 
     if not args.load:
-        again = [a for a in sys.argv[1:]]
-        if not any(a == "--people" or a.startswith("--people=") for a in again):
-            # Pin the roster the preview used, so the load can't fall back to a different one
-            # if the default roster moves (Codex review of
-            # https://github.com/beril-doe/langfuse-retro-load/pull/67).
-            again += ["--people", str(args.people)]
-        if args.batch_tag is None:
-            # The default tag has today's date in it; pin it so a load after midnight UTC
-            # carries the tag this preview showed.
-            again += ["--batch-tag", tag]
+        # Built from what was parsed, not from how it was typed, so abbreviations and
+        # --flag=value forms can't duplicate or drop a flag (Fable review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67). The roster and the
+        # default batch tag, which has today's date in it, are pinned to what this preview used.
+        again = [args.person, "--people", str(args.people), "--batch-tag", tag,
+                 "--min-idle-days", str(args.min_idle_days), "--event-day", args.event_day]
+        for session in args.session:
+            again += ["--session", session]
+        if args.workshop_day_only:
+            again.append("--workshop-day-only")
         # Markers are keyed by the resolved path, as retro_load.py writes them. The frozen
         # corpus is reached through a symlink, so the unresolved path never finds its marker.
-        if "--force" not in again and any(valid_marker(already_loaded(p.resolve()))
-                                          for p in paths):
+        if args.force or any(valid_marker(already_loaded(p.resolve())) for p in paths):
             again.append("--force")
+        if args.skip_git_check:
+            again.append("--skip-git-check")
         python = sys.executable
         command = shlex.join([python, str(HERE / "backfill.py"), *again, "--load",
                               "--plan", str(plan_path)])

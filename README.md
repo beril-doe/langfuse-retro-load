@@ -30,7 +30,7 @@ prints the exact load command. Review the plan with `backfill.py <person> --revi
 shows each session that has masks, then run that command; `--load` uses the reviewed plan and never builds a new
 one. `--session <id>` limits the run. `--force` loads sessions an earlier load marked
 as sent, and still skips any whose traces are in Langfuse, so delete those first with
-`langfuse_admin.py delete`. Run a long load under `nohup ... > backfill-<person>.log
+`langfuse_admin.py delete`. Run a long load under `nohup ... > ~/backfill-<person>-load.log
 2>&1 &` so a closed browser tab does not stop it. The sections below describe the
 pieces this command runs.
 
