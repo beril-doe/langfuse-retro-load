@@ -309,9 +309,11 @@ def review(person: str) -> int:
     if not target.exists():
         print(f"no preview recorded for {person}; run: backfill.py {person}", file=sys.stderr)
         return 2
-    if not sys.stdout.isatty():
-        print("--review shows values, so it only runs in a terminal; don't pipe or redirect it",
-              file=sys.stderr)
+    # Both ends: output because values are shown, input because it pauses between sessions
+    # (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67).
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        print("--review shows values and pauses between sessions, so it only runs in a "
+              "terminal; don't pipe or redirect it", file=sys.stderr)
         return 2
     state = json.loads(target.read_text())
     todo = [s for s in state["sessions"] if s["masks"]]

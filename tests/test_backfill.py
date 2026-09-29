@@ -260,6 +260,7 @@ def test_review_shows_only_sessions_with_masks(corpus, monkeypatch, capsys):
     shown = []
     monkeypatch.setattr(backfill, "run_reveal", lambda cmd: shown.append(cmd) or 0)
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("paused after the last session"))
     assert run(monkeypatch, corpus, "--review") == 0
     assert len(shown) == 1 and shown[0][-2].endswith("s-1.jsonl") and shown[0][-1] == "--show-values"
@@ -602,6 +603,7 @@ def test_review_of_a_mask_free_preview_still_prints_the_load_command(corpus, mon
     assert run(monkeypatch, corpus, "--session", "s-2") == 0
     capsys.readouterr()
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
     assert run(monkeypatch, corpus, "--review") == 0
     out = capsys.readouterr().out
     assert "masks nothing" in out and "--load --plan" in out
@@ -633,3 +635,15 @@ def test_the_printed_load_command_pins_the_default_roster(corpus, monkeypatch, c
     assert backfill.main() == 0
     command = capsys.readouterr().out.strip().splitlines()[-1]
     assert f"--people {corpus}" in command
+
+
+
+def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67: with input
+    redirected, the first pause raised EOFError after showing one session."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: pytest.fail("showed values"))
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: False)
+    assert run(monkeypatch, corpus, "--review") == 2
