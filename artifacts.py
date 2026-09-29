@@ -352,6 +352,19 @@ def upload(langfuse, snap: Snapshot, masked: dict, user_id: str) -> None:
         span.end(end_time=hook._to_ns(ended) if ended else None)
 
 
+def _day(value: str) -> str:
+    """argparse type: a canonical YYYY-MM-DD date. An empty value, as from an unset shell
+    variable, would otherwise switch the filter off and upload every day (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
 def ended_on(snap: Snapshot, day: str) -> bool:
     """Whether a snapshot's session ended on `day` (UTC). An unreadable end counts as not."""
     if not snap.ended:
@@ -372,7 +385,7 @@ def main() -> int:
     ap.add_argument("--people", type=Path, default=HERE / "people.json")
     ap.add_argument("--load", action="store_true", help="upload after the preview")
     ap.add_argument("--force", action="store_true", help="upload snapshots already marked as sent")
-    ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD",
+    ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD", type=_day,
                     help="upload only snapshots from sessions that ended this day (UTC), such as "
                          "the workshop day. Every session is still replayed, so the files are "
                          "exact; only the upload is limited. Off by default")

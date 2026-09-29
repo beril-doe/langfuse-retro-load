@@ -398,3 +398,13 @@ def test_only_day_keeps_snapshots_from_sessions_that_ended_that_day():
     late_pacific = artifacts.Snapshot(session_id="s", project="p", ended="2026-05-07T20:00:00-07:00")
     assert artifacts.ended_on(late_pacific, "2026-05-08"), "compared in UTC"
     assert not artifacts.ended_on(artifacts.Snapshot(session_id="s", project="p", ended=""), "2026-05-07")
+
+
+@pytest.mark.parametrize("bad", ["", "2026-5-7", "2026-02-30"])
+def test_only_day_refuses_an_empty_or_malformed_date(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an empty
+    value, as from an unset shell variable, switched the filter off and uploaded every day."""
+    import argparse
+    with pytest.raises(argparse.ArgumentTypeError):
+        artifacts._day(bad)
+    assert artifacts._day("2026-05-07") == "2026-05-07"
