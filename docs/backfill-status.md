@@ -42,7 +42,7 @@ procedure for loading someone is in [backfill-runbook.md](backfill-runbook.md).
 
 | status | people | turns on the workshop day | snapshots on the workshop day |
 |---|---|---|---|
-| loaded | 6 (the BERIL developer and 5 consenters) | 264 | 12 |
+| loaded | 6 (the BERIL developer, who also consented, and 5 others) | 264 | 12 |
 | strong evidence, not yet loaded | 11, one of them on hold at Mark's request | 410 | 12 |
 | good evidence: one matching registry record, but the iD isn't in the transcripts | 11 | 363 | 14 |
 | unresolved: no single matching registry record | 4 | 56 | 0 |
