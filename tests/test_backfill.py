@@ -647,3 +647,44 @@ def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: False)
     assert run(monkeypatch, corpus, "--review") == 2
+
+
+@pytest.mark.parametrize("flag", [["--session", "s-1"], ["--workshop-day-only"], ["--force"],
+                                  ["--batch-tag", "x"]])
+def test_review_refuses_flags_it_would_ignore(corpus, monkeypatch, flag):
+    """Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus, "--review", *flag)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, EOFError])
+def test_stopping_review_part_way_is_not_a_crash(corpus, monkeypatch, capsys, stop):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
+
+    def reveal(cmd):
+        raise stop
+
+    monkeypatch.setattr(backfill, "run_reveal", reveal)
+    assert run(monkeypatch, corpus, "--review") == 130
+    out = capsys.readouterr().out
+    assert "stopped" in out and "--load --plan" in out
+
+
+def test_a_mask_free_preview_does_not_offer_a_review(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus, "--session", "s-2") == 0
+    out = capsys.readouterr().out
+    assert "masks nothing, so there is nothing to review" in out and "--review" not in out
+
+
+def test_people_given_with_equals_is_not_duplicated(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", f"--people={corpus}", "--skip-git-check"])
+    assert backfill.main() == 0
+    command = capsys.readouterr().out.strip().splitlines()[-1]
+    assert command.count("--people") == 1

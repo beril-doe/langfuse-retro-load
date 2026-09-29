@@ -63,7 +63,8 @@ transfer files there) and run everything from a pod terminal.
   it in Langfuse.
 - **`people.json`**: the committed roster, for team members who have agreed to be
   listed publicly. Anyone else goes in a private roster file on the pod with the same
-  format, passed to `backfill.py --people`. See below.
+  format, `~/beril-backfill-roster.json`, which `backfill.py` and `artifacts.py` read by
+  default when it exists (`--people` names another). See below.
 - **`build_manifest.py`** / **`run_manifest.py`**: `build_manifest.py`
   reads `people.json`, discovers every session under each source's
   `find_root`, and runs `retro_load.py --dry-run` on each to work out turn
@@ -224,8 +225,9 @@ access that the write-only relay does not expose to clients.
 ## Adding a person or a new source
 
 Edit a roster, not the Python: `people.json` for someone who has agreed to be listed in
-this public repository, otherwise a private file on the pod with the same format, passed
-with `--people`. One entry per person, one `sources` entry per place their traces live,
+this public repository, otherwise a private file on the pod with the same format:
+`~/beril-backfill-roster.json`, which is read by default when it exists, or another file
+passed with `--people`. One entry per person, one `sources` entry per place their traces live,
 and an `orcid`, which `backfill.py` requires:
 
 ```json
@@ -263,8 +265,9 @@ registry can match more than one person. Never use a real name.
 
 `build_manifest.py` still falls back to the pod account name for a person without an
 `orcid`, but that manifest only drives `run_manifest.py`; `backfill.py` does not use it.
-A roster of consenters with their ORCIDs belongs in a private file on the pod, passed
-with `--people`, not in this public `people.json`.
+A roster of consenters with their ORCIDs belongs in a private file on the pod
+(`~/beril-backfill-roster.json`, read by default when it exists), not in this public
+`people.json`.
 
 ## This repository is public, and two of its files are about people
 

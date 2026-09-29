@@ -3,19 +3,22 @@
 
 Run on the BERDL pod, from this repository:
 
-    .venv/bin/python backfill.py mamillerpa                        # preview: sends nothing
-    .venv/bin/python backfill.py mamillerpa --load --plan PLAN     # load with the reviewed plan
+    .venv/bin/python backfill.py <person>                        # preview: sends nothing
+    .venv/bin/python backfill.py <person> --review               # the preview's masks, with values
+    .venv/bin/python backfill.py <person> --load --plan PLAN     # load with the reviewed plan
 
-The preview checks the setup, finds the person's transcripts from people.json, writes a
-redaction plan under plans/, and prints what a load would send and the exact command to
-load it. Each setup problem is reported with the command that fixes it. Review the plan
-(reveal.py --plan PLAN --transcript FILE shows what will be masked), then run the printed
-command. `--load` uses that plan as reviewed, never a new one, and loads through
+The preview checks the setup, finds the person's transcripts from the roster (by default the
+private one on the pod, ~/beril-backfill-roster.json, when it exists), writes a redaction plan
+under plans/, and prints what a load would send and the exact command to load it. Each setup
+problem is reported with the command that fixes it. Review the plan with `--review`, which
+pages through the sessions that have masks, then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
 run_manifest.py and retro_load.py, the same path as a manual load.
 
 A long load should survive a closed browser tab, so run it in the background:
 
-    nohup .venv/bin/python backfill.py mamillerpa --load --plan PLAN > backfill-mamillerpa.log 2>&1 &
+    PYTHONUNBUFFERED=1 nohup <the printed load command> > ~/backfill-<person>-load.log 2>&1 &
+
+The step-by-step procedure is docs/backfill-runbook.md.
 
 See https://github.com/beril-doe/langfuse-retro-load/issues/38.
 """
@@ -195,7 +198,7 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
             paths = build_manifest.find_jsonl_files(source["find_root"])
         except build_manifest.DiscoveryFailed as exc:
             raise SystemExit(f"could not list {person['person']}'s transcripts: {exc}. Fix the "
-                             "find_root in people.json, or its permissions; nothing was sent.") from exc
+                             "find_root in the roster, or its permissions; nothing was sent.") from exc
         for path in paths:
             if sessions and path.stem not in sessions:
                 continue
@@ -211,7 +214,7 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
         where = [str(path) for entry, path in found if entry["session_id"] in repeated]
         raise SystemExit(f"session id(s) {', '.join(repeated)} appear in more than one "
                          f"source: {', '.join(where)}. Decide which copy is right, then move "
-                         "the other out of its find_root or drop that source from people.json. "
+                         "the other out of its find_root or drop that source from the roster. "
                          "--session cannot pick between them: it matches by id in every source.")
     missing = sessions - set(ids)
     if missing:
@@ -321,14 +324,21 @@ def review(person: str) -> int:
         print(f"the latest preview for {person} masks nothing; nothing to review. To load what "
               f"was previewed:\n  {state['load_command']}")
         return 0
-    for n, session in enumerate(todo, 1):
-        print(f"\n=== session {n} of {len(todo)}: {session['subject']} ({session['masks']} mask(s))")
-        code = run_reveal([sys.executable, str(HERE / "reveal.py"), "--plan", state["plan"],
-                           "--transcript", session["transcript"], "--show-values"])
-        if code != 0:
-            return code
-        if n < len(todo):
-            input("--- Enter for the next session, Ctrl-C to stop ---")
+    try:
+        for n, session in enumerate(todo, 1):
+            print(f"\n=== session {n} of {len(todo)}: {session['subject']} "
+                  f"({session['masks']} mask(s))")
+            code = run_reveal([sys.executable, str(HERE / "reveal.py"), "--plan", state["plan"],
+                               "--transcript", session["transcript"], "--show-values"])
+            if code != 0:
+                return code
+            if n < len(todo):
+                input("--- Enter for the next session, Ctrl-C or Ctrl-D to stop ---")
+    except (KeyboardInterrupt, EOFError):
+        # Stopping part way is a normal choice, not a crash (Fable review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        print(f"\nstopped. The load command is:\n  {state['load_command']}")
+        return 130
     print(f"\nReviewed {len(todo)} session(s). To load what was previewed:\n  {state['load_command']}")
     return 0
 
@@ -336,7 +346,7 @@ def review(person: str) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("person", help="the person's name in people.json, e.g. mamillerpa")
+    ap.add_argument("person", help="the person's account name in the roster")
     ap.add_argument("--load", action="store_true",
                     help="load, using the plan named by --plan")
     ap.add_argument("--plan", type=Path, default=None,
@@ -367,8 +377,17 @@ def main() -> int:
     if args.people is None:
         args.people = DEFAULT_ROSTER if DEFAULT_ROSTER.exists() else HERE / "people.json"
     if args.review:
-        if args.load or args.plan is not None:
-            ap.error("--review only shows the latest preview; run --load separately")
+        # --review shows the latest preview as it was written; these would change nothing,
+        # so refuse them rather than ignore them (Fable review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        other = [flag for flag, given in (("--load", args.load), ("--plan", args.plan is not None),
+                                          ("--session", bool(args.session)),
+                                          ("--workshop-day-only", args.workshop_day_only),
+                                          ("--force", args.force),
+                                          ("--batch-tag", args.batch_tag is not None)) if given]
+        if other:
+            ap.error(f"--review only shows the latest preview; {', '.join(other)} belong to the "
+                     "preview or the load")
         return review(args.person)
     if args.load and args.plan is None:
         ap.error("--load needs --plan: run the preview first, review its plan, then load "
@@ -446,7 +465,7 @@ def main() -> int:
 
     if not args.load:
         again = [a for a in sys.argv[1:]]
-        if "--people" not in again:
+        if not any(a == "--people" or a.startswith("--people=") for a in again):
             # Pin the roster the preview used, so the load can't fall back to a different one
             # if the default roster moves (Codex review of
             # https://github.com/beril-doe/langfuse-retro-load/pull/67).
@@ -464,10 +483,14 @@ def main() -> int:
         command = shlex.join([python, str(HERE / "backfill.py"), *again, "--load",
                               "--plan", str(plan_path)])
         with_masks = write_state(args.person, plan_path, paths, command)
-        print(f"\nNothing sent. {with_masks} of {len(paths)} session(s) have masks. Review them, "
-              "one session at a time, with values:")
-        print(f"  {shlex.join([python, str(HERE / 'backfill.py'), args.person, '--review'])}")
-        print(f"Then load exactly what was previewed:\n  {command}")
+        if with_masks:
+            print(f"\nNothing sent. {with_masks} of {len(paths)} session(s) have masks. Review "
+                  "them, one session at a time, with values:")
+            print(f"  {shlex.join([python, str(HERE / 'backfill.py'), args.person, '--review'])}")
+            print(f"Then load exactly what was previewed:\n  {command}")
+        else:
+            print("\nNothing sent. The plan masks nothing, so there is nothing to review. Load "
+                  f"exactly what was previewed:\n  {command}")
         return 0
 
     if failed:
