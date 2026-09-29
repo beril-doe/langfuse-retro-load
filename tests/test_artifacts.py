@@ -421,3 +421,13 @@ def test_artifacts_default_to_the_private_roster(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         artifacts.main()
     assert "nobody is not in roster.json" in str(exc.value)
+
+
+
+def test_artifacts_stop_when_the_default_roster_is_missing(monkeypatch, tmp_path):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(artifacts.backfill, "DEFAULT_ROSTER", tmp_path / "missing.json")
+    monkeypatch.setattr(artifacts.sys, "argv", ["artifacts.py", "someone"])
+    with pytest.raises(SystemExit) as exc:
+        artifacts.main()
+    assert "doesn't exist. Pass --people" in str(exc.value)

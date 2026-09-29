@@ -41,8 +41,8 @@ prints its fix.
 cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --workshop-day-only
 ```
 
-It reads the private roster, `~/beril-backfill-roster.json`, when that file exists; `--people`
-names another. `--workshop-day-only` sends only turns dated the workshop day (2026-05-07, in UTC). That is
+It reads the private roster, `~/beril-backfill-roster.json`, and stops if that file is
+missing; `--people` names another. `--workshop-day-only` sends only turns dated the workshop day (2026-05-07, in UTC). That is
 Mark's scope for consenters as of 2026-09-29. It's optional; leave it off to send every day.
 The load command the preview prints keeps it.
 

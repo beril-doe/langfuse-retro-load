@@ -8,7 +8,7 @@ Run on the BERDL pod, from this repository:
     .venv/bin/python backfill.py <person> --load --plan PLAN     # load with the reviewed plan
 
 The preview checks the setup, finds the person's transcripts from the roster (by default the
-private one on the pod, ~/beril-backfill-roster.json, when it exists), writes a redaction plan
+private one on the pod, ~/beril-backfill-roster.json; --people names another), writes a redaction plan
 under plans/, and prints what a load would send and the exact command to load it. Each setup
 problem is reported with the command that fixes it. Review the plan with `--review`, which
 pages through the sessions that have masks, then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
@@ -269,6 +269,17 @@ def _day(value: str) -> str:
 DEFAULT_ROSTER = Path.home() / "beril-backfill-roster.json"
 
 
+def default_roster() -> Path:
+    """The private roster, or a clean stop when it is missing. There is no fallback to
+    people.json: a silent switch of roster changes whose sessions and identity a command
+    uses, which is what three Codex rounds on
+    https://github.com/beril-doe/langfuse-retro-load/pull/67 kept finding."""
+    if not DEFAULT_ROSTER.exists():
+        raise SystemExit(f"no roster given and {DEFAULT_ROSTER} doesn't exist. Pass --people "
+                         f"<file>, for example --people {HERE / 'people.json'}")
+    return DEFAULT_ROSTER
+
+
 def state_path(person: str) -> Path:
     """Where a preview records what it wrote, for --review (and later --load) to reuse."""
     return HERE / "plans" / f"{person}-latest.json"
@@ -367,15 +378,15 @@ def main() -> int:
                     help="send only turns dated --event-day (UTC). Off by default; the printed "
                          "load command keeps it, so the load sends what the preview described")
     ap.add_argument("--people", type=Path, default=None,
-                    help=f"the roster; default {DEFAULT_ROSTER} when it exists, otherwise "
-                         "this repository's people.json")
+                    help=f"the roster; default {DEFAULT_ROSTER}, which must then exist")
     ap.add_argument("--review", action="store_true",
                     help="show, one session at a time, what the latest preview's plan masks, "
                          "with values. Only sessions with masks are shown. Needs a terminal")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
-    if args.people is None:
-        args.people = DEFAULT_ROSTER if DEFAULT_ROSTER.exists() else HERE / "people.json"
+    people_given = args.people is not None
+    if args.people is None and not args.review:
+        args.people = default_roster()
     if args.review:
         # --review shows the latest preview as it was written; these would change nothing,
         # so refuse them rather than ignore them (Fable review of
@@ -384,7 +395,8 @@ def main() -> int:
                                           ("--session", bool(args.session)),
                                           ("--workshop-day-only", args.workshop_day_only),
                                           ("--force", args.force),
-                                          ("--batch-tag", args.batch_tag is not None)) if given]
+                                          ("--batch-tag", args.batch_tag is not None),
+                                          ("--people", people_given)) if given]
         if other:
             ap.error(f"--review only shows the latest preview; {', '.join(other)} belong to the "
                      "preview or the load")
@@ -418,6 +430,11 @@ def main() -> int:
     tag = args.batch_tag or f"backfill-{args.person}-{today}"
     found = discover(person, set(args.session), args.event_day)
     if not found:
+        # An empty preview is still the latest preview, so the saved state from an earlier one
+        # must not stay behind for --review or a later load (Codex review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        if not args.load:
+            state_path(args.person).unlink(missing_ok=True)
         print(f"no transcripts found for {args.person}")
         return 0
     paths = [path for _, path in found]

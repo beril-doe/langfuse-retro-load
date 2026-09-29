@@ -6,8 +6,8 @@ Run on the BERDL pod, from this repository:
     .venv/bin/python artifacts.py <person>          # preview
     .venv/bin/python artifacts.py <person> --load   # upload
 
-The roster defaults to the private one on the pod, ~/beril-backfill-roster.json, when it
-exists; --people names another.
+The roster defaults to the private one on the pod, ~/beril-backfill-roster.json; --people
+names another. Without --people, a missing default roster stops the command.
 
 An artifact is what BERIL's live hook uploads at session end: REPORT.md, RESEARCH_PLAN.md
 and WORKLOG.md of the project the session worked on (ARTIFACTS in
@@ -386,8 +386,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("person")
     ap.add_argument("--people", type=Path, default=None,
-                    help=f"the roster; default {backfill.DEFAULT_ROSTER} when it exists, "
-                         "otherwise this repository's people.json")
+                    help=f"the roster; default {backfill.DEFAULT_ROSTER}, which must then exist")
     ap.add_argument("--load", action="store_true", help="upload after the preview")
     ap.add_argument("--force", action="store_true", help="upload snapshots already marked as sent")
     ap.add_argument("--only-day", default=None, metavar="YYYY-MM-DD", type=_day,
@@ -397,8 +396,7 @@ def main() -> int:
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.people is None:
-        args.people = (backfill.DEFAULT_ROSTER if backfill.DEFAULT_ROSTER.exists()
-                       else HERE / "people.json")
+        args.people = backfill.default_roster()
 
     problems = backfill.setup_problems(skip_git=args.skip_git_check)
     if problems:

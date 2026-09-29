@@ -21,9 +21,9 @@ On the pod, from this repository:
 The step-by-step procedure is [docs/backfill-runbook.md](docs/backfill-runbook.md).
 
 `<person>` is a `person` in the roster. The default is the private roster on the pod,
-`~/beril-backfill-roster.json`, when that file exists, which is where consenters belong;
-otherwise it's this repository's `people.json`. `--people <file>` names another (see
-"Adding a person" below). The preview says what to fix if the setup
+`~/beril-backfill-roster.json`, which is where consenters belong; `--people <file>` names
+another, such as this repository's `people.json` (see "Adding a person" below). Without
+`--people`, a missing default roster stops the command rather than switching rosters. The preview says what to fix if the setup
 is not ready: an old branch, a `langfuse` other than the version `uv.lock` pins, or a missing `gitleaks` or one older than 8.20.0.
 Otherwise it writes a redaction plan under `plans/`, prints what would be sent, and
 prints the exact load command. Review the plan with `backfill.py <person> --review`, which
@@ -64,7 +64,7 @@ transfer files there) and run everything from a pod terminal.
 - **`people.json`**: the committed roster, for team members who have agreed to be
   listed publicly. Anyone else goes in a private roster file on the pod with the same
   format, `~/beril-backfill-roster.json`, which `backfill.py` and `artifacts.py` read by
-  default when it exists (`--people` names another). See below.
+  default (`--people` names another). See below.
 - **`build_manifest.py`** / **`run_manifest.py`**: `build_manifest.py`
   reads `people.json`, discovers every session under each source's
   `find_root`, and runs `retro_load.py --dry-run` on each to work out turn
@@ -226,7 +226,7 @@ access that the write-only relay does not expose to clients.
 
 Edit a roster, not the Python: `people.json` for someone who has agreed to be listed in
 this public repository, otherwise a private file on the pod with the same format:
-`~/beril-backfill-roster.json`, which is read by default when it exists, or another file
+`~/beril-backfill-roster.json`, which is read by default, or another file
 passed with `--people`. One entry per person, one `sources` entry per place their traces live,
 and an `orcid`, which `backfill.py` requires:
 
@@ -266,7 +266,7 @@ registry can match more than one person. Never use a real name.
 `build_manifest.py` still falls back to the pod account name for a person without an
 `orcid`, but that manifest only drives `run_manifest.py`; `backfill.py` does not use it.
 A roster of consenters with their ORCIDs belongs in a private file on the pod
-(`~/beril-backfill-roster.json`, read by default when it exists), not in this public
+(`~/beril-backfill-roster.json`, read by default), not in this public
 `people.json`.
 
 ## This repository is public, and two of its files are about people

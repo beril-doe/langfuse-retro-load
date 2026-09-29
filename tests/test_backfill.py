@@ -49,6 +49,12 @@ def corpus(tmp_path, monkeypatch):
     return people
 
 
+def review_run(monkeypatch, *argv):
+    """--review takes no --people: it reads the latest preview's saved state."""
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--review", "--skip-git-check", *argv])
+    return backfill.main()
+
+
 def run(monkeypatch, people, *argv):
     monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--people", str(people),
                                       "--skip-git-check", *argv])
@@ -262,7 +268,7 @@ def test_review_shows_only_sessions_with_masks(corpus, monkeypatch, capsys):
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("paused after the last session"))
-    assert run(monkeypatch, corpus, "--review") == 0
+    assert review_run(monkeypatch) == 0
     assert len(shown) == 1 and shown[0][-2].endswith("s-1.jsonl") and shown[0][-1] == "--show-values"
 
 
@@ -271,12 +277,12 @@ def test_review_refuses_without_a_terminal(corpus, monkeypatch, capsys):
     assert run(monkeypatch, corpus) == 0
     monkeypatch.setattr(backfill, "run_reveal", lambda cmd: pytest.fail("showed values into a pipe"))
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: False)
-    assert run(monkeypatch, corpus, "--review") == 2
+    assert review_run(monkeypatch) == 2
     assert "only runs in a terminal" in capsys.readouterr().err
 
 
 def test_review_without_a_preview_says_what_to_run(corpus, monkeypatch, capsys):
-    assert run(monkeypatch, corpus, "--review") == 2
+    assert review_run(monkeypatch) == 2
     assert "run: backfill.py someone" in capsys.readouterr().err
 
 
@@ -604,7 +610,7 @@ def test_review_of_a_mask_free_preview_still_prints_the_load_command(corpus, mon
     capsys.readouterr()
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
-    assert run(monkeypatch, corpus, "--review") == 0
+    assert review_run(monkeypatch) == 0
     out = capsys.readouterr().out
     assert "masks nothing" in out and "--load --plan" in out
 
@@ -646,7 +652,7 @@ def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys
     monkeypatch.setattr(backfill, "run_reveal", lambda cmd: pytest.fail("showed values"))
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: False)
-    assert run(monkeypatch, corpus, "--review") == 2
+    assert review_run(monkeypatch) == 2
 
 
 @pytest.mark.parametrize("flag", [["--session", "s-1"], ["--workshop-day-only"], ["--force"],
@@ -654,7 +660,7 @@ def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys
 def test_review_refuses_flags_it_would_ignore(corpus, monkeypatch, flag):
     """Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
     with pytest.raises(SystemExit) as exc:
-        run(monkeypatch, corpus, "--review", *flag)
+        review_run(monkeypatch, *flag)
     assert exc.value.code == 2
 
 
@@ -670,7 +676,7 @@ def test_stopping_review_part_way_is_not_a_crash(corpus, monkeypatch, capsys, st
         raise stop
 
     monkeypatch.setattr(backfill, "run_reveal", reveal)
-    assert run(monkeypatch, corpus, "--review") == 130
+    assert review_run(monkeypatch) == 130
     out = capsys.readouterr().out
     assert "stopped" in out and "--load --plan" in out
 
@@ -688,3 +694,32 @@ def test_people_given_with_equals_is_not_duplicated(corpus, monkeypatch, capsys)
     assert backfill.main() == 0
     command = capsys.readouterr().out.strip().splitlines()[-1]
     assert command.count("--people") == 1
+
+
+
+def test_review_refuses_a_roster(corpus, monkeypatch):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67: state is
+    per account, so a roster given to --review could not change what it shows."""
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus, "--review")
+    assert exc.value.code == 2
+
+
+def test_a_missing_default_roster_stops_instead_of_falling_back(monkeypatch, tmp_path, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67: no silent
+    switch to people.json."""
+    monkeypatch.setattr(backfill, "DEFAULT_ROSTER", tmp_path / "missing.json")
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--skip-git-check"])
+    with pytest.raises(SystemExit) as exc:
+        backfill.main()
+    assert "doesn't exist. Pass --people" in str(exc.value)
+
+
+def test_an_empty_preview_clears_the_saved_state(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    assert backfill.state_path("someone").exists()
+    monkeypatch.setattr(backfill, "discover", lambda *a: [])
+    assert run(monkeypatch, corpus) == 0
+    assert not backfill.state_path("someone").exists()
