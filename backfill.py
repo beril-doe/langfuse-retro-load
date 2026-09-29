@@ -328,8 +328,14 @@ def main() -> int:
         print(f"  {source} (consent: {consent or 'not recorded'}): {len(items)} sessions, "
               f"{turns} turns" + (f", {marked} already marked as sent" if marked else ""))
     if args.workshop_day_only:
-        print(f"  --workshop-day-only: only turns dated {args.event_day} (UTC) are sent; the "
-              "turn counts above include every day")
+        # What the load will send, so the check after the load has a number to compare against
+        # (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64).
+        counts = [e.get("turns_on_event_day") for e, _ in found]
+        known = sum(c for c in counts if c is not None)
+        unknown = sum(1 for c in counts if c is None)
+        print(f"  --workshop-day-only: {known} turns dated {args.event_day} (UTC) will be sent"
+              + (f"; {unknown} session(s) already marked as sent have no per-day count"
+                 if unknown else ""))
     print(f"redaction plan: {plan_path}")
     print(f"  {summary['total']} value(s) to mask" + (": " if summary["total"] else "")
           + ", ".join(f"{k} {v}" for k, v in summary["by_category"].most_common()))

@@ -81,9 +81,11 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
     if already:
         turns = int(already.group(1))
         saw_event_day = f"event_day:{event_day}" in already.group(2)
-        return {"turns": turns, "event_day": saw_event_day, "failed": False}
+        # The marker line carries no per-turn dates, so the day's own count is unknown here.
+        return {"turns": turns, "event_day": saw_event_day, "day_turns": None, "failed": False}
 
     saw_summary_line = False
+    day_turns = 0
     for line in r.stdout.splitlines():
         m = re.match(r"^\S+\.jsonl: \d+ jsonl lines -> (\d+) turns", line)
         if m:
@@ -93,6 +95,7 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
         m2 = re.search(r"turn \d+: (\d{4}-\d{2}-\d{2})T", line)
         if m2 and m2.group(1) == event_day:
             saw_event_day = True
+            day_turns += 1
 
     if not saw_summary_line:
         # A 0 exit code alone isn't proof the dry-run actually did anything -- neither
@@ -102,7 +105,7 @@ def dry_run_summary(path: Path, event_day: str) -> dict:
               f"{r.stdout.strip()[-300:] or '(empty stdout)'}")
         return {"turns": 0, "event_day": False, "failed": True}
 
-    return {"turns": turns, "event_day": saw_event_day, "failed": False}
+    return {"turns": turns, "event_day": saw_event_day, "day_turns": day_turns, "failed": False}
 
 
 ORCID_RE = re.compile(r"(?:https?://orcid\.org/)?([0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X])")
@@ -156,6 +159,8 @@ def manifest_entry(person: dict, source: dict, session_id: str, summary: dict,
         "role": person.get("role"),
         "group": person.get("group"),
         "turns_expected": summary["turns"],
+        # Turns dated event_day, which is what a --only-day load sends; None when unknown.
+        "turns_on_event_day": summary.get("day_turns"),
         "dry_run_failed": summary["failed"],
     }
 

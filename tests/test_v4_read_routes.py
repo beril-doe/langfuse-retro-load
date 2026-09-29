@@ -280,3 +280,18 @@ def test_outside_day_rejects_anything_but_a_real_date(bad):
     with pytest.raises(argparse.ArgumentTypeError):
         langfuse_admin._iso_day(bad)
     assert langfuse_admin._iso_day("2026-05-07") == "2026-05-07"
+
+
+def test_the_record_states_the_narrowing_filters(monkeypatch, tmp_path):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: the record
+    listed only the tag, not the user and day that narrowed what was deleted."""
+    fake = DeletingFake([dated(1, "a", "2026-04-30", "p1"), dated(2, "b", "2026-05-07", "p1")],
+                        scores=[])
+    wired(monkeypatch, fake)
+    record = tmp_path / "deleted.json"
+    args = delete_args(tag=["retro-load"], dry_run=False, yes=True, record=str(record))
+    args.user_id, args.outside_day = "p1", "2026-05-07"
+    assert langfuse_admin.cmd_delete(args) == 0
+    written = json.loads(record.read_text())
+    assert written["narrowed_by"] == {"user_id": "p1", "outside_day": "2026-05-07"}
+    assert [t["id"] for t in written["traces"]] == ["a"]

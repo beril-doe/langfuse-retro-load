@@ -610,6 +610,9 @@ def cmd_delete(args) -> int:
             "planned_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "project": args.project, "where": where, "host": host,
             "match": "all" if args.all else {"tags": tags} if tags else args.name,
+            # The narrowing filters too, so the record states the predicate that was reviewed.
+            "narrowed_by": {"user_id": getattr(args, "user_id", None),
+                            "outside_day": getattr(args, "outside_day", None)},
             "count": len(targets),
             "traces": [{"id": t["id"], "sessionId": t.get("sessionId"),
                         "userId": t.get("userId"), "name": t.get("name"),

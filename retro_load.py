@@ -321,9 +321,13 @@ def skip_reason(*, last_seen, now, min_idle_days: float, existing: int,
 def _day(value: str) -> str:
     """argparse type: a YYYY-MM-DD date, returned as given."""
     try:
-        datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {value!r}") from exc
+    # strptime accepts 2026-5-7, which would then match no turn's canonical date and send
+    # nothing (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64).
+    if parsed.strftime("%Y-%m-%d") != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
     return value
 
 

@@ -510,3 +510,19 @@ def test_a_marker_only_completes_a_run_for_the_same_day():
     assert not retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day="2026-05-08")
     assert retro_load.marker_matches(base, "h", "pk", "s", planned=True, only_day=None), \
         "an older marker, without the field, still means every day was sent"
+
+
+@pytest.mark.parametrize("bad", ["2026-5-7", "2026-02-30", "20260507"])
+def test_only_day_rejects_non_canonical_dates(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: 2026-5-7
+    parsed, then matched no turn, so a load sent nothing and marked the session done."""
+    pytest.importorskip("dotenv")
+    import argparse
+    import retro_load
+    with pytest.raises(argparse.ArgumentTypeError):
+        retro_load._day(bad)
+
+
+def test_the_workshop_preview_counts_the_turns_it_will_send(corpus, monkeypatch, capsys):
+    preview_plan(monkeypatch, corpus, capsys, "--workshop-day-only")
+    assert "--workshop-day-only: 2 turns dated 2026-05-07 (UTC) will be sent" in preview_plan.output
