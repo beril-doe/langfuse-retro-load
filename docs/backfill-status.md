@@ -43,12 +43,13 @@ procedure for loading someone is in [backfill-runbook.md](backfill-runbook.md).
 | status | people | turns on the workshop day | snapshots on the workshop day |
 |---|---|---|---|
 | loaded | 6 (the BERIL developer and 5 consenters) | 264 | 12 |
-| strong evidence, not yet loaded | 12, one of them on hold at Mark's request | 458 | 12 |
-| good evidence: one matching registry record, but the iD isn't in the transcripts | 11 | 313 | 14 |
+| strong evidence, not yet loaded | 11, one of them on hold at Mark's request | 410 | 12 |
+| good evidence: one matching registry record, but the iD isn't in the transcripts | 11 | 363 | 14 |
 | unresolved: no single matching registry record | 4 | 56 | 0 |
+| no account in the corpus | 1 | 0 | 0 |
 
-The strong row counts all 12 people, including the one on hold (40 workshop-day turns and one
-snapshot).
+The rows add up to the corpus totals: 1,093 workshop-day turns and 38 snapshots. The strong
+row includes the person on hold (40 workshop-day turns and one snapshot).
 
 ## Loaded now (beril-usage, tag `retro-load`)
 
