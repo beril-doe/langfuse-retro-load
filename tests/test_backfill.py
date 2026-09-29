@@ -241,13 +241,53 @@ def test_the_locked_langfuse_is_not_a_setup_problem(monkeypatch):
     assert not any("langfuse" in p for p in backfill.setup_problems(skip_git=True))
 
 
-def test_every_session_gets_a_review_command(corpus, monkeypatch, capsys):
+def test_the_preview_records_its_state_and_prints_one_review_command(corpus, monkeypatch, capsys):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/62: one short review command
+    instead of one reveal.py line per session."""
     monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
     assert run(monkeypatch, corpus) == 0
     out = capsys.readouterr().out
-    reviewed = [line for line in out.splitlines() if "reveal.py --plan" in line]
-    assert len(reviewed) == 2 and any("s-1.jsonl" in r for r in reviewed) \
-        and any("s-2.jsonl" in r for r in reviewed)
+    assert "1 of 2 session(s) have masks" in out
+    assert "backfill.py someone --review" in out and "reveal.py --plan" not in out
+    state = json.loads(backfill.state_path("someone").read_text())
+    assert {s["subject"]: s["masks"] for s in state["sessions"]} == {"s-1": 1, "s-2": 0}
+    assert state["load_command"].endswith(state["plan"])
+
+
+def test_review_shows_only_sessions_with_masks(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    shown = []
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: shown.append(cmd) or 0)
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("paused after the last session"))
+    assert run(monkeypatch, corpus, "--review") == 0
+    assert len(shown) == 1 and shown[0][-2].endswith("s-1.jsonl") and shown[0][-1] == "--show-values"
+
+
+def test_review_refuses_without_a_terminal(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: pytest.fail("showed values into a pipe"))
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: False)
+    assert run(monkeypatch, corpus, "--review") == 2
+    assert "only runs in a terminal" in capsys.readouterr().err
+
+
+def test_review_without_a_preview_says_what_to_run(corpus, monkeypatch, capsys):
+    assert run(monkeypatch, corpus, "--review") == 2
+    assert "run: backfill.py someone" in capsys.readouterr().err
+
+
+def test_the_private_roster_is_the_default(monkeypatch, tmp_path):
+    roster = tmp_path / "roster.json"
+    roster.write_text("[]")
+    monkeypatch.setattr(backfill, "DEFAULT_ROSTER", roster)
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "nobody", "--skip-git-check"])
+    monkeypatch.setattr(backfill, "setup_problems", lambda skip_git=False: [])
+    with pytest.raises(SystemExit) as exc:
+        backfill.main()
+    assert "nobody is not in roster.json" in str(exc.value)
 
 
 def test_one_session_id_in_two_sources_is_refused(corpus, monkeypatch, tmp_path):

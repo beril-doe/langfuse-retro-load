@@ -262,6 +262,64 @@ def _day(value: str) -> str:
     return value
 
 
+#: The private roster on the pod. It is outside this public repository on purpose.
+DEFAULT_ROSTER = Path.home() / "beril-backfill-roster.json"
+
+
+def state_path(person: str) -> Path:
+    """Where a preview records what it wrote, for --review (and later --load) to reuse."""
+    return HERE / "plans" / f"{person}-latest.json"
+
+
+def write_state(person: str, plan_path: Path, paths: list[Path], command: str) -> int:
+    """Record the preview: its plan, its load command, and each session's mask count.
+    Returns how many sessions have at least one mask."""
+    import inventory
+    import plan
+    _, by_subject = plan.read(plan_path)
+    sessions = []
+    for path in paths:
+        subject = inventory._subject_for(path)
+        masks = sum(1 for m in by_subject.get(subject, []) if not m.cleared)
+        sessions.append({"transcript": str(path), "subject": subject, "masks": masks})
+    state = {"plan": str(plan_path), "load_command": command, "sessions": sessions}
+    target = state_path(person)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state, indent=2) + "\n")
+    return sum(1 for s in sessions if s["masks"])
+
+
+def run_reveal(cmd: list[str]) -> int:
+    return subprocess.run(cmd, check=False).returncode
+
+
+def review(person: str) -> int:
+    """Page through the latest preview's masks, one session with masks at a time."""
+    target = state_path(person)
+    if not target.exists():
+        print(f"no preview recorded for {person}; run: backfill.py {person}", file=sys.stderr)
+        return 2
+    if not sys.stdout.isatty():
+        print("--review shows values, so it only runs in a terminal; don't pipe or redirect it",
+              file=sys.stderr)
+        return 2
+    state = json.loads(target.read_text())
+    todo = [s for s in state["sessions"] if s["masks"]]
+    if not todo:
+        print(f"the latest preview for {person} masks nothing; nothing to review")
+        return 0
+    for n, session in enumerate(todo, 1):
+        print(f"\n=== session {n} of {len(todo)}: {session['subject']} ({session['masks']} mask(s))")
+        code = run_reveal([sys.executable, str(HERE / "reveal.py"), "--plan", state["plan"],
+                           "--transcript", session["transcript"], "--show-values"])
+        if code != 0:
+            return code
+        if n < len(todo):
+            input("--- Enter for the next session, Ctrl-C to stop ---")
+    print(f"\nReviewed {len(todo)} session(s). To load what was previewed:\n  {state['load_command']}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -285,9 +343,20 @@ def main() -> int:
     ap.add_argument("--workshop-day-only", action="store_true",
                     help="send only turns dated --event-day (UTC). Off by default; the printed "
                          "load command keeps it, so the load sends what the preview described")
-    ap.add_argument("--people", type=Path, default=HERE / "people.json")
+    ap.add_argument("--people", type=Path, default=None,
+                    help=f"the roster; default {DEFAULT_ROSTER} when it exists, otherwise "
+                         "this repository's people.json")
+    ap.add_argument("--review", action="store_true",
+                    help="show, one session at a time, what the latest preview's plan masks, "
+                         "with values. Only sessions with masks are shown. Needs a terminal")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.people is None:
+        args.people = DEFAULT_ROSTER if DEFAULT_ROSTER.exists() else HERE / "people.json"
+    if args.review:
+        if args.load or args.plan is not None:
+            ap.error("--review only shows the latest preview; run --load separately")
+        return review(args.person)
     if args.load and args.plan is None:
         ap.error("--load needs --plan: run the preview first, review its plan, then load "
                  "with the command the preview prints")
@@ -376,11 +445,10 @@ def main() -> int:
         python = sys.executable
         command = shlex.join([python, str(HERE / "backfill.py"), *again, "--load",
                               "--plan", str(plan_path)])
-        print("\nNothing sent. Review what the plan will mask, one session at a time:")
-        for path in paths:
-            print(f"  {shlex.quote(python)} {shlex.quote(str(HERE / 'reveal.py'))} "
-                  f"--plan {shlex.quote(str(plan_path))} "
-                  f"--transcript {shlex.quote(str(path))}")
+        with_masks = write_state(args.person, plan_path, paths, command)
+        print(f"\nNothing sent. {with_masks} of {len(paths)} session(s) have masks. Review them, "
+              "one session at a time, with values:")
+        print(f"  {shlex.join([python, str(HERE / 'backfill.py'), args.person, '--review'])}")
         print(f"Then load exactly what was previewed:\n  {command}")
         return 0
 
