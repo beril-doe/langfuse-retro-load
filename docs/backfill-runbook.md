@@ -66,10 +66,11 @@ Copy the load command the preview printed, and run it in the background so a clo
 can't stop it:
 
 ```bash
-cd ~/langfuse-retro-load && nohup .venv/bin/python -u backfill.py <person> --people ~/beril-backfill-roster.json --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
+cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
 ```
 
-`-u` makes the log show progress as it happens. The load is finished when
+`PYTHONUNBUFFERED=1` makes the log show progress as it happens. Unlike `python -u`, it also
+reaches the processes the load starts, which print the per-session lines. The load is finished when
 `pgrep -af 'backfill.py|run_manifest.py|retro_load.py'` prints nothing; the log then ends
 with a summary of sessions emitted and skipped. A session with no timestamps is skipped on
 purpose.
@@ -97,6 +98,21 @@ project's REPORT, RESEARCH_PLAN or WORKLOG, as the live hook does.
 
 ## If something went wrong
 
-Everything from one load carries its batch tag. To remove it, run the step 7 command without
-`--dry-run`, with `--yes`, and `--record <file>` to keep a manifest of what was deleted. Then
-reload with `--force`, because the load left markers saying those sessions were sent.
+The turn traces from one load carry its batch tag. To remove them, run the step 7 command
+without `--dry-run`, with `--yes`, and `--record <file>` to keep a manifest of what was
+deleted.
+
+The artifact spans from step 8 don't carry the batch tag, so that doesn't remove them. They
+also carry the session ids, and a reload skips any session that Langfuse already holds
+observations for, even with `--force`. So after uploading artifacts, a full redo needs
+their spans removed too. Select them by name:
+
+```bash
+python3 langfuse_admin.py delete --project beril --type trace --name "BERIL artifacts — <project>" --dry-run
+```
+
+Check that the listed sessions and user id are only this person's before deleting: a
+live-hook upload for the same project would match the name too. Then run it with `--yes`
+and `--record <file>`. Finally reload with `--force`, because the load left markers saying
+those sessions were sent. A simpler, tag-scoped undo is part of
+https://github.com/beril-doe/langfuse-retro-load/issues/62.
