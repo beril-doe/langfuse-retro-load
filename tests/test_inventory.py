@@ -6,7 +6,6 @@ on purpose, because a test for a credential pattern has to contain one; neither 
 value and neither came from a real system.
 """
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -365,10 +364,11 @@ def test_gitleaks_runs_with_the_repo_config(monkeypatch, tmp_path):
 
 
 @pytest.mark.real_gitleaks_version
-@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
 def test_biosample_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
     """A consenter's workshop session SQL `WHERE accession = 'SAMN12345678'` was masked as a
     generic API key, hiding the BioSample IDs the session is about (2026-09-28)."""
+    from conftest import require_gitleaks
+    require_gitleaks()
     key = "x8Kq2Lm9" + "Pz4Rt7Vw1Yb5Nc3Hd6Jf0Gs"  # split so this file's own scan stays clean
     f = tmp_path / "t.txt"
     f.write_text("WHERE accession = 'SAMN12345678'\n"
