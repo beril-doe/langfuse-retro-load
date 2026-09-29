@@ -498,6 +498,19 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def _iso_day(value: str) -> str:
+    """argparse type: a real YYYY-MM-DD date. A typo such as 2026-02-30 would otherwise match
+    no trace's day, so --outside-day would select everything (Codex review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/64)."""
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a real YYYY-MM-DD date: {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"write the date as YYYY-MM-DD: {value!r}")
+    return value
+
+
 def _on_day(timestamp, day: str) -> bool:
     """Whether a trace timestamp falls on `day` (UTC). An unreadable timestamp counts as not,
     so --outside-day keeps it in the deletion list and the dry run shows it."""
@@ -687,7 +700,7 @@ def main() -> int:
     selector.add_argument("--tag", action="append",
                           help="match traces carrying this tag; repeat to require several")
     d.add_argument("--user-id", help="narrow to traces with this user id, e.g. an ORCID")
-    d.add_argument("--outside-day", metavar="YYYY-MM-DD",
+    d.add_argument("--outside-day", metavar="YYYY-MM-DD", type=_iso_day,
                    help="narrow to traces NOT dated this day (UTC), e.g. to remove turns "
                         "from other days than the workshop")
     d.add_argument("--dry-run", action="store_true")

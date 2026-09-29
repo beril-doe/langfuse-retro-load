@@ -70,7 +70,7 @@ Copy the load command the preview printed, and run it in the background so a clo
 can't stop it:
 
 ```bash
-cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
+cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --workshop-day-only --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
 ```
 
 `PYTHONUNBUFFERED=1` makes the log show progress as it happens. Unlike `python -u`, it also

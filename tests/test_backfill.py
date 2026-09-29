@@ -495,3 +495,18 @@ def test_retro_load_only_day_keeps_that_days_turns(monkeypatch, tmp_path, capsys
     out = capsys.readouterr().out
     assert "1 of 2 turns dated that day" in out
     assert "turn 2: 2026-05-07" in out and "turn 1:" not in out, "turns keep their numbers"
+
+
+def test_a_marker_only_completes_a_run_for_the_same_day():
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: a day-limited
+    load must not satisfy a later run for another day, or for every day."""
+    pytest.importorskip("dotenv")
+    import retro_load
+    base = {"session_id": "s", "host": "h", "public_key": "pk", "planned": True, "turns_emitted": 3,
+            "tags": [], "redacted": {}}
+    day = dict(base, only_day="2026-05-07")
+    assert retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day="2026-05-07")
+    assert not retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day=None)
+    assert not retro_load.marker_matches(day, "h", "pk", "s", planned=True, only_day="2026-05-08")
+    assert retro_load.marker_matches(base, "h", "pk", "s", planned=True, only_day=None), \
+        "an older marker, without the field, still means every day was sent"

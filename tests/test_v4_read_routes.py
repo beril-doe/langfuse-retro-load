@@ -5,11 +5,14 @@
 replacement: one cursor walk of v2/observations for observations, traces and sessions,
 v3/scores for scores, and v2/metrics as an independent check on the walk.
 """
+import argparse
 import json
 import sys
 import urllib.error
 import urllib.parse
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import langfuse_admin
@@ -268,3 +271,12 @@ def test_outside_day_and_user_id_only_narrow_the_targets(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "4 traces tagged retro-load, user p1, not dated 2026-05-07 (UTC), 2 to delete" in out
     assert "p1 (2)" in out and "p2" not in out
+
+
+@pytest.mark.parametrize("bad", ["2026-02-30", "2026-5-7", "20260507", "tomorrow"])
+def test_outside_day_rejects_anything_but_a_real_date(bad):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an impossible
+    date matched no trace, so --outside-day selected everything."""
+    with pytest.raises(argparse.ArgumentTypeError):
+        langfuse_admin._iso_day(bad)
+    assert langfuse_admin._iso_day("2026-05-07") == "2026-05-07"

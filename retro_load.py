@@ -166,7 +166,8 @@ def _valid_summary(summary) -> bool:
 
 
 def marker_matches(prior: dict | None, host: str, public_key: str | None,
-                   session_id: str, *, screened: bool = True, planned: bool = False) -> bool:
+                   session_id: str, *, screened: bool = True, planned: bool = False,
+                   only_day: str | None = None) -> bool:
     """True only for a marker written by a load of this session into this host and project.
 
     A marker is keyed by the source path, so on its own it says a file was loaded somewhere,
@@ -183,13 +184,20 @@ def marker_matches(prior: dict | None, host: str, public_key: str | None,
     # rely on: what went out was never screened.
     if screened and prior.get("redacted") is None:
         return False
+    # A load limited to one day sent only part of the session, so it only completes a run
+    # with the same limit; a run for another day, or for every day, still has turns to send
+    # (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64). Markers
+    # from before this field existed hold every day's turns, so they read as None.
+    if prior.get("only_day") != only_day:
+        return False
     return bool(prior) and prior.get("host") == host and bool(public_key) \
         and prior.get("public_key") == public_key and prior.get("session_id") == session_id
 
 
 def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: list[str],
                  redaction_summary: dict | None = None, *, host: str | None = None,
-                 public_key: str | None = None, planned: bool = False) -> None:
+                 public_key: str | None = None, planned: bool = False,
+                 only_day: str | None = None) -> None:
     marker_path(transcript_path).write_text(
         json.dumps(
             {
@@ -201,6 +209,8 @@ def write_marker(transcript_path: Path, session_id: str, turn_count: int, tags: 
                 # Whether a reviewed redaction plan was applied. A --without-plan load never
                 # satisfies a later planned run.
                 "planned": planned,
+                # The day a --only-day load was limited to, or None when every day was sent.
+                "only_day": only_day,
                 "turns_emitted": turn_count,
                 "tags": tags,
                 # What was rewritten before this went out, by category. A marker that says
@@ -396,7 +406,7 @@ def main() -> int:
 
     prior = already_loaded(transcript_path)
     if marker_matches(prior, host, public_key, session_id, screened=args.redact,
-                      planned=bool(args.plan)) and not args.force:
+                      planned=bool(args.plan), only_day=args.only_day) and not args.force:
         # This line's "already retro-loaded (N turns, tags=[...])" prefix is parsed by
         # build_manifest.py, and a dry run of a marked file is a success there, not a skip.
         print(f"already retro-loaded ({prior['turns_emitted']} turns, tags={prior['tags']}) "
@@ -569,7 +579,8 @@ def main() -> int:
                  # Fully planned only with gitleaks in the plan: a local-only plan loaded with
                  # --allow-plan-without-gitleaks must not satisfy a later normal planned run.
                  planned=bool(args.plan) and header is not None
-                 and "gitleaks" in header.detectors)
+                 and "gitleaks" in header.detectors,
+                 only_day=args.only_day)
     print(f"emitted {emitted}/{len(numbered)} turns to {host} as session_id={session_id}, tags={tags}")
     print(f"marker written: {marker_path(transcript_path)}")
     return 0
