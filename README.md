@@ -149,8 +149,9 @@ What this does not do, stated plainly:
 - **It cannot help a trace that is already loaded.** The remedy there is
   deleting the whole trace, which is the thing this exists to avoid.
 - **It is about secrets and personal details, not consent.** Whether a session
-  should be loaded at all is a different question, answered by `people.json`
-  and by [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
+  should be loaded at all is a different question, answered by the roster in use (the
+  private one on the pod for consenters, or `people.json`) and by
+  [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
 
 ## The redaction plan: scan, review, then load
 
@@ -371,7 +372,8 @@ Both recipes need `uv`, which the pod has (see "Running it"). CI runs them on ev
   which LLM backend (direct Anthropic / CBORG / Vertex) served a given
   trace isn't recoverable from the transcript itself.
 - [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2):
-  loading someone's traces only covers what's in `people.json`; the other
+  loading someone's traces only covers who is in the roster in use (the private one on
+  the pod, or `people.json`); the other
   ~80 hackathon participants have directories in the corpus with no
   consent checked. Don't read "we loaded the corpus" as "we loaded
   everyone."
