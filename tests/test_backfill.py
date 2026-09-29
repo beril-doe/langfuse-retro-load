@@ -526,3 +526,19 @@ def test_only_day_rejects_non_canonical_dates(bad):
 def test_the_workshop_preview_counts_the_turns_it_will_send(corpus, monkeypatch, capsys):
     preview_plan(monkeypatch, corpus, capsys, "--workshop-day-only")
     assert "--workshop-day-only: 2 turns dated 2026-05-07 (UTC) will be sent" in preview_plan.output
+
+
+def test_dry_run_dates_turns_in_utc_so_the_count_matches_the_filter(monkeypatch, tmp_path, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/64: an offset
+    timestamp on the evening before is the next day in UTC, which is how --only-day decides."""
+    pytest.importorskip("dotenv")
+    import retro_load
+    monkeypatch.setattr(retro_load, "MARKER_DIR", tmp_path / "markers")
+    lines = turn("s-8", "evening, Pacific", "2026-05-06T20:00:00-07:00")
+    f = tmp_path / "s-8.jsonl"
+    f.write_text("".join(json.dumps(r) + "\n" for r in lines))
+    monkeypatch.setattr(sys, "argv", ["retro_load.py", str(f), "--dry-run", "--only-day", "2026-05-07"])
+    assert retro_load.main() == 0
+    out = capsys.readouterr().out
+    assert "1 of 1 turns dated that day" in out
+    assert "turn 1: 2026-05-07T03:00:00+00:00" in out

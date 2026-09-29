@@ -534,6 +534,11 @@ def main() -> int:
     if args.dry_run:
         for i, t in numbered:
             ts = parse_ts(t.user_msg)
+            # In UTC, the zone --only-day compares in, so build_manifest's per-day count from
+            # these lines agrees with the filter (Codex review of
+            # https://github.com/beril-doe/langfuse-retro-load/pull/64).
+            if ts is not None and ts.tzinfo is not None:
+                ts = ts.astimezone(timezone.utc)
             print(f"  turn {i}: {ts.isoformat() if ts else '(no timestamp)'} "
                   f"assistant_msgs={len(t.assistant_msgs)}")
         print("(dry run — nothing sent to Langfuse)")
