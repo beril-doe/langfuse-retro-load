@@ -367,7 +367,7 @@ def test_gitleaks_runs_with_the_repo_config(monkeypatch, tmp_path):
 @pytest.mark.real_gitleaks_version
 @pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
 def test_biosample_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
-    """A yguo7829 workshop session's SQL `WHERE accession = 'SAMN12345678'` was masked as a
+    """A consenter's workshop session SQL `WHERE accession = 'SAMN12345678'` was masked as a
     generic API key, hiding the BioSample IDs the session is about (2026-09-28)."""
     key = "x8Kq2Lm9" + "Pz4Rt7Vw1Yb5Nc3Hd6Jf0Gs"  # split so this file's own scan stays clean
     f = tmp_path / "t.txt"
