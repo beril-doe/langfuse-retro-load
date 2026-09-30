@@ -631,3 +631,15 @@ def test_secret_key_names_are_credential_keys(name):
                                   "is_private=abcdefgh"])
 def test_names_that_only_mention_a_credential_stay_clear(line):
     assert redaction.redact(line)[0] == line
+
+
+@pytest.mark.parametrize("name", redaction.CREDENTIAL_NAMES)
+def test_every_credential_name_is_masked_in_text_and_as_a_key(name):
+    """Both patterns come from one list, so a name added there is masked in both forms. The
+    value is low-entropy on purpose: gitleaks skips those, so the name is the only evidence
+    (https://github.com/beril-doe/langfuse-retro-load/issues/69)."""
+    value = "changeme99"
+    for spelled in (name.upper(), "MINIO_" + name.upper(), name.replace("_", "-")):
+        assert value not in redaction.redact(f"{spelled}={value}")[0], spelled
+        assert value not in redaction.redact(f'"{spelled}": "{value}"')[0], spelled
+        assert redaction.is_credential_key(spelled), spelled
