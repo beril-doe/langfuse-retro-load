@@ -293,7 +293,8 @@ def test_the_record_states_the_narrowing_filters(monkeypatch, tmp_path):
     args.user_id, args.outside_day = "p1", "2026-05-07"
     assert langfuse_admin.cmd_delete(args) == 0
     written = json.loads(record.read_text())
-    assert written["narrowed_by"] == {"user_id": "p1", "outside_day": "2026-05-07"}
+    assert written["narrowed_by"] == {"user_id": "p1", "outside_day": "2026-05-07",
+                                      "session_ids": None}
     assert [t["id"] for t in written["traces"]] == ["a"]
 
 
@@ -308,6 +309,28 @@ def test_user_id_refuses_an_empty_value(bad):
 def test_an_empty_user_id_on_the_command_line_is_refused(monkeypatch, capsys):
     monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "delete", "--project", "p",
                                                      "--type", "trace", "--tag", "x", "--user-id", "",
+                                                     "--dry-run"])
+    with pytest.raises(SystemExit) as exc:
+        langfuse_admin.main()
+    assert exc.value.code == 2 and "must not be empty" in capsys.readouterr().err
+
+
+def test_session_id_only_narrows_the_targets(monkeypatch, capsys):
+    """Reloading two sessions means deleting only their traces, not the person's others."""
+    batch = [obs(1, "a", "s1"), obs(2, "b", "s2"), obs(3, "c", "s3"), obs(4, "d", None)]
+    for o in batch:
+        o["tags"] = ["retro-load"]
+    wired(monkeypatch, FakeLangfuse(batch))
+    args = delete_args(tag=["retro-load"])
+    args.session_id = ["s1", "s3"]
+    assert langfuse_admin.cmd_delete(args) == 0
+    assert "4 traces tagged retro-load, session s1 or s3, 2 to delete" in capsys.readouterr().out
+
+
+def test_an_empty_session_id_is_refused(monkeypatch, capsys):
+    """An unset shell variable must not turn the narrowing off and widen the delete."""
+    monkeypatch.setattr(langfuse_admin.sys, "argv", ["langfuse_admin.py", "delete", "--project", "p",
+                                                     "--type", "trace", "--tag", "x", "--session-id", "",
                                                      "--dry-run"])
     with pytest.raises(SystemExit) as exc:
         langfuse_admin.main()
