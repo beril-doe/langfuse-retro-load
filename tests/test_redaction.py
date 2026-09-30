@@ -627,6 +627,7 @@ def test_secret_key_names_are_credential_keys(name):
 
 
 @pytest.mark.parametrize("line", ["secret_name=my-bucket-config", "token_count=12345678",
-                                  "password_hint=remember"])
+                                  "password_hint=remember", 'private = "repository"',
+                                  "is_private=abcdefgh"])
 def test_names_that_only_mention_a_credential_stay_clear(line):
     assert redaction.redact(line)[0] == line

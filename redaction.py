@@ -97,7 +97,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # variable was hidden: `KBASE_AUTH_TOKEN=...` used to become `KBASE_AUTH_[REDACTED...]`
     # (https://github.com/beril-doe/langfuse-retro-load/issues/23).
     "keyed_value": re.compile(
-        r"(?i)(?:token|(?:secret|private)(?:[ _-]?(?:access[ _-]?)?key)?|access[ _-]?key|password"
+        r"(?i)(?:token|secret(?:[ _-]?(?:access[ _-]?)?key)?|private[ _-]?key|access[ _-]?key|password"
         r"|passwd|api[ _-]?key|credential)"
         r"(?:\\{1,2}[\"'])?[\"'*`\t ]*[:=][\t ]*(?:\\{1,2}[\"'])?"
         r"[\"']?(?P<value>[A-Za-z0-9!@#$%^&*_+/=-]{8,})"
