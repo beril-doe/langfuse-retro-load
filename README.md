@@ -14,19 +14,23 @@ On the pod, from this repository:
 
 ```
 .venv/bin/python backfill.py <person>                       # preview: sends nothing
+.venv/bin/python backfill.py <person> --review              # the preview's masks, with values
 .venv/bin/python backfill.py <person> --load --plan PLAN    # load, with the plan you reviewed
 ```
 
-`<person>` is a `person` in the roster: `people.json` by default, or a private roster
-on the pod passed with `--people <file>`, which is where consenters belong (see "Adding a
-person" below). The preview says what to fix if the setup
+The step-by-step procedure is [docs/backfill-runbook.md](docs/backfill-runbook.md).
+
+`<person>` is a `person` in the roster. The default is the private roster on the pod,
+`~/beril-backfill-roster.json`, which is where consenters belong; `--people <file>` names
+another, such as this repository's `people.json` (see "Adding a person" below). Without
+`--people`, a missing default roster stops the command rather than switching rosters. The preview says what to fix if the setup
 is not ready: an old branch, a `langfuse` other than the version `uv.lock` pins, or a missing `gitleaks` or one older than 8.20.0.
 Otherwise it writes a redaction plan under `plans/`, prints what would be sent, and
-prints the exact load command. Review the plan with `reveal.py --plan PLAN --transcript
-FILE`, then run that command; `--load` uses the reviewed plan and never builds a new
+prints the exact load command. Review the plan with `backfill.py <person> --review`, which
+shows each session that has masks, then run that command; `--load` uses the reviewed plan and never builds a new
 one. `--session <id>` limits the run. `--force` loads sessions an earlier load marked
 as sent, and still skips any whose traces are in Langfuse, so delete those first with
-`langfuse_admin.py delete`. Run a long load under `nohup ... > backfill-<person>.log
+`langfuse_admin.py delete`. Run a long load under `nohup ... > ~/backfill-<person>-load.log
 2>&1 &` so a closed browser tab does not stop it. The sections below describe the
 pieces this command runs.
 
@@ -59,7 +63,8 @@ transfer files there) and run everything from a pod terminal.
   it in Langfuse.
 - **`people.json`**: the committed roster, for team members who have agreed to be
   listed publicly. Anyone else goes in a private roster file on the pod with the same
-  format, passed to `backfill.py --people`. See below.
+  format, `~/beril-backfill-roster.json`, which `backfill.py` and `artifacts.py` read by
+  default (`--people` names another). See below.
 - **`build_manifest.py`** / **`run_manifest.py`**: `build_manifest.py`
   reads `people.json`, discovers every session under each source's
   `find_root`, and runs `retro_load.py --dry-run` on each to work out turn
@@ -144,8 +149,9 @@ What this does not do, stated plainly:
 - **It cannot help a trace that is already loaded.** The remedy there is
   deleting the whole trace, which is the thing this exists to avoid.
 - **It is about secrets and personal details, not consent.** Whether a session
-  should be loaded at all is a different question, answered by `people.json`
-  and by [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
+  should be loaded at all is a different question, answered by the roster in use (the
+  private one on the pod for consenters, or `people.json`) and by
+  [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2).
 
 ## The redaction plan: scan, review, then load
 
@@ -220,8 +226,9 @@ access that the write-only relay does not expose to clients.
 ## Adding a person or a new source
 
 Edit a roster, not the Python: `people.json` for someone who has agreed to be listed in
-this public repository, otherwise a private file on the pod with the same format, passed
-with `--people`. One entry per person, one `sources` entry per place their traces live,
+this public repository, otherwise a private file on the pod with the same format:
+`~/beril-backfill-roster.json`, which is read by default, or another file
+passed with `--people`. One entry per person, one `sources` entry per place their traces live,
 and an `orcid`, which `backfill.py` requires:
 
 ```json
@@ -259,8 +266,9 @@ registry can match more than one person. Never use a real name.
 
 `build_manifest.py` still falls back to the pod account name for a person without an
 `orcid`, but that manifest only drives `run_manifest.py`; `backfill.py` does not use it.
-A roster of consenters with their ORCIDs belongs in a private file on the pod, passed
-with `--people`, not in this public `people.json`.
+A roster of consenters with their ORCIDs belongs in a private file on the pod
+(`~/beril-backfill-roster.json`, read by default), not in this public
+`people.json`.
 
 ## This repository is public, and two of its files are about people
 
@@ -364,7 +372,8 @@ Both recipes need `uv`, which the pod has (see "Running it"). CI runs them on ev
   which LLM backend (direct Anthropic / CBORG / Vertex) served a given
   trace isn't recoverable from the transcript itself.
 - [#2](https://github.com/beril-doe/langfuse-retro-load/issues/2):
-  loading someone's traces only covers what's in `people.json`; the other
+  loading someone's traces only covers who is in the roster in use (the private one on
+  the pod, or `people.json`); the other
   ~80 hackathon participants have directories in the corpus with no
   consent checked. Don't read "we loaded the corpus" as "we loaded
   everyone."

@@ -9,9 +9,9 @@ outside this repository, because the repository is public. The roster the comman
 is private to the pod: `~/beril-backfill-roster.json`. Never put a consenter's name,
 account name or ORCID in an issue, a pull request or a commit here.
 
-Shorter `--review` and `--load` commands are planned in
-https://github.com/beril-doe/langfuse-retro-load/issues/62; until they land, use the
-commands below. `<person>` is the account name in the roster.
+`--review` reads the latest preview, so it needs no plan path. A shorter `--load` is still
+planned in https://github.com/beril-doe/langfuse-retro-load/issues/62; until it lands, use
+the load command the preview prints. `<person>` is the account name in the roster.
 
 ## 1. Decide who is next (Mark)
 
@@ -38,10 +38,11 @@ prints its fix.
 ## 4. Preview (sends nothing)
 
 ```bash
-cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --workshop-day-only | tee ~/backfill-<person>-preview.log
+cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --workshop-day-only
 ```
 
-`--workshop-day-only` sends only turns dated the workshop day (2026-05-07, in UTC). That is
+It reads the private roster, `~/beril-backfill-roster.json`, and stops if that file is
+missing; `--people` names another. `--workshop-day-only` sends only turns dated the workshop day (2026-05-07, in UTC). That is
 Mark's scope for consenters as of 2026-09-29. It's optional; leave it off to send every day.
 The load command the preview prints keeps it.
 
@@ -51,26 +52,25 @@ there are loaded, with only the masks in that plan.
 
 ## 5. Review the masks (Mark)
 
-For each session that has masks, show them with their values. This reads the plan written
-in step 4; replace `<plan>` with its file name under `plans/`.
-
 ```bash
-cd ~/langfuse-retro-load && for t in $(grep -o -- '--transcript [^ ]*' ~/backfill-<person>-preview.log | cut -d' ' -f2); do clear; .venv/bin/python reveal.py --plan plans/<plan> --transcript "$t" --show-values; read -r -p "--- Enter for the next session ---"; done
+cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --review
 ```
 
-`--show-values` only runs in a terminal, so don't pipe it into `less`. Things worth checking:
-gitleaks findings, which can be false positives (public identifiers are allowlisted in
-`.gitleaks.toml`), and anything the session is about that a mask would hide. If a mask is
-wrong, fix the rule and rebuild the preview. Don't edit the plan: a plan whose rows changed
-after it was built is refused.
+This pages through the latest preview's sessions that have masks, one at a time, with values,
+and prints the load command at the end. It only runs in a terminal, so don't pipe it into
+`less`. Things worth checking: gitleaks findings, which can be false positives (public
+identifiers are allowlisted in `.gitleaks.toml`), and anything the session is about that a
+mask would hide. If a mask is wrong, fix the rule and rebuild the preview. Don't edit the
+plan: a plan whose rows changed after it was built is refused.
 
 ## 6. Load (Mark)
 
-Copy the load command the preview printed, and run it in the background so a closed tab
-can't stop it:
+Both the preview and `--review` end by printing the exact load command. It already
+carries `--workshop-day-only`, the roster, the batch tag and the plan, all as the preview
+used them. Run it in the background so a closed tab can't stop it:
 
 ```bash
-cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup .venv/bin/python backfill.py <person> --people ~/beril-backfill-roster.json --workshop-day-only --batch-tag <tag from the preview> --load --plan plans/<plan> > ~/backfill-<person>-load.log 2>&1 &
+cd ~/langfuse-retro-load && PYTHONUNBUFFERED=1 nohup <the printed load command> > ~/backfill-<person>-load.log 2>&1 &
 ```
 
 `PYTHONUNBUFFERED=1` makes the log show progress as it happens. Unlike `python -u`, it also
@@ -93,8 +93,8 @@ sessions touched and the user id. The trace count should equal the preview's tur
 ## 8. Artifacts
 
 ```bash
-cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --people ~/beril-backfill-roster.json --only-day 2026-05-07          # preview
-cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --people ~/beril-backfill-roster.json --only-day 2026-05-07 --load   # upload
+cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --only-day 2026-05-07          # preview
+cd ~/langfuse-retro-load && .venv/bin/python artifacts.py <person> --only-day 2026-05-07 --load   # upload
 ```
 
 This uploads one "BERIL artifacts — <project>" span for each session that changed a BERIL

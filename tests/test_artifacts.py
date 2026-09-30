@@ -408,3 +408,26 @@ def test_only_day_refuses_an_empty_or_malformed_date(bad):
     with pytest.raises(argparse.ArgumentTypeError):
         artifacts._day(bad)
     assert artifacts._day("2026-05-07") == "2026-05-07"
+
+
+def test_artifacts_default_to_the_private_roster(monkeypatch, tmp_path):
+    """Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67: backfill.py
+    read the private roster by default and artifacts.py didn't."""
+    roster = tmp_path / "roster.json"
+    roster.write_text("[]")
+    monkeypatch.setattr(artifacts.backfill, "DEFAULT_ROSTER", roster)
+    monkeypatch.setattr(artifacts.backfill, "setup_problems", lambda skip_git=False: [])
+    monkeypatch.setattr(artifacts.sys, "argv", ["artifacts.py", "nobody"])
+    with pytest.raises(SystemExit) as exc:
+        artifacts.main()
+    assert "nobody is not in roster.json" in str(exc.value)
+
+
+
+def test_artifacts_stop_when_the_default_roster_is_missing(monkeypatch, tmp_path):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(artifacts.backfill, "DEFAULT_ROSTER", tmp_path / "missing.json")
+    monkeypatch.setattr(artifacts.sys, "argv", ["artifacts.py", "someone"])
+    with pytest.raises(SystemExit) as exc:
+        artifacts.main()
+    assert "doesn't exist. Pass --people" in str(exc.value)

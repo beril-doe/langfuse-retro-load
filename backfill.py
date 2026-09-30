@@ -3,19 +3,22 @@
 
 Run on the BERDL pod, from this repository:
 
-    .venv/bin/python backfill.py mamillerpa                        # preview: sends nothing
-    .venv/bin/python backfill.py mamillerpa --load --plan PLAN     # load with the reviewed plan
+    .venv/bin/python backfill.py <person>                        # preview: sends nothing
+    .venv/bin/python backfill.py <person> --review               # the preview's masks, with values
+    .venv/bin/python backfill.py <person> --load --plan PLAN     # load with the reviewed plan
 
-The preview checks the setup, finds the person's transcripts from people.json, writes a
-redaction plan under plans/, and prints what a load would send and the exact command to
-load it. Each setup problem is reported with the command that fixes it. Review the plan
-(reveal.py --plan PLAN --transcript FILE shows what will be masked), then run the printed
-command. `--load` uses that plan as reviewed, never a new one, and loads through
+The preview checks the setup, finds the person's transcripts from the roster (by default the
+private one on the pod, ~/beril-backfill-roster.json; --people names another), writes a redaction plan
+under plans/, and prints what a load would send and the exact command to load it. Each setup
+problem is reported with the command that fixes it. Review the plan with `--review`, which
+pages through the sessions that have masks, then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
 run_manifest.py and retro_load.py, the same path as a manual load.
 
 A long load should survive a closed browser tab, so run it in the background:
 
-    nohup .venv/bin/python backfill.py mamillerpa --load --plan PLAN > backfill-mamillerpa.log 2>&1 &
+    PYTHONUNBUFFERED=1 nohup <the printed load command> > ~/backfill-<person>-load.log 2>&1 &
+
+The step-by-step procedure is docs/backfill-runbook.md.
 
 See https://github.com/beril-doe/langfuse-retro-load/issues/38.
 """
@@ -195,7 +198,7 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
             paths = build_manifest.find_jsonl_files(source["find_root"])
         except build_manifest.DiscoveryFailed as exc:
             raise SystemExit(f"could not list {person['person']}'s transcripts: {exc}. Fix the "
-                             "find_root in people.json, or its permissions; nothing was sent.") from exc
+                             "find_root in the roster, or its permissions; nothing was sent.") from exc
         for path in paths:
             if sessions and path.stem not in sessions:
                 continue
@@ -211,7 +214,7 @@ def discover(person: dict, sessions: set[str], event_day: str) -> list[tuple[dic
         where = [str(path) for entry, path in found if entry["session_id"] in repeated]
         raise SystemExit(f"session id(s) {', '.join(repeated)} appear in more than one "
                          f"source: {', '.join(where)}. Decide which copy is right, then move "
-                         "the other out of its find_root or drop that source from people.json. "
+                         "the other out of its find_root or drop that source from the roster. "
                          "--session cannot pick between them: it matches by id in every source.")
     missing = sessions - set(ids)
     if missing:
@@ -262,10 +265,99 @@ def _day(value: str) -> str:
     return value
 
 
-def main() -> int:
+#: The private roster on the pod. It is outside this public repository on purpose.
+DEFAULT_ROSTER = Path.home() / "beril-backfill-roster.json"
+
+
+def default_roster() -> Path:
+    """The private roster, or a clean stop when it is missing. There is no fallback to
+    people.json: a silent switch of roster changes whose sessions and identity a command
+    uses, which is what three Codex rounds on
+    https://github.com/beril-doe/langfuse-retro-load/pull/67 kept finding."""
+    if not DEFAULT_ROSTER.exists():
+        raise SystemExit(f"no roster given and {DEFAULT_ROSTER} doesn't exist. Pass --people "
+                         f"<file>, for example --people {HERE / 'people.json'}")
+    return DEFAULT_ROSTER
+
+
+def state_path(person: str) -> Path:
+    """Where a preview records what it wrote, for --review (and later --load) to reuse."""
+    return HERE / "plans" / f"{person}-latest.json"
+
+
+def write_state(person: str, plan_path: Path, paths: list[Path], command: str) -> int:
+    """Record the preview: its plan, its load command, and each session's mask count.
+    Returns how many sessions have at least one mask."""
+    import inventory
+    import plan
+    _, by_subject = plan.read(plan_path)
+    sessions = []
+    for path in paths:
+        subject = inventory._subject_for(path)
+        masks = sum(1 for m in by_subject.get(subject, []) if not m.cleared)
+        sessions.append({"transcript": str(path), "subject": subject, "masks": masks})
+    state = {"plan": str(plan_path), "load_command": command, "sessions": sessions}
+    target = state_path(person)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Staged and renamed, as plan.write() does, so an interrupted write never leaves a
+    # truncated file where the last good preview was (Codex review of
+    # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".partial", dir=target.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return sum(1 for s in sessions if s["masks"])
+
+
+def run_reveal(cmd: list[str]) -> int:
+    return subprocess.run(cmd, check=False).returncode
+
+
+def review(person: str) -> int:
+    """Page through the latest preview's masks, one session with masks at a time."""
+    target = state_path(person)
+    if not target.exists():
+        print(f"no preview recorded for {person}; run: backfill.py {person}", file=sys.stderr)
+        return 2
+    # Both ends: output because values are shown, input because it pauses between sessions
+    # (Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67).
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        print("--review shows values and pauses between sessions, so it only runs in a "
+              "terminal; don't pipe or redirect it", file=sys.stderr)
+        return 2
+    state = json.loads(target.read_text())
+    todo = [s for s in state["sessions"] if s["masks"]]
+    if not todo:
+        print(f"the latest preview for {person} masks nothing; nothing to review. To load what "
+              f"was previewed:\n  {state['load_command']}")
+        return 0
+    try:
+        for n, session in enumerate(todo, 1):
+            print(f"\n=== session {n} of {len(todo)}: {session['subject']} "
+                  f"({session['masks']} mask(s))")
+            code = run_reveal([sys.executable, str(HERE / "reveal.py"), "--plan", state["plan"],
+                               "--transcript", session["transcript"], "--show-values"])
+            if code != 0:
+                return code
+            if n < len(todo):
+                input("--- Enter for the next session, Ctrl-C or Ctrl-D to stop ---")
+    except (KeyboardInterrupt, EOFError):
+        # Stopping part way is a normal choice, not a crash (Fable review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        print(f"\nstopped. The load command is:\n  {state['load_command']}")
+        return 130
+    print(f"\nReviewed {len(todo)} session(s). To load what was previewed:\n  {state['load_command']}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("person", help="the person's name in people.json, e.g. mamillerpa")
+    ap.add_argument("person", help="the person's account name in the roster")
     ap.add_argument("--load", action="store_true",
                     help="load, using the plan named by --plan")
     ap.add_argument("--plan", type=Path, default=None,
@@ -285,9 +377,32 @@ def main() -> int:
     ap.add_argument("--workshop-day-only", action="store_true",
                     help="send only turns dated --event-day (UTC). Off by default; the printed "
                          "load command keeps it, so the load sends what the preview described")
-    ap.add_argument("--people", type=Path, default=HERE / "people.json")
+    ap.add_argument("--people", type=Path, default=None,
+                    help=f"the roster; default {DEFAULT_ROSTER}, which must then exist")
+    ap.add_argument("--review", action="store_true",
+                    help="show, one session at a time, what the latest preview's plan masks, "
+                         "with values. Only sessions with masks are shown. Needs a terminal")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
+    return ap
+
+
+def main() -> int:
+    ap = build_parser()
     args = ap.parse_args()
+    if args.review:
+        # Only what review() uses is accepted, checked by a parser that knows nothing else, so
+        # abbreviations, --flag=value and new options are all refused without a hand-kept
+        # list (Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        rp = argparse.ArgumentParser(add_help=False)
+        rp.add_argument("person")
+        rp.add_argument("--review", action="store_true")
+        _, extra = rp.parse_known_args()
+        if extra:
+            ap.error(f"--review only shows the latest preview; {shlex.join(extra)} belongs to "
+                     "the preview or the load")
+        return review(args.person)
+    if args.people is None:
+        args.people = default_roster()
     if args.load and args.plan is None:
         ap.error("--load needs --plan: run the preview first, review its plan, then load "
                  "with the command the preview prints")
@@ -315,8 +430,16 @@ def main() -> int:
         raise SystemExit(f"{exc}. Fix it in {args.people.name}; nothing was read or sent.") from exc
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     tag = args.batch_tag or f"backfill-{args.person}-{today}"
+    if not args.load:
+        # A new preview replaces the last one from the start, so a preview that finds nothing
+        # or stops part way never leaves an older one for --review (Codex and Fable reviews of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
+        state_path(args.person).unlink(missing_ok=True)
     found = discover(person, set(args.session), args.event_day)
     if not found:
+        # An empty preview is still the latest preview, so the saved state from an earlier one
+        # must not stay behind for --review or a later load (Codex review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67).
         print(f"no transcripts found for {args.person}")
         return 0
     paths = [path for _, path in found]
@@ -363,25 +486,34 @@ def main() -> int:
               "refuses until they parse or are left out with --session")
 
     if not args.load:
-        again = [a for a in sys.argv[1:]]
-        if args.batch_tag is None:
-            # The default tag has today's date in it; pin it so a load after midnight UTC
-            # carries the tag this preview showed.
-            again += ["--batch-tag", tag]
+        # Built from what was parsed, not from how it was typed, so abbreviations and
+        # --flag=value forms can't duplicate or drop a flag (Fable review of
+        # https://github.com/beril-doe/langfuse-retro-load/pull/67). The roster and the
+        # default batch tag, which has today's date in it, are pinned to what this preview used.
+        again = [args.person, "--people", str(args.people), "--batch-tag", tag,
+                 "--min-idle-days", str(args.min_idle_days), "--event-day", args.event_day]
+        for session in args.session:
+            again += ["--session", session]
+        if args.workshop_day_only:
+            again.append("--workshop-day-only")
         # Markers are keyed by the resolved path, as retro_load.py writes them. The frozen
         # corpus is reached through a symlink, so the unresolved path never finds its marker.
-        if "--force" not in again and any(valid_marker(already_loaded(p.resolve()))
-                                          for p in paths):
+        if args.force or any(valid_marker(already_loaded(p.resolve())) for p in paths):
             again.append("--force")
+        if args.skip_git_check:
+            again.append("--skip-git-check")
         python = sys.executable
         command = shlex.join([python, str(HERE / "backfill.py"), *again, "--load",
                               "--plan", str(plan_path)])
-        print("\nNothing sent. Review what the plan will mask, one session at a time:")
-        for path in paths:
-            print(f"  {shlex.quote(python)} {shlex.quote(str(HERE / 'reveal.py'))} "
-                  f"--plan {shlex.quote(str(plan_path))} "
-                  f"--transcript {shlex.quote(str(path))}")
-        print(f"Then load exactly what was previewed:\n  {command}")
+        with_masks = write_state(args.person, plan_path, paths, command)
+        if with_masks:
+            print(f"\nNothing sent. {with_masks} of {len(paths)} session(s) have masks. Review "
+                  "them, one session at a time, with values:")
+            print(f"  {shlex.join([python, str(HERE / 'backfill.py'), args.person, '--review'])}")
+            print(f"Then load exactly what was previewed:\n  {command}")
+        else:
+            print("\nNothing sent. The plan masks nothing, so there is nothing to review. Load "
+                  f"exactly what was previewed:\n  {command}")
         return 0
 
     if failed:

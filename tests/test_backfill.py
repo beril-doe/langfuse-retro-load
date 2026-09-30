@@ -3,6 +3,7 @@
 https://github.com/beril-doe/langfuse-retro-load/issues/38
 """
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,12 @@ def corpus(tmp_path, monkeypatch):
     monkeypatch.setattr(inventory, "gitleaks_findings", lambda path: [])
     monkeypatch.setattr(inventory, "gitleaks_version", lambda: inventory.MIN_GITLEAKS)
     return people
+
+
+def review_run(monkeypatch, *argv):
+    """--review takes no --people: it reads the latest preview's saved state."""
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--review", *argv])
+    return backfill.main()
 
 
 def run(monkeypatch, people, *argv):
@@ -241,13 +248,54 @@ def test_the_locked_langfuse_is_not_a_setup_problem(monkeypatch):
     assert not any("langfuse" in p for p in backfill.setup_problems(skip_git=True))
 
 
-def test_every_session_gets_a_review_command(corpus, monkeypatch, capsys):
+def test_the_preview_records_its_state_and_prints_one_review_command(corpus, monkeypatch, capsys):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/62: one short review command
+    instead of one reveal.py line per session."""
     monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
     assert run(monkeypatch, corpus) == 0
     out = capsys.readouterr().out
-    reviewed = [line for line in out.splitlines() if "reveal.py --plan" in line]
-    assert len(reviewed) == 2 and any("s-1.jsonl" in r for r in reviewed) \
-        and any("s-2.jsonl" in r for r in reviewed)
+    assert "1 of 2 session(s) have masks" in out
+    assert "backfill.py someone --review" in out and "reveal.py --plan" not in out
+    state = json.loads(backfill.state_path("someone").read_text())
+    assert {s["subject"]: s["masks"] for s in state["sessions"]} == {"s-1": 1, "s-2": 0}
+    assert state["load_command"].endswith(state["plan"])
+
+
+def test_review_shows_only_sessions_with_masks(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    shown = []
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: shown.append(cmd) or 0)
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("paused after the last session"))
+    assert review_run(monkeypatch) == 0
+    assert len(shown) == 1 and shown[0][-2].endswith("s-1.jsonl") and shown[0][-1] == "--show-values"
+
+
+def test_review_refuses_without_a_terminal(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: pytest.fail("showed values into a pipe"))
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: False)
+    assert review_run(monkeypatch) == 2
+    assert "only runs in a terminal" in capsys.readouterr().err
+
+
+def test_review_without_a_preview_says_what_to_run(corpus, monkeypatch, capsys):
+    assert review_run(monkeypatch) == 2
+    assert "run: backfill.py someone" in capsys.readouterr().err
+
+
+def test_the_private_roster_is_the_default(monkeypatch, tmp_path):
+    roster = tmp_path / "roster.json"
+    roster.write_text("[]")
+    monkeypatch.setattr(backfill, "DEFAULT_ROSTER", roster)
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "nobody", "--skip-git-check"])
+    monkeypatch.setattr(backfill, "setup_problems", lambda skip_git=False: [])
+    with pytest.raises(SystemExit) as exc:
+        backfill.main()
+    assert "nobody is not in roster.json" in str(exc.value)
 
 
 def test_one_session_id_in_two_sources_is_refused(corpus, monkeypatch, tmp_path):
@@ -554,3 +602,166 @@ def test_an_empty_day_is_refused_not_dropped(script):
     for bad in ("", "2026-5-7"):
         with pytest.raises(argparse.ArgumentTypeError):
             module._day(bad)
+
+
+def test_review_of_a_mask_free_preview_still_prints_the_load_command(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus, "--session", "s-2") == 0
+    capsys.readouterr()
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
+    assert review_run(monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "masks nothing" in out and "--load --plan" in out
+
+
+def test_a_failed_state_write_keeps_the_previous_state(corpus, monkeypatch, tmp_path):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    target = backfill.state_path("someone")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('{"plan": "old"}\n')
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(backfill.os, "replace", boom)
+    plan_path = tmp_path / "p.jsonl"
+    plan_path.write_text("")
+    with pytest.raises(OSError):
+        backfill.write_state("someone", plan_path, [], "cmd")
+    assert target.read_text() == '{"plan": "old"}\n'
+    assert not list(target.parent.glob(".someone-latest.json.*.partial"))
+
+
+def test_the_printed_load_command_pins_the_default_roster(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "DEFAULT_ROSTER", corpus)
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--skip-git-check"])
+    assert backfill.main() == 0
+    command = capsys.readouterr().out.strip().splitlines()[-1]
+    assert f"--people {corpus}" in command
+
+
+
+def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67: with input
+    redirected, the first pause raised EOFError after showing one session."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: pytest.fail("showed values"))
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: False)
+    assert review_run(monkeypatch) == 2
+
+
+def _every_other_option():
+    """Every option the parser knows except --review and help, with a value where it takes one,
+    so a new option is covered here without editing a list."""
+    for action in backfill.build_parser()._actions:
+        for opt in action.option_strings:
+            if opt in ("--review", "-h", "--help"):
+                continue
+            takes_value = action.nargs != 0
+            yield [opt, "2026-05-07"] if takes_value else [opt]
+
+
+@pytest.mark.parametrize("flag", list(_every_other_option()) + [["--peop", "x"], ["--people=x"],
+                                                                   ["--min-idle-days=0"]])
+def test_review_refuses_every_option_it_would_ignore(corpus, monkeypatch, flag):
+    """Codex and Fable reviews of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    with pytest.raises(SystemExit) as exc:
+        review_run(monkeypatch, *flag)
+    assert exc.value.code == 2
+
+
+def test_the_printed_load_command_reparses_to_what_the_preview_used(corpus, monkeypatch, capsys):
+    """The command is built from the parsed arguments, so abbreviations and --flag=value forms
+    come out as one canonical flag each (Fable review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/67)."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", f"--peop={corpus}", "--work",
+                                      "--min-idle-days=2", "--skip-git-check"])
+    assert backfill.main() == 0
+    command = shlex.split(capsys.readouterr().out.strip().splitlines()[-1])
+    parsed = backfill.build_parser().parse_args(command[2:])
+    assert parsed.people == corpus and parsed.workshop_day_only and parsed.min_idle_days == 2.0
+    assert parsed.load and parsed.plan is not None and parsed.batch_tag.startswith("backfill-someone-")
+    assert command.count("--people") == 1
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, EOFError])
+def test_stopping_review_part_way_is_not_a_crash(corpus, monkeypatch, capsys, stop):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
+
+    def reveal(cmd):
+        raise stop
+
+    monkeypatch.setattr(backfill, "run_reveal", reveal)
+    assert review_run(monkeypatch) == 130
+    out = capsys.readouterr().out
+    assert "stopped" in out and "--load --plan" in out
+
+
+def test_a_mask_free_preview_does_not_offer_a_review(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus, "--session", "s-2") == 0
+    out = capsys.readouterr().out
+    assert "masks nothing, so there is nothing to review" in out and "--review" not in out
+
+
+def test_people_given_with_equals_is_not_duplicated(corpus, monkeypatch, capsys):
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", f"--people={corpus}", "--skip-git-check"])
+    assert backfill.main() == 0
+    command = capsys.readouterr().out.strip().splitlines()[-1]
+    assert command.count("--people") == 1
+
+
+
+def test_review_refuses_a_roster(corpus, monkeypatch):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67: state is
+    per account, so a roster given to --review could not change what it shows."""
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus, "--review")
+    assert exc.value.code == 2
+
+
+def test_a_missing_default_roster_stops_instead_of_falling_back(monkeypatch, tmp_path, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67: no silent
+    switch to people.json."""
+    monkeypatch.setattr(backfill, "DEFAULT_ROSTER", tmp_path / "missing.json")
+    monkeypatch.setattr(sys, "argv", ["backfill.py", "someone", "--skip-git-check"])
+    with pytest.raises(SystemExit) as exc:
+        backfill.main()
+    assert "doesn't exist. Pass --people" in str(exc.value)
+
+
+def test_an_empty_preview_clears_the_saved_state(corpus, monkeypatch, capsys):
+    """Codex review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    assert backfill.state_path("someone").exists()
+    monkeypatch.setattr(backfill, "discover", lambda *a: [])
+    assert run(monkeypatch, corpus) == 0
+    assert not backfill.state_path("someone").exists()
+
+
+def test_a_preview_that_stops_part_way_leaves_no_older_state(corpus, monkeypatch, capsys):
+    """Fable review of https://github.com/beril-doe/langfuse-retro-load/pull/67."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    assert backfill.state_path("someone").exists()
+
+    def fail(*a):
+        raise SystemExit("could not build the redaction plan: boom")
+
+    monkeypatch.setattr(backfill, "build_plan", fail)
+    with pytest.raises(SystemExit):
+        run(monkeypatch, corpus)
+    assert not backfill.state_path("someone").exists()
