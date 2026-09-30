@@ -53,6 +53,20 @@ SECRET = "secret"
 PERSON = "person"
 ADVISORY = "advisory"
 
+#: Name parts that mark a credential, words split by "_". `keyed_value` (a name in text) and
+#: CREDENTIAL_KEY_RE (a key in parsed JSON) are both built from this one list, because two
+#: hand-kept lists drifted apart and let `SECRET_KEY=` through both. See
+#: https://github.com/beril-doe/langfuse-retro-load/issues/69.
+CREDENTIAL_NAMES = ("token", "secret", "secret_key", "secret_access_key", "private_key",
+                    "access_key", "password", "passwd", "api_key", "credential")
+
+
+def _names_pattern(names: tuple[str, ...], separator: str) -> str:
+    """An alternation of `names`, longest first, where each "_" is an optional `separator`."""
+    return "|".join((separator + "?").join(map(re.escape, name.split("_")))
+                    for name in sorted(names, key=len, reverse=True))
+
+
 #: Patterns, and what kind of thing each one finds. Kept in sync with VALUE_RES in
 #: evalome/collecting.py (coscientist-bench) and with scan_transcript.py, which should
 #: import from here rather than keep its own copy.
@@ -97,8 +111,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # variable was hidden: `KBASE_AUTH_TOKEN=...` used to become `KBASE_AUTH_[REDACTED...]`
     # (https://github.com/beril-doe/langfuse-retro-load/issues/23).
     "keyed_value": re.compile(
-        r"(?i)(?:token|secret(?:[ _-]?(?:access[ _-]?)?key)?|private[ _-]?key|access[ _-]?key|password"
-        r"|passwd|api[ _-]?key|credential)"
+        r"(?i)(?:" + _names_pattern(CREDENTIAL_NAMES, "[ _-]") + r")"
         r"(?:\\{1,2}[\"'])?[\"'*`\t ]*[:=][\t ]*(?:\\{1,2}[\"'])?"
         r"[\"']?(?P<value>[A-Za-z0-9!@#$%^&*_+/=-]{8,})"
     ),
@@ -708,9 +721,11 @@ def is_credential_key(name: str) -> bool:
 #: ends, so `x-api-key`, `KBASE_AUTH_TOKEN` and `tokens` match while `token_count`,
 #: `password_hint` and `secret_name` do not: a key that merely mentions a credential is
 #: usually a count, a flag or a filename, and redacting those buries the real ones.
+#: `authorization` is added here only: in text, `auth_header` finds it with its scheme.
 CREDENTIAL_KEY_RE = re.compile(
-    r"(?i)^(?:.*[._-])?(?:token|secret|passwd|password|api[_-]?key|apikey|credential"
-    r"|authorization|private[_-]?key|access[_-]?key|secret[_-]?(?:access[_-]?)?key)s?$"
+    r"(?i)^(?:.*[._-])?(?:"
+    + _names_pattern(CREDENTIAL_NAMES + ("authorization",), "[_-]")
+    + r")s?$"
 )
 
 
