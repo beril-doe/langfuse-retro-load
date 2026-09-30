@@ -600,3 +600,34 @@ def test_an_escaped_quote_does_not_end_the_joined_string_early(literal):
     masked = "".join(line[f.start:f.end] for f in redaction.detect(line)
                      if f.category == redaction.SECRET)
     assert "hunter2hunter2" in masked
+
+
+@pytest.mark.parametrize("line", [
+    "S3_SECRET_KEY=minioadmin123",
+    "MINIO_SECRET_KEY: changeme99",
+    "BERIL_LANGFUSE_SECRET_KEY=" + "sk-lf-" + "1234abcd",  # split so this file scans clean
+    "AWS_SECRET_ACCESS_KEY=minioadmin123",
+    '"PRIVATE_KEY": "minioadmin123"',
+    "export ACCESS_KEY=minioadmin123",
+])
+def test_secret_key_names_are_masked_even_with_a_guessable_value(line):
+    """Short, guessable values pass gitleaks's entropy check, so the local pattern has to
+    catch the name. `SECRET_KEY=` used to slip past, because keyed_value wanted the `=` right
+    after "secret" (2026-09-30, prompted by
+    https://github.com/beril-doe/BERIL-research-observatory/issues/445)."""
+    value = line.rsplit(" ", 1)[-1].split("=")[-1].strip('"')
+    clean, _ = redaction.redact(line)
+    assert value not in clean
+
+
+@pytest.mark.parametrize("name", ["S3_SECRET_KEY", "BERIL_LANGFUSE_SECRET_KEY", "AWS_SECRET_ACCESS_KEY",
+                                  "secretKey"])
+def test_secret_key_names_are_credential_keys(name):
+    assert redaction.is_credential_key(name)
+
+
+@pytest.mark.parametrize("line", ["secret_name=my-bucket-config", "token_count=12345678",
+                                  "password_hint=remember", 'private = "repository"',
+                                  "is_private=abcdefgh"])
+def test_names_that_only_mention_a_credential_stay_clear(line):
+    assert redaction.redact(line)[0] == line

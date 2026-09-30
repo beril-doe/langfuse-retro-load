@@ -97,7 +97,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # variable was hidden: `KBASE_AUTH_TOKEN=...` used to become `KBASE_AUTH_[REDACTED...]`
     # (https://github.com/beril-doe/langfuse-retro-load/issues/23).
     "keyed_value": re.compile(
-        r"(?i)(?:token|secret|password|passwd|api[ _-]?key|credential)"
+        r"(?i)(?:token|secret(?:[ _-]?(?:access[ _-]?)?key)?|private[ _-]?key|access[ _-]?key|password"
+        r"|passwd|api[ _-]?key|credential)"
         r"(?:\\{1,2}[\"'])?[\"'*`\t ]*[:=][\t ]*(?:\\{1,2}[\"'])?"
         r"[\"']?(?P<value>[A-Za-z0-9!@#$%^&*_+/=-]{8,})"
     ),
@@ -709,7 +710,7 @@ def is_credential_key(name: str) -> bool:
 #: usually a count, a flag or a filename, and redacting those buries the real ones.
 CREDENTIAL_KEY_RE = re.compile(
     r"(?i)^(?:.*[._-])?(?:token|secret|passwd|password|api[_-]?key|apikey|credential"
-    r"|authorization|private[_-]?key|access[_-]?key)s?$"
+    r"|authorization|private[_-]?key|access[_-]?key|secret[_-]?(?:access[_-]?)?key)s?$"
 )
 
 
