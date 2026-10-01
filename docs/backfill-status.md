@@ -2,7 +2,7 @@
 
 What exists in the BERIL workshop corpus, what has been loaded into the Langfuse project
 beril-usage, and every deletion made from the BERIL Langfuse organization. Measured on
-2026-09-29.
+2026-09-29; the deletion log is current to 2026-10-01.
 
 This repository is public, so this page gives counts only. It doesn't name who consented,
 their account names or their ORCIDs; that per-person table is kept privately by Mark. The
@@ -76,3 +76,7 @@ saved a `--record` manifest, which Mark keeps privately.
 | 2026-09-24 | the 2026-09-18 pilot load (`--tag retro-load`) | 135 traces, 60 scores | replaced by the ORCID-keyed format |
 | 2026-09-24 | Mark's own backfill batch (`--tag backfill-mamillerpa-2026-09-24`) | 376 traces | his workshop sessions produced no BERIL artifacts |
 | 2026-09-29 | three consenters' turns from days other than the workshop, one command per person (`--tag retro-load --user-id <orcid> --outside-day 2026-05-07`) | 51 traces: 45, 3 and 2 turns, plus 1 artifact span | workshop day only |
+| 2026-09-30 | two turn traces of one consenter whose tool output held object-store access and secret keys that the redaction patterns missed | 2 traces | remove the keys; the patterns were fixed in https://github.com/beril-doe/langfuse-retro-load/pull/68 |
+| 2026-09-30 | the rest of that consenter's two sessions (`--session-id`), and all four of their artifact spans | 48 turns and 4 artifact spans | reload with the fixed redaction |
+
+On 2026-10-01 the consenter's two sessions were reloaded with the fixed redaction: 50 turns, including the two deleted first, and the four artifact snapshots. A scan of the reloaded turns with the fixed patterns found no unmasked secrets. Loaded totals are unchanged, because 54 traces were deleted and 54 reloaded.
