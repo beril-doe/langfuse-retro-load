@@ -573,6 +573,9 @@ def cmd_delete(args) -> int:
     if getattr(args, "outside_day", None) is not None:
         targets = [t for t in targets if not _on_day(t.get("timestamp"), args.outside_day)]
         scope += f", not dated {args.outside_day} (UTC)"
+    if getattr(args, "session_id", None):
+        targets = [t for t in targets if t.get("sessionId") in set(args.session_id)]
+        scope += f", session {' or '.join(args.session_id)}"
     print(f"{where}: {len(traces)} traces {scope}, {len(targets)} to delete")
     print("  (found through their observations; a trace with none is not listed)")
     if not targets:
@@ -621,7 +624,8 @@ def cmd_delete(args) -> int:
             "match": "all" if args.all else {"tags": tags} if tags else args.name,
             # The narrowing filters too, so the record states the predicate that was reviewed.
             "narrowed_by": {"user_id": getattr(args, "user_id", None),
-                            "outside_day": getattr(args, "outside_day", None)},
+                            "outside_day": getattr(args, "outside_day", None),
+                            "session_ids": getattr(args, "session_id", None)},
             "count": len(targets),
             "traces": [{"id": t["id"], "sessionId": t.get("sessionId"),
                         "userId": t.get("userId"), "name": t.get("name"),
@@ -716,6 +720,9 @@ def main() -> int:
     d.add_argument("--outside-day", metavar="YYYY-MM-DD", type=_iso_day,
                    help="narrow to traces NOT dated this day (UTC), e.g. to remove turns "
                         "from other days than the workshop")
+    d.add_argument("--session-id", action="append", type=_non_empty,
+                   help="narrow to traces in this session; repeat for several, e.g. to "
+                        "delete sessions before reloading them")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--yes", action="store_true", help="required for a real delete")
     d.add_argument("--record", help="write a manifest of what is deleted to this path")
