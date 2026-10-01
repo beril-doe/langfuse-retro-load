@@ -315,16 +315,21 @@ def test_an_empty_user_id_on_the_command_line_is_refused(monkeypatch, capsys):
     assert exc.value.code == 2 and "must not be empty" in capsys.readouterr().err
 
 
-def test_session_id_only_narrows_the_targets(monkeypatch, capsys):
-    """Reloading two sessions means deleting only their traces, not the person's others."""
+def test_session_id_only_narrows_the_targets(monkeypatch, capsys, tmp_path):
+    """Reloading two sessions means deleting only their traces, not the person's others, and
+    the record says which sessions narrowed the delete."""
     batch = [obs(1, "a", "s1"), obs(2, "b", "s2"), obs(3, "c", "s3"), obs(4, "d", None)]
     for o in batch:
         o["tags"] = ["retro-load"]
-    wired(monkeypatch, FakeLangfuse(batch))
-    args = delete_args(tag=["retro-load"])
+    wired(monkeypatch, DeletingFake(batch, scores=[]))
+    record = tmp_path / "deleted.json"
+    args = delete_args(tag=["retro-load"], dry_run=False, yes=True, record=str(record))
     args.session_id = ["s1", "s3"]
     assert langfuse_admin.cmd_delete(args) == 0
     assert "4 traces tagged retro-load, session s1 or s3, 2 to delete" in capsys.readouterr().out
+    written = json.loads(record.read_text())
+    assert sorted(t["id"] for t in written["traces"]) == ["a", "c"]
+    assert written["narrowed_by"]["session_ids"] == ["s1", "s3"]
 
 
 def test_an_empty_session_id_is_refused(monkeypatch, capsys):
