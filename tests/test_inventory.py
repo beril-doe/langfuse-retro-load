@@ -249,6 +249,7 @@ def test_a_missing_gitleaks_is_reported_as_no_rows_not_as_a_crash(tmp_path, monk
     ("git config user.email your-email@lbl.gov", False),
     ("YOUR_EMAIL@berkeley.edu", False),
     ("your.name@gmail.com", False),
+    ("your.name@lbl.gov", False),
     ("yourself@lbl.gov", True),
     ("your-email.smith@lbl.gov", True),
     ("someone@lbl.gov", True),
