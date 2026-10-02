@@ -170,6 +170,11 @@ ROLE_LOCAL_PARTS = (r"(?:git|noreply|no-reply|donotreply|do-not-reply|root|postm
                     r"|hostmaster|webmaster|mailer-daemon|abuse|admin|support|info"
                     r"|notifications|bounce|nobody|daemon)")
 
+#: Local parts that are template text, not anyone's address: `your-email@lbl.gov` in a setup
+#: guide. Masking one tells the reader a person's address was removed when none was there
+#: (Mark, reviewing a 2026-10-01 preview).
+PLACEHOLDER_LOCAL_PARTS = r"your[-._]?(?:e-?mail|name|user(?:name)?|address|id)"
+
 PATTERNS["email_personal"] = re.compile(rf"{LOCAL_PART}@{PERSONAL_DOMAINS}\b", re.IGNORECASE)
 PATTERNS["email_institutional"] = re.compile(
     LOCAL_PART + r"@(?!" + PERSONAL_DOMAINS + r"\b)[A-Za-z0-9.-]{1,255}"
@@ -196,6 +201,8 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
     value = text[start:end]
     local = value.split("@", 1)[0]
     if re.fullmatch(ROLE_LOCAL_PARTS, local, re.IGNORECASE):
+        return True
+    if re.fullmatch(PLACEHOLDER_LOCAL_PARTS, local, re.IGNORECASE):
         return True
     if RESERVED_DOMAINS.search(value):
         return True
