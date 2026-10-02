@@ -202,6 +202,15 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
     # `git@github.com:owner/repo.git`: a colon then a path, immediately after the host.
     return bool(re.match(r":[A-Za-z0-9._~-]+/", text[end:end + 40]))
 
+#: A DOI suffix can hold a page range and a year, as in `10.1128/MMBR.65.4.481-496.2001`,
+#: which has the shape of a US phone number (Mark, reviewing a 2026-10-01 preview).
+_DOI_START = re.compile(r"\b10\.\d{4,9}/\S*$")
+
+
+def _inside_doi(text: str, start: int) -> bool:
+    """Whether `start` falls inside a DOI: no whitespace between it and a `10.NNNN/` prefix."""
+    return bool(_DOI_START.search(text[max(0, start - 200):start]))
+
 #: A value that only names another value: `$CBORG_API_KEY`, `${GITHUB_TOKEN}`,
 #: `<your-token-here>`, `{{ secrets.TOKEN }}`. Redacting one hides where a credential came
 #: from and hides nothing secret (https://github.com/beril-doe/langfuse-retro-load/issues/23).
@@ -569,6 +578,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 if _inside(span, protected):
                     continue
             if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):
+                continue
+            if name == "phone_us" and _inside_doi(text, span[0]):
                 continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):

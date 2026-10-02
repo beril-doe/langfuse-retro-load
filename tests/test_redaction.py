@@ -643,3 +643,16 @@ def test_every_credential_name_is_masked_in_text_and_as_a_key(name):
         assert value not in redaction.redact(f"{spelled}={value}")[0], spelled
         assert value not in redaction.redact(f'"{spelled}": "{value}"')[0], spelled
         assert redaction.is_credential_key(spelled), spelled
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("*Microbiol Mol Biol Rev* 65:481-496 (DOI: 10.1128/MMBR.65.4.481-496.2001) |", False),
+    ("https://doi.org/10.1128/MMBR.65.4.481-496.2001", False),
+    ("call 510-486-4000 about 10.1128/MMBR.65.4", True),
+    ("phone: (510) 486-4000", True),
+])
+def test_a_page_range_inside_a_doi_is_not_a_phone_number(text, flagged):
+    """`481-496.2001` in a DOI has the shape of a US phone number. Found reviewing a
+    2026-10-01 preview, where it masked the tail of three citations."""
+    found = {f.pattern for f in redaction.detect(text)}
+    assert ("phone_us" in found) is flagged
