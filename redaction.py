@@ -204,20 +204,23 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
 
 #: A DOI suffix can hold a page range and a year, as in `10.1128/MMBR.65.4.481-496.2001`,
 #: which has the shape of a US phone number (Mark, reviewing a 2026-10-01 preview).
-_DOI_PREFIX = re.compile(r"\b10\.\d{4,9}/")
+#: A DOI runs from its `10.NNNN/` prefix to the next whitespace; a suffix has no length limit.
+_DOI = re.compile(r"\b10\.\d{4,9}/\S*")
 
 
-def _inside_doi(text: str, start: int) -> bool:
-    """Whether `start` falls inside a DOI: no whitespace between it and a `10.NNNN/` prefix.
+def _doi_starts_and_ends(text: str) -> tuple[list[int], list[int]]:
+    """Every DOI's start and end in `text`, found in one pass. A per-candidate walk back to
+    the token start was quadratic on one long token holding many phone-shaped values
+    (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/74)."""
+    spans = [m.span() for m in _DOI.finditer(text)]
+    return [a for a, _ in spans], [b for _, b in spans]
 
-    Walks back to the start of the whitespace-delimited token rather than a fixed window, since
-    a DOI suffix has no length limit (Copilot review of
-    https://github.com/beril-doe/langfuse-retro-load/pull/74).
-    """
-    token_start = start
-    while token_start > 0 and not text[token_start - 1].isspace():
-        token_start -= 1
-    return bool(_DOI_PREFIX.search(text, token_start, start))
+
+def _inside_doi(dois: tuple[list[int], list[int]], start: int) -> bool:
+    """Whether `start` falls inside one of the DOIs `_doi_starts_and_ends` found."""
+    starts, ends = dois
+    i = bisect.bisect_right(starts, start) - 1
+    return i >= 0 and start < ends[i]
 
 #: A value that only names another value: `$CBORG_API_KEY`, `${GITHUB_TOKEN}`,
 #: `<your-token-here>`, `{{ secrets.TOKEN }}`. Redacting one hides where a credential came
@@ -570,6 +573,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     key = new_key() if key is None else key
     protected = _protected(text)
     boundaries = _Boundaries(text)
+    dois = None  # found on the first phone-shaped match only
 
     candidates = []
     for name, pattern in PATTERNS.items():
@@ -587,8 +591,11 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):
                 continue
-            if name == "phone_us" and _inside_doi(text, span[0]):
-                continue
+            if name == "phone_us":
+                if dois is None:
+                    dois = _doi_starts_and_ends(text)
+                if _inside_doi(dois, span[0]):
+                    continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
                 continue

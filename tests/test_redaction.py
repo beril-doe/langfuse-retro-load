@@ -657,3 +657,14 @@ def test_a_page_range_inside_a_doi_is_not_a_phone_number(text, flagged):
     2026-10-01 preview, where it masked the tail of three citations."""
     found = {f.pattern for f in redaction.detect(text)}
     assert ("phone_us" in found) is flagged
+
+
+def test_the_doi_check_stays_linear_on_one_long_token():
+    """One long token with thousands of phone-shaped values used to take seconds, because each
+    candidate walked back to the token start (Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/74). 3,200 values took 5.4s then."""
+    text = ";".join(f"{i % 900 + 100:03d}-555-{i % 9000 + 1000:04d}" for i in range(3200))
+    started = time.time()
+    found = redaction.detect(text)
+    assert time.time() - started < 1.0
+    assert sum(f.pattern == "phone_us" for f in found) == 3200
