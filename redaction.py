@@ -209,6 +209,34 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
     # `git@github.com:owner/repo.git`: a colon then a path, immediately after the host.
     return bool(re.match(r":[A-Za-z0-9._~-]+/", text[end:end + 40]))
 
+#: A DOI suffix can end in a page range and a year, as in `10.1128/MMBR.65.4.481-496.2001`,
+#: which has the shape of a US phone number (Mark, reviewing a 2026-10-01 preview).
+#:
+#: Only that exact tail is exempt: `NNN-NNN.NNNN` ending where the DOI ends, with a first page
+#: no higher than the last and a year from 1900 to 2099. Exempting any phone-shaped match
+#: inside the DOI let real numbers glued onto one through, such as `10.1234/abc.510-486-4000`,
+#: because a DOI suffix uses the same `-` and `.` a phone number does (found by a review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/74 after five Copilot rounds each
+#: found one such case). A DOI ends on a letter or digit, so a sentence's full stop is not
+#: part of it.
+_DOI = re.compile(r"\b10\.\d{4,9}/[-._/A-Za-z0-9]*[A-Za-z0-9]")
+_PAGE_RANGE_YEAR = re.compile(r"(\d{3})-(\d{3})\.((?:19|20)\d{2})")
+
+
+def _doi_ends(text: str) -> list[int]:
+    """Where each DOI in `text` ends, sorted, found in one pass so many candidates stay linear
+    (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/74)."""
+    return [m.end() for m in _DOI.finditer(text)]
+
+
+def _closes_doi(text: str, doi_ends: list[int], start: int, end: int) -> bool:
+    """Whether `start`..`end` is a page range and year that ends a DOI exactly."""
+    i = bisect.bisect_left(doi_ends, end)
+    if i == len(doi_ends) or doi_ends[i] != end:
+        return False
+    m = _PAGE_RANGE_YEAR.fullmatch(text, start, end)
+    return m is not None and int(m.group(1)) <= int(m.group(2))
+
 #: A value that only names another value: `$CBORG_API_KEY`, `${GITHUB_TOKEN}`,
 #: `<your-token-here>`, `{{ secrets.TOKEN }}`. Redacting one hides where a credential came
 #: from and hides nothing secret (https://github.com/beril-doe/langfuse-retro-load/issues/23).
@@ -575,6 +603,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     key = new_key() if key is None else key
     protected = _protected(text)
     boundaries = _Boundaries(text)
+    dois = None  # found on the first phone-shaped match only
 
     candidates = []
     for name, pattern in PATTERNS.items():
@@ -592,6 +621,11 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):
                 continue
+            if name == "phone_us":
+                if dois is None:
+                    dois = _doi_ends(text)
+                if _closes_doi(text, dois, *span):
+                    continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
                 continue

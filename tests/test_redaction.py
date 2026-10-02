@@ -645,6 +645,42 @@ def test_every_credential_name_is_masked_in_text_and_as_a_key(name):
         assert redaction.is_credential_key(spelled), spelled
 
 
+@pytest.mark.parametrize("text,flagged", [
+    ("*Microbiol Mol Biol Rev* 65:481-496 (DOI: 10.1128/MMBR.65.4.481-496.2001) |", False),
+    ("https://doi.org/10.1128/MMBR.65.4.481-496.2001", False),
+    ("10.5281/zenodo." + "x" * 250 + ".481-496.2001", False),
+    ("call 510-486-4000 about 10.1128/MMBR.65.4", True),
+    ("phone: (510) 486-4000", True),
+    ('{"doi":"10.1128/MMBR.65.4","phone":"510-486-4000"}', True),
+    ("10.1128/MMBR.65.4,510-486-4000", True),
+    ("DOI 10.1128/article510 486-4000", True),
+    ("10.1234/abc.510-486-4000", True),
+    ("10.1234/v1-510-486-4000", True),
+    ("https://doi.org/10.1234/abc/510-486-4000", True),
+    ("10.1234/abc.510.486.4000", True),
+    ("10.1234/abc.510-486.4000", True),
+    ("10.1234/abc.510-486.4000x123", True),
+    ("see 10.1128/MMBR.65.4.481-496.2001.", False),
+    ("10.1128/JB.183.2.555-567.2001", False),
+])
+def test_a_page_range_inside_a_doi_is_not_a_phone_number(text, flagged):
+    """`481-496.2001` in a DOI has the shape of a US phone number. Found reviewing a
+    2026-10-01 preview, where it masked the tail of three citations."""
+    found = {f.pattern for f in redaction.detect(text)}
+    assert ("phone_us" in found) is flagged
+
+
+def test_the_doi_check_stays_linear_on_one_long_token():
+    """One long token with thousands of phone-shaped values used to take seconds, because each
+    candidate walked back to the token start (Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/74). 3,200 values took 5.4s then."""
+    text = ";".join(f"{i % 900 + 100:03d}-555-{i % 9000 + 1000:04d}" for i in range(3200))
+    started = time.perf_counter()
+    found = redaction.detect(text)
+    assert time.perf_counter() - started < 1.0
+    assert sum(f.pattern == "phone_us" for f in found) == 3200
+
+
 @pytest.mark.parametrize("line", [
     'util = KBReadsUtils(token="your_token")',
     "AccessKey : YOUR-ACCESS-KEY-HERE",
@@ -686,3 +722,13 @@ def test_mc_alias_list_keeps_placeholders_and_masks_the_real_keys():
     clean, _ = redaction.redact(out)
     assert "YOUR-ACCESS-KEY-HERE" in clean and "YOUR-SECRET-KEY-HERE" in clean
     assert access not in clean and secret not in clean
+
+
+def test_many_page_ranges_in_one_doi_stay_linear():
+    """Each candidate checks its DOI by binary search, not a scan (Fable review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/74)."""
+    text = "10.1234/x." + ".".join(["481-496.2001"] * 3200)
+    started = time.perf_counter()
+    found = redaction.detect(text)
+    assert time.perf_counter() - started < 1.0
+    assert sum(f.pattern == "phone_us" for f in found) == 3199
