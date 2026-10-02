@@ -670,3 +670,46 @@ def test_the_doi_check_stays_linear_on_one_long_token():
     found = redaction.detect(text)
     assert time.perf_counter() - started < 1.0
     assert sum(f.pattern == "phone_us" for f in found) == 3200
+
+
+@pytest.mark.parametrize("line", [
+    'util = KBReadsUtils(token="your_token")',
+    "AccessKey : YOUR-ACCESS-KEY-HERE",
+    "SecretKey : YOUR-SECRET-KEY-HERE",
+    "BERIL_ORCID_CLIENT_SECRET=your-orcid-client-secret  # provided by ORCiD",
+    "BERIL_SESSION_SECRET_KEY=change-me-in-production",
+    "BERIL_DB_PASSWORD=change-in-production",
+])
+def test_a_your_placeholder_is_not_masked(line):
+    """Template text that names the credential to paste in hides nothing. Seen in two
+    consenters' previews (https://github.com/beril-doe/langfuse-retro-load/issues/75)."""
+    assert redaction.redact(line)[0] == line
+
+
+@pytest.mark.parametrize("line", [
+    "token=your_token_" + "8f3a9c2b1d",  # split so this file scans clean
+    "SecretKey : yourSecret" + "K3yAbc123",
+    "password: yourpassword1",
+    "password=yourpassword",
+    "password: your_password",
+    "API_KEY=your-api-key-here",
+    "password: change-me-in-production2",
+    "secret=your-orcid-client-" + "secret9f3",
+    "token=" + "ghp_" + "a" * 36,
+])
+def test_a_value_that_only_starts_like_a_placeholder_is_still_masked(line):
+    """Only the exact placeholder shape is exempt; anything with more in it may be real."""
+    assert redaction.redact(line)[0] != line
+
+
+def test_mc_alias_list_keeps_placeholders_and_masks_the_real_keys():
+    """The output that prompted https://github.com/beril-doe/langfuse-retro-load/issues/75:
+    the default gcs alias holds placeholders, and the alias next to it holds real keys."""
+    access, secret = "Q3KZ" + "8M2XPL7RWN4D", "u7Rk" + "Pz2Lq9VbN4xWm8Tc3Hs6Yd1Fg5Ja0Ke"
+    out = ("gcs\n  URL       : https://storage.googleapis.com\n"
+           "  AccessKey : YOUR-ACCESS-KEY-HERE\n  SecretKey : YOUR-SECRET-KEY-HERE\n"
+           "  API       : S3v2\n\nberdl-minio\n  URL       : https://minio.example\n"
+           f"  AccessKey : {access}\n  SecretKey : {secret}\n  API       : S3v4\n")
+    clean, _ = redaction.redact(out)
+    assert "YOUR-ACCESS-KEY-HERE" in clean and "YOUR-SECRET-KEY-HERE" in clean
+    assert access not in clean and secret not in clean

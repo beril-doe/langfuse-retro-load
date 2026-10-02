@@ -170,6 +170,11 @@ ROLE_LOCAL_PARTS = (r"(?:git|noreply|no-reply|donotreply|do-not-reply|root|postm
                     r"|hostmaster|webmaster|mailer-daemon|abuse|admin|support|info"
                     r"|notifications|bounce|nobody|daemon)")
 
+#: Local parts that are template text, not anyone's address: `your-email@lbl.gov` in a setup
+#: guide. Masking one tells the reader a person's address was removed when none was there
+#: (Mark, reviewing a 2026-10-01 preview).
+PLACEHOLDER_LOCAL_PARTS = r"your[-._]?(?:e-?mail|name|user(?:name)?|address|id)"
+
 PATTERNS["email_personal"] = re.compile(rf"{LOCAL_PART}@{PERSONAL_DOMAINS}\b", re.IGNORECASE)
 PATTERNS["email_institutional"] = re.compile(
     LOCAL_PART + r"@(?!" + PERSONAL_DOMAINS + r"\b)[A-Za-z0-9.-]{1,255}"
@@ -196,6 +201,8 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
     value = text[start:end]
     local = value.split("@", 1)[0]
     if re.fullmatch(ROLE_LOCAL_PARTS, local, re.IGNORECASE):
+        return True
+    if re.fullmatch(PLACEHOLDER_LOCAL_PARTS, local, re.IGNORECASE):
         return True
     if RESERVED_DOMAINS.search(value):
         return True
@@ -237,6 +244,19 @@ REFERENCE_RE = re.compile(
 #: `<ghp_...>`, so it is not exempt (second-to-last Copilot round on
 #: https://github.com/beril-doe/langfuse-retro-load/pull/25).
 _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
+
+#: Template values seen in review that name the credential to paste in: `your_token` in a
+#: docstring example, `YOUR-SECRET-KEY-HERE` in the default alias `mc alias list` prints,
+#: `change-me-in-production` in an `.env.example`. Exact strings only, compared without case.
+#: A general "starts with your" shape was dropped because a person may choose
+#: `yourpassword` as a real password (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/76; see also
+#: https://github.com/beril-doe/langfuse-retro-load/issues/75). Add a string here when a
+#: review finds a new one.
+PLACEHOLDER_VALUES = frozenset({
+    "your_token", "your-access-key-here", "your-secret-key-here",
+    "your-orcid-client-secret", "change-me-in-production", "change-in-production",
+})
 
 
 #: A value that is code rather than data: a name, or names joined by dots, followed by a
@@ -319,6 +339,8 @@ def is_reference(value: str) -> bool:
     """
     bare = value.strip().strip("\"'")
     if REFERENCE_RE.fullmatch(bare):
+        return True
+    if bare.lower() in PLACEHOLDER_VALUES:
         return True
     if _PLACEHOLDER_RE.fullmatch(bare):
         return not any(CATEGORY.get(name) == SECRET and pattern is not None
