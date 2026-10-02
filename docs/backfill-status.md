@@ -1,8 +1,8 @@
 # Backfill status and deletion log
 
 What exists in the BERIL workshop corpus, what has been loaded into the Langfuse project
-beril-usage, and every deletion made from the BERIL Langfuse organization. Measured on
-2026-09-29; the deletion log is current to 2026-10-01.
+beril-usage, and every deletion made from the BERIL Langfuse organization. Corpus counts measured on
+2026-09-29; loaded counts and the deletion log are current to 2026-10-02.
 
 This repository is public, so this page gives counts only. It doesn't name who consented,
 their account names or their ORCIDs; that per-person table is kept privately by Mark. The
@@ -42,23 +42,22 @@ procedure for loading someone is in [backfill-runbook.md](backfill-runbook.md).
 
 | status | people | turns on the workshop day | snapshots on the workshop day |
 |---|---|---|---|
-| loaded | 6 (the BERIL developer, who also consented, and 5 others) | 264 | 12 |
-| strong evidence, not yet loaded | 11, one of them on hold at Mark's request | 410 | 12 |
+| loaded | 16 (the BERIL developer, who also consented, and 15 others) | 634 | 23 |
+| strong evidence, not yet loaded | 1, on hold at Mark's request | 40 | 1 |
 | good evidence: one matching registry record, but the iD isn't in the transcripts | 11 | 363 | 14 |
 | unresolved: no single matching registry record | 4 | 56 | 0 |
 | no account in the corpus | 1 | 0 | 0 |
 
-The rows add up to the corpus totals: 1,093 workshop-day turns and 38 snapshots. The strong
-row includes the person on hold (40 workshop-day turns and one snapshot).
+The rows add up to the corpus totals: 1,093 workshop-day turns and 38 snapshots.
 
 ## Loaded now (beril-usage, tag `retro-load`)
 
 | | on 2026-05-07 | other days |
 |---|---|---|
-| turn traces | 264 | 60, all the BERIL developer's, kept by decision |
-| artifact spans | 12 | 0 |
+| turn traces | 634 | 60, all the BERIL developer's, kept by decision |
+| artifact spans | 23 | 0 |
 
-That's 336 traces. The project also holds the developer's live-hook and smoke-test traces,
+That's 717 traces, counted 2026-10-02. Ten strong-evidence consenters were added on 2026-10-01 and 2026-10-02 (370 workshop-day turns and 11 snapshots), each after Mark reviewed their redaction plan. The project also holds the developer's live-hook and smoke-test traces,
 which carry no `retro-load` tag.
 
 ## Deletion log
