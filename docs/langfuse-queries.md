@@ -114,7 +114,7 @@ project_id, prefix = la.resolve_project("beril")
 header, host = la.auth_for_project(project_id, prefix)
 mine = [t for t in la.enumerate_traces(header, host, None, ["retro-load"])
         if t["userId"] == ORCID]
-print(len(mine), "traces in", len({t["sessionId"] for t in mine}), "sessions")
+print(len(mine), "traces in", len({t["sessionId"] for t in mine if t["sessionId"]}), "sessions")
 PY
 ```
 
@@ -122,7 +122,7 @@ For the person with the most turns, this gave 86 traces (82 turns and 4 artifact
 sessions. In the Langfuse UI, the same view is Traces, filtered on User ID.
 
 To list what a deletion would remove, without removing anything, use a dry run:
-`langfuse_admin.py delete --project beril --type trace --tag retro-load --user-id <orcid> --dry-run`.
+`uv run python langfuse_admin.py delete --project beril --type trace --tag retro-load --user-id <orcid> --dry-run`.
 It prints the count, the sessions touched and the date range.
 
 ## 5. Retro-loaded traces next to live BERIL traces
