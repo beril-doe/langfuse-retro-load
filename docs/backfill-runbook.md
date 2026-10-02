@@ -56,9 +56,12 @@ there are loaded, with only the masks in that plan.
 cd ~/langfuse-retro-load && .venv/bin/python backfill.py <person> --review
 ```
 
-This pages through the latest preview's sessions that have masks, one at a time, with values,
-and prints the load command at the end. It only runs in a terminal, so don't pipe it into
-`less`. Things worth checking: gitleaks findings, which can be false positives (public
+This shows each distinct value the latest preview masks once, with values, across every
+session that has masks: secrets first, then the most frequent. Each value gets one line of
+context, how many times and in how many sessions it occurs, and the first few places. A
+preview with hundreds of masks is usually a few dozen distinct values. The load command is
+printed at the end. To see every mask instead, one session at a time, add `--each`. It only
+runs in a terminal, so don't pipe it into `less`. Things worth checking: gitleaks findings, which can be false positives (public
 identifiers are allowlisted in `.gitleaks.toml`), and anything the session is about that a
 mask would hide. If a mask is wrong, fix the rule and rebuild the preview. Don't edit the
 plan: a plan whose rows changed after it was built is refused.

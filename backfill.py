@@ -11,7 +11,8 @@ The preview checks the setup, finds the person's transcripts from the roster (by
 private one on the pod, ~/beril-backfill-roster.json; --people names another), writes a redaction plan
 under plans/, and prints what a load would send and the exact command to load it. Each setup
 problem is reported with the command that fixes it. Review the plan with `--review`, which
-pages through the sessions that have masks, then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
+shows each distinct masked value once with where it occurs (`--review --each` shows every mask,
+one session at a time), then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
 run_manifest.py and retro_load.py, the same path as a manual load.
 
 A long load should survive a closed browser tab, so run it in the background:
@@ -532,7 +533,7 @@ def main() -> int:
         with_masks = write_state(args.person, plan_path, paths, command)
         if with_masks:
             print(f"\nNothing sent. {with_masks} of {len(paths)} session(s) have masks. Review "
-                  "them, one session at a time, with values:")
+                  "them, each distinct value once, with values:")
             print(f"  {shlex.join([python, str(HERE / 'backfill.py'), args.person, '--review'])}")
             print(f"Then load exactly what was previewed:\n  {command}")
         else:
