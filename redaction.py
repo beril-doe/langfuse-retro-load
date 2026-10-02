@@ -215,6 +215,16 @@ REFERENCE_RE = re.compile(
 #: https://github.com/beril-doe/langfuse-retro-load/pull/25).
 _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
+#: A bare placeholder that names the credential a reader should paste in: `your_token` in a
+#: docstring example, `YOUR-SECRET-KEY-HERE` in the default alias `mc alias list` prints.
+#: The whole value has to be `your`, a credential word and an optional `here`, so a random
+#: real key cannot have this shape (https://github.com/beril-doe/langfuse-retro-load/issues/75,
+#: and Mark reviewing a 2026-10-02 preview).
+_YOUR_PLACEHOLDER_RE = re.compile(
+    r"your[-_ ]?(?:api[-_ ]?|access[-_ ]?|secret[-_ ]?|auth[-_ ]?|private[-_ ]?)?"
+    r"(?:token|key|secret|password|passwd|credential)s?(?:[-_ ]?here)?",
+    re.IGNORECASE)
+
 
 #: A value that is code rather than data: a name, or names joined by dots, followed by a
 #: call or an index. `file_token = env_vars.get("KBASE_AUTH_TOKEN", "")` reads a token and
@@ -296,6 +306,8 @@ def is_reference(value: str) -> bool:
     """
     bare = value.strip().strip("\"'")
     if REFERENCE_RE.fullmatch(bare):
+        return True
+    if _YOUR_PLACEHOLDER_RE.fullmatch(bare):
         return True
     if _PLACEHOLDER_RE.fullmatch(bare):
         return not any(CATEGORY.get(name) == SECRET and pattern is not None

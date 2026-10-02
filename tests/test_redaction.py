@@ -643,3 +643,27 @@ def test_every_credential_name_is_masked_in_text_and_as_a_key(name):
         assert value not in redaction.redact(f"{spelled}={value}")[0], spelled
         assert value not in redaction.redact(f'"{spelled}": "{value}"')[0], spelled
         assert redaction.is_credential_key(spelled), spelled
+
+
+@pytest.mark.parametrize("line", [
+    'util = KBReadsUtils(token="your_token")',
+    "AccessKey : YOUR-ACCESS-KEY-HERE",
+    "SecretKey : YOUR-SECRET-KEY-HERE",
+    "API_KEY=your-api-key-here",
+    "password: your_password",
+])
+def test_a_your_placeholder_is_not_masked(line):
+    """Template text that names the credential to paste in hides nothing. Seen in two
+    consenters' previews (https://github.com/beril-doe/langfuse-retro-load/issues/75)."""
+    assert redaction.redact(line)[0] == line
+
+
+@pytest.mark.parametrize("line", [
+    "token=your_token_" + "8f3a9c2b1d",  # split so this file scans clean
+    "SecretKey : yourSecret" + "K3yAbc123",
+    "password: yourpassword1",
+    "token=" + "ghp_" + "a" * 36,
+])
+def test_a_value_that_only_starts_like_a_placeholder_is_still_masked(line):
+    """Only the exact placeholder shape is exempt; anything with more in it may be real."""
+    assert redaction.redact(line)[0] != line
