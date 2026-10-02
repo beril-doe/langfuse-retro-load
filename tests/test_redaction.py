@@ -673,3 +673,16 @@ def test_a_your_placeholder_is_not_masked(line):
 def test_a_value_that_only_starts_like_a_placeholder_is_still_masked(line):
     """Only the exact placeholder shape is exempt; anything with more in it may be real."""
     assert redaction.redact(line)[0] != line
+
+
+def test_mc_alias_list_keeps_placeholders_and_masks_the_real_keys():
+    """The output that prompted https://github.com/beril-doe/langfuse-retro-load/issues/75:
+    the default gcs alias holds placeholders, and the alias next to it holds real keys."""
+    access, secret = "Q3KZ" + "8M2XPL7RWN4D", "u7Rk" + "Pz2Lq9VbN4xWm8Tc3Hs6Yd1Fg5Ja0Ke"
+    out = ("gcs\n  URL       : https://storage.googleapis.com\n"
+           "  AccessKey : YOUR-ACCESS-KEY-HERE\n  SecretKey : YOUR-SECRET-KEY-HERE\n"
+           "  API       : S3v2\n\nberdl-minio\n  URL       : https://minio.example\n"
+           f"  AccessKey : {access}\n  SecretKey : {secret}\n  API       : S3v4\n")
+    clean, _ = redaction.redact(out)
+    assert "YOUR-ACCESS-KEY-HERE" in clean and "YOUR-SECRET-KEY-HERE" in clean
+    assert access not in clean and secret not in clean
