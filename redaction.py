@@ -215,17 +215,18 @@ REFERENCE_RE = re.compile(
 #: https://github.com/beril-doe/langfuse-retro-load/pull/25).
 _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
-#: A bare placeholder that names the credential a reader should paste in: `your_token` in a
-#: docstring example, `YOUR-SECRET-KEY-HERE` in the default alias `mc alias list` prints.
-#: The whole value has to be `your`, up to three letters-only words, a credential word and an
-#: optional `here`, so a random real key cannot have this shape (https://github.com/beril-doe/langfuse-retro-load/issues/75,
-#: and Mark reviewing a 2026-10-02 preview).
-_YOUR_PLACEHOLDER_RE = re.compile(
-    r"your(?:[-_ ]?[a-z]{2,12}){0,3}?[-_ ]?"
-    r"(?:token|key|secret|password|passwd|credential)s?(?:[-_ ]?here)?"
-    # `change-me-in-production` and its kin, from an `.env.example` (Mark, 2026-10-02).
-    r"|change[-_ ]?(?:me|this)(?:[-_ ]in[-_ ]production)?|change[-_ ]in[-_ ]production",
-    re.IGNORECASE)
+#: Template values seen in review that name the credential to paste in: `your_token` in a
+#: docstring example, `YOUR-SECRET-KEY-HERE` in the default alias `mc alias list` prints,
+#: `change-me-in-production` in an `.env.example`. Exact strings only, compared without case.
+#: A general "starts with your" shape was dropped because a person may choose
+#: `yourpassword` as a real password (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/76; see also
+#: https://github.com/beril-doe/langfuse-retro-load/issues/75). Add a string here when a
+#: review finds a new one.
+PLACEHOLDER_VALUES = frozenset({
+    "your_token", "your-access-key-here", "your-secret-key-here",
+    "your-orcid-client-secret", "change-me-in-production", "change-in-production",
+})
 
 
 #: A value that is code rather than data: a name, or names joined by dots, followed by a
@@ -309,7 +310,7 @@ def is_reference(value: str) -> bool:
     bare = value.strip().strip("\"'")
     if REFERENCE_RE.fullmatch(bare):
         return True
-    if _YOUR_PLACEHOLDER_RE.fullmatch(bare):
+    if bare.lower() in PLACEHOLDER_VALUES:
         return True
     if _PLACEHOLDER_RE.fullmatch(bare):
         return not any(CATEGORY.get(name) == SECRET and pattern is not None
