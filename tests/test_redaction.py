@@ -648,6 +648,7 @@ def test_every_credential_name_is_masked_in_text_and_as_a_key(name):
 @pytest.mark.parametrize("text,flagged", [
     ("*Microbiol Mol Biol Rev* 65:481-496 (DOI: 10.1128/MMBR.65.4.481-496.2001) |", False),
     ("https://doi.org/10.1128/MMBR.65.4.481-496.2001", False),
+    ("10.5281/zenodo." + "x" * 250 + ".481-496.2001", False),
     ("call 510-486-4000 about 10.1128/MMBR.65.4", True),
     ("phone: (510) 486-4000", True),
 ])

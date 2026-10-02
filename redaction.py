@@ -204,12 +204,20 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
 
 #: A DOI suffix can hold a page range and a year, as in `10.1128/MMBR.65.4.481-496.2001`,
 #: which has the shape of a US phone number (Mark, reviewing a 2026-10-01 preview).
-_DOI_START = re.compile(r"\b10\.\d{4,9}/\S*$")
+_DOI_PREFIX = re.compile(r"\b10\.\d{4,9}/")
 
 
 def _inside_doi(text: str, start: int) -> bool:
-    """Whether `start` falls inside a DOI: no whitespace between it and a `10.NNNN/` prefix."""
-    return bool(_DOI_START.search(text[max(0, start - 200):start]))
+    """Whether `start` falls inside a DOI: no whitespace between it and a `10.NNNN/` prefix.
+
+    Walks back to the start of the whitespace-delimited token rather than a fixed window, since
+    a DOI suffix has no length limit (Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/74).
+    """
+    token_start = start
+    while token_start > 0 and not text[token_start - 1].isspace():
+        token_start -= 1
+    return bool(_DOI_PREFIX.search(text, token_start, start))
 
 #: A value that only names another value: `$CBORG_API_KEY`, `${GITHUB_TOKEN}`,
 #: `<your-token-here>`, `{{ secrets.TOKEN }}`. Redacting one hides where a credential came
