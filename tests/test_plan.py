@@ -741,3 +741,46 @@ def test_a_plan_from_before_row_digests_is_refused(tmp_path):
     out.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in lines))
     with pytest.raises(plan.PlanError, match="before plans recorded a digest"):
         plan.for_transcript(out, path)
+
+
+def test_reveal_distinct_groups_repeats_across_sessions(monkeypatch, tmp_path, capsys):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/77: the same value in several
+    records and sessions is shown once, with its count, and secrets come before emails."""
+    pytest.importorskip("dotenv")
+    import reveal
+    other = "ghp_" + "Zz9yX8wV7uT6sR5qP4oN3mL2kJ1iH0gF9eD8"
+    one = _transcript(tmp_path, [
+        {"type": "user", "message": {"content": "token=" + FAKE + " mail a.person@lbl.gov"}},
+        {"type": "user", "message": {"content": "again token=" + FAKE}},
+    ], name="s-1.jsonl")
+    two = _transcript(tmp_path, [
+        {"type": "user", "message": {"content": "token=" + FAKE + " and token=" + other}},
+    ], name="s-2.jsonl")
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(one, use_gitleaks=False), plan.build(two, use_gitleaks=False)])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--plan", str(out), "--distinct",
+                                      "--transcript", str(one), "--transcript", str(two)])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert "5 planned mask(s) in 2 session(s), 3 distinct value(s)" in printed
+    blocks = [line for line in printed.splitlines() if line.startswith("[")]
+    assert blocks[0].startswith("[1] secret github_pat") and "3 time(s) in 2 session(s)" in blocks[0]
+    assert "1 time(s) in 1 session(s)" in blocks[1] and blocks[1].startswith("[2] secret")
+    assert blocks[2].startswith("[3] person email_institutional")
+    assert FAKE not in printed and other not in printed, "printed a value without --show-values"
+
+
+def test_reveal_distinct_needs_a_plan_and_takes_no_selectors(monkeypatch, tmp_path):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "hi")
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--distinct"])
+    assert reveal.main() == 2
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path), "--plan", str(out),
+                                      "--distinct", "--record", "0"])
+    assert reveal.main() == 2
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path),
+                                      "--transcript", str(path), "--plan", str(out)])
+    assert reveal.main() == 2

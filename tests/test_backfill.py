@@ -269,8 +269,31 @@ def test_review_shows_only_sessions_with_masks(corpus, monkeypatch, capsys):
     monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("paused after the last session"))
-    assert review_run(monkeypatch) == 0
+    assert review_run(monkeypatch, "--each") == 0
     assert len(shown) == 1 and shown[0][-2].endswith("s-1.jsonl") and shown[0][-1] == "--show-values"
+
+
+def test_review_shows_each_distinct_value_once_by_default(corpus, monkeypatch, capsys):
+    """https://github.com/beril-doe/langfuse-retro-load/issues/77: one grouped view across every
+    session with masks, not one page per session."""
+    monkeypatch.setattr(backfill, "run_load", lambda cmd: pytest.fail("loaded"))
+    assert run(monkeypatch, corpus) == 0
+    shown = []
+    monkeypatch.setattr(backfill, "run_reveal", lambda cmd: shown.append(cmd) or 0)
+    monkeypatch.setattr(backfill.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(backfill.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("paused"))
+    assert review_run(monkeypatch) == 0
+    assert len(shown) == 1 and "--distinct" in shown[0] and "--show-values" in shown[0]
+    transcripts = [shown[0][i + 1] for i, a in enumerate(shown[0]) if a == "--transcript"]
+    assert len(transcripts) == 1 and transcripts[0].endswith("s-1.jsonl")
+    assert "--review --each" in capsys.readouterr().out
+
+
+def test_each_without_review_is_refused(corpus, monkeypatch):
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, corpus, "--each")
+    assert exc.value.code == 2
 
 
 def test_review_refuses_without_a_terminal(corpus, monkeypatch, capsys):
@@ -657,11 +680,11 @@ def test_review_refuses_when_input_is_not_a_terminal(corpus, monkeypatch, capsys
 
 
 def _every_other_option():
-    """Every option the parser knows except --review and help, with a value where it takes one,
+    """Every option the parser knows except --review, --each and help, with a value where it takes one,
     so a new option is covered here without editing a list."""
     for action in backfill.build_parser()._actions:
         for opt in action.option_strings:
-            if opt in ("--review", "-h", "--help"):
+            if opt in ("--review", "--each", "-h", "--help"):
                 continue
             takes_value = action.nargs != 0
             yield [opt, "2026-05-07"] if takes_value else [opt]
@@ -704,6 +727,8 @@ def test_stopping_review_part_way_is_not_a_crash(corpus, monkeypatch, capsys, st
 
     monkeypatch.setattr(backfill, "run_reveal", reveal)
     assert review_run(monkeypatch) == 130
+    capsys.readouterr()
+    assert review_run(monkeypatch, "--each") == 130
     out = capsys.readouterr().out
     assert "stopped" in out and "--load --plan" in out
 
