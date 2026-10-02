@@ -217,12 +217,14 @@ _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
 #: A bare placeholder that names the credential a reader should paste in: `your_token` in a
 #: docstring example, `YOUR-SECRET-KEY-HERE` in the default alias `mc alias list` prints.
-#: The whole value has to be `your`, a credential word and an optional `here`, so a random
-#: real key cannot have this shape (https://github.com/beril-doe/langfuse-retro-load/issues/75,
+#: The whole value has to be `your`, up to three letters-only words, a credential word and an
+#: optional `here`, so a random real key cannot have this shape (https://github.com/beril-doe/langfuse-retro-load/issues/75,
 #: and Mark reviewing a 2026-10-02 preview).
 _YOUR_PLACEHOLDER_RE = re.compile(
-    r"your[-_ ]?(?:api[-_ ]?|access[-_ ]?|secret[-_ ]?|auth[-_ ]?|private[-_ ]?)?"
-    r"(?:token|key|secret|password|passwd|credential)s?(?:[-_ ]?here)?",
+    r"your(?:[-_ ]?[a-z]{2,12}){0,3}?[-_ ]?"
+    r"(?:token|key|secret|password|passwd|credential)s?(?:[-_ ]?here)?"
+    # `change-me-in-production` and its kin, from an `.env.example` (Mark, 2026-10-02).
+    r"|change[-_ ]?(?:me|this)(?:[-_ ]in[-_ ]production)?|change[-_ ]in[-_ ]production",
     re.IGNORECASE)
 
 
