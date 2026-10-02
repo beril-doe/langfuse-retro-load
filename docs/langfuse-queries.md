@@ -41,7 +41,7 @@ traces = la.enumerate_traces(header, host, None)
 retro = [t for t in traces if "retro-load" in t["tags"]]
 spans = [t for t in retro if "artifacts" in t["tags"]]
 turns = [t for t in retro if "artifacts" not in t["tags"]]
-day = [t for t in turns if (t["timestamp"] or "").startswith("2026-05-07")]
+day = [t for t in turns if la._on_day(t["timestamp"], "2026-05-07")]   # compared in UTC
 print("all", len(traces), "retro-load", len(retro), "turns", len(turns),
       "artifact spans", len(spans), "turns on the day", len(day))
 PY
@@ -73,7 +73,7 @@ header, host = la.auth_for_project(project_id, prefix)
 retro = la.enumerate_traces(header, host, None, ["retro-load"])
 day = collections.Counter(t["userId"] for t in retro
                           if "artifacts" not in t["tags"]
-                          and (t["timestamp"] or "").startswith("2026-05-07"))
+                          and la._on_day(t["timestamp"], "2026-05-07"))
 spans = collections.Counter(t["userId"] for t in retro if "artifacts" in t["tags"])
 for n, (user, count) in enumerate(day.most_common(), 1):
     print(f"person {n:2}: {count:3} turns, {spans[user]} artifact spans")
