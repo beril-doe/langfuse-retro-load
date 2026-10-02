@@ -218,12 +218,20 @@ def _plan_for(plan_path: Path, headers, masks, transcript: Path, data: bytes):
         print(f"{subject} changed after its plan was built; this view would not match what a "
               f"load does. Rebuild the plan.", file=sys.stderr)
         return None
-    if header.masks != len(masks.get(subject, [])):
+    rows = masks.get(subject, [])
+    if header.masks != len(rows):
         print(f"{plan_path.name} is incomplete for {subject}: its header lists {header.masks} "
-              f"mask(s) and {len(masks.get(subject, []))} follow. The load refuses it; rebuild "
-              f"the plan.", file=sys.stderr)
+              f"mask(s) and {len(rows)} follow. The load refuses it; rebuild the plan.",
+              file=sys.stderr)
         return None
-    return subject, header, masks.get(subject, [])
+    # The loader's row check too, so the view never shows an edited plan as the one under
+    # review (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/81).
+    import plan
+    if not header.rows_sha256 or plan.rows_digest(rows) != header.rows_sha256:
+        print(f"{plan_path.name}: {subject}'s mask rows don't match the digest the plan was "
+              f"built with, so the load refuses it; rebuild the plan.", file=sys.stderr)
+        return None
+    return subject, header, rows
 
 
 def show_plan(args, records, data: bytes) -> int:
@@ -291,6 +299,14 @@ def show_distinct(args, transcripts: list[Path]) -> int:
     """
     import plan
     import retro_load
+    subjects = [inventory._subject_for(t) for t in transcripts]
+    repeated = sorted({s for s in subjects if subjects.count(s) > 1})
+    if repeated:
+        # A plan names each transcript by session id, so a repeat would count twice
+        # (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/81).
+        print(f"more than one --transcript has session id {', '.join(repeated)}",
+              file=sys.stderr)
+        return 2
     headers, masks = plan.read(args.plan)
     groups: dict[tuple[str, str, str], dict] = {}
     unplaceable = cleared = 0
@@ -314,7 +330,11 @@ def show_distinct(args, transcripts: list[Path]) -> int:
             key = (mask.category, mask.pattern, leaf[mask.start:mask.end])
             group = groups.get(key)
             if group is None:
-                siblings = [m for m in subject_masks if m is not mask and not m.cleared
+                # Every other span in the field, cleared ones included: without --show-values a
+                # cleared gitleaks-only value can't be found again by a rescan, so it has to be
+                # hidden here. shown_with drops cleared spans for --show-values, as show_plan
+                # does (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/81).
+                siblings = [m for m in subject_masks if m is not mask
                             and m.record == mask.record and m.pointer == mask.pointer]
                 if args.show_values:
                     siblings = shown_with(mask, siblings)

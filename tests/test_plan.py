@@ -784,3 +784,43 @@ def test_reveal_distinct_needs_a_plan_and_takes_no_selectors(monkeypatch, tmp_pa
     monkeypatch.setattr(sys, "argv", ["reveal.py", "--transcript", str(path),
                                       "--transcript", str(path), "--plan", str(out)])
     assert reveal.main() == 2
+
+
+def test_reveal_distinct_hides_a_cleared_neighbour_without_show_values(monkeypatch, tmp_path, capsys):
+    """A cleared gitleaks-only value next to an active mask can't be found by a rescan, so the
+    view has to hide it from the plan (Copilot review of
+    https://github.com/beril-doe/langfuse-retro-load/pull/81)."""
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _session(tmp_path, "token=" + FAKE + " other " + SHAPELESS)
+    monkeypatch.setattr(inventory, "gitleaks_findings", lambda p: [
+        {"RuleID": "generic-api-key", "Secret": SHAPELESS, "StartLine": 1}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, clearances=[{"pattern": "gitleaks:generic-api-key"}])])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--plan", str(out), "--distinct",
+                                      "--transcript", str(path)])
+    assert reveal.main() == 0
+    printed = capsys.readouterr().out
+    assert SHAPELESS not in printed and FAKE not in printed
+    assert "1 cleared mask(s) not shown" in printed
+
+
+def test_reveal_distinct_refuses_an_edited_plan_and_a_repeated_session(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("dotenv")
+    import reveal
+    path = _transcript(tmp_path, [{"type": "user", "message": {"content": "token=" + FAKE}}])
+    out = tmp_path / "plan.jsonl"
+    plan.write(out, [plan.build(path, use_gitleaks=False)])
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--plan", str(out), "--distinct",
+                                      "--transcript", str(path), "--transcript", str(path)])
+    assert reveal.main() == 2
+    assert "more than one --transcript has session id s-1" in capsys.readouterr().err
+    rows = out.read_text().splitlines()
+    edited = [r.replace('"cleared": false', '"cleared": true') if '"kind": "mask"' in r else r
+              for r in rows]
+    assert edited != rows, "the test did not edit a mask row"
+    out.write_text("\n".join(edited) + "\n")
+    monkeypatch.setattr(sys, "argv", ["reveal.py", "--plan", str(out), "--distinct",
+                                      "--transcript", str(path)])
+    assert reveal.main() == 1
+    assert "don't match the digest" in capsys.readouterr().err
