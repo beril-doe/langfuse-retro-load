@@ -222,6 +222,19 @@ REFERENCE_RE = re.compile(
 #: https://github.com/beril-doe/langfuse-retro-load/pull/25).
 _PLACEHOLDER_RE = re.compile(r"<[A-Za-z][A-Za-z _-]{0,78}[A-Za-z]>")
 
+#: Template values seen in review that name the credential to paste in: `your_token` in a
+#: docstring example, `YOUR-SECRET-KEY-HERE` in the default alias `mc alias list` prints,
+#: `change-me-in-production` in an `.env.example`. Exact strings only, compared without case.
+#: A general "starts with your" shape was dropped because a person may choose
+#: `yourpassword` as a real password (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/76; see also
+#: https://github.com/beril-doe/langfuse-retro-load/issues/75). Add a string here when a
+#: review finds a new one.
+PLACEHOLDER_VALUES = frozenset({
+    "your_token", "your-access-key-here", "your-secret-key-here",
+    "your-orcid-client-secret", "change-me-in-production", "change-in-production",
+})
+
 
 #: A value that is code rather than data: a name, or names joined by dots, followed by a
 #: call or an index. `file_token = env_vars.get("KBASE_AUTH_TOKEN", "")` reads a token and
@@ -303,6 +316,8 @@ def is_reference(value: str) -> bool:
     """
     bare = value.strip().strip("\"'")
     if REFERENCE_RE.fullmatch(bare):
+        return True
+    if bare.lower() in PLACEHOLDER_VALUES:
         return True
     if _PLACEHOLDER_RE.fullmatch(bare):
         return not any(CATEGORY.get(name) == SECRET and pattern is not None
