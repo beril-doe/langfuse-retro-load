@@ -204,8 +204,11 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
 
 #: A DOI suffix can hold a page range and a year, as in `10.1128/MMBR.65.4.481-496.2001`,
 #: which has the shape of a US phone number (Mark, reviewing a 2026-10-01 preview).
-#: A DOI runs from its `10.NNNN/` prefix to the next whitespace; a suffix has no length limit.
-_DOI = re.compile(r"\b10\.\d{4,9}/\S*")
+#: A DOI runs from its `10.NNNN/` prefix through letters, digits and `-._/`. Stopping at
+#: whitespace instead let a DOI swallow the rest of a compact JSON record, exempting a real
+#: phone number in the next field (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/74). A suffix has no length limit.
+_DOI = re.compile(r"\b10\.\d{4,9}/[-._/A-Za-z0-9]+")
 
 
 def _doi_starts_and_ends(text: str) -> tuple[list[int], list[int]]:

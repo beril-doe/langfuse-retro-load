@@ -651,6 +651,8 @@ def test_every_credential_name_is_masked_in_text_and_as_a_key(name):
     ("10.5281/zenodo." + "x" * 250 + ".481-496.2001", False),
     ("call 510-486-4000 about 10.1128/MMBR.65.4", True),
     ("phone: (510) 486-4000", True),
+    ('{"doi":"10.1128/MMBR.65.4","phone":"510-486-4000"}', True),
+    ("10.1128/MMBR.65.4,510-486-4000", True),
 ])
 def test_a_page_range_inside_a_doi_is_not_a_phone_number(text, flagged):
     """`481-496.2001` in a DOI has the shape of a US phone number. Found reviewing a
@@ -664,7 +666,7 @@ def test_the_doi_check_stays_linear_on_one_long_token():
     candidate walked back to the token start (Copilot review of
     https://github.com/beril-doe/langfuse-retro-load/pull/74). 3,200 values took 5.4s then."""
     text = ";".join(f"{i % 900 + 100:03d}-555-{i % 9000 + 1000:04d}" for i in range(3200))
-    started = time.time()
+    started = time.perf_counter()
     found = redaction.detect(text)
-    assert time.time() - started < 1.0
+    assert time.perf_counter() - started < 1.0
     assert sum(f.pattern == "phone_us" for f in found) == 3200
