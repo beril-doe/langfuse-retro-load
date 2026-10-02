@@ -173,7 +173,10 @@ ROLE_LOCAL_PARTS = (r"(?:git|noreply|no-reply|donotreply|do-not-reply|root|postm
 #: Local parts that are template text, not anyone's address: `your-email@lbl.gov` in a setup
 #: guide. Masking one tells the reader a person's address was removed when none was there
 #: (Mark, reviewing a 2026-10-01 preview).
-PLACEHOLDER_LOCAL_PARTS = r"your[-._]?(?:e-?mail|name|user(?:name)?|address|id)"
+#: A separator is required and personal domains are excluded: `yourname@gmail.com` is
+#: almost certainly someone's real address (Copilot review of
+#: https://github.com/beril-doe/langfuse-retro-load/pull/73).
+PLACEHOLDER_LOCAL_PARTS = r"your[-._](?:e-?mail|name)"
 
 PATTERNS["email_personal"] = re.compile(rf"{LOCAL_PART}@{PERSONAL_DOMAINS}\b", re.IGNORECASE)
 PATTERNS["email_institutional"] = re.compile(
@@ -202,7 +205,8 @@ def _is_role_address(text: str, start: int, end: int) -> bool:
     local = value.split("@", 1)[0]
     if re.fullmatch(ROLE_LOCAL_PARTS, local, re.IGNORECASE):
         return True
-    if re.fullmatch(PLACEHOLDER_LOCAL_PARTS, local, re.IGNORECASE):
+    if (re.fullmatch(PLACEHOLDER_LOCAL_PARTS, local, re.IGNORECASE)
+            and not re.search(rf"@{PERSONAL_DOMAINS}\b", value, re.IGNORECASE)):
         return True
     if RESERVED_DOMAINS.search(value):
         return True
