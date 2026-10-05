@@ -11,7 +11,8 @@ The preview checks the setup, finds the person's transcripts from the roster (by
 private one on the pod, ~/beril-backfill-roster.json; --people names another), writes a redaction plan
 under plans/, and prints what a load would send and the exact command to load it. Each setup
 problem is reported with the command that fixes it. Review the plan with `--review`, which
-pages through the sessions that have masks, then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
+shows each distinct masked value once with where it occurs (`--review --each` shows every mask,
+one session at a time), then run the printed command. `--load` uses that plan as reviewed, never a new one, and loads through
 run_manifest.py and retro_load.py, the same path as a manual load.
 
 A long load should survive a closed browser tab, so run it in the background:
@@ -317,8 +318,9 @@ def run_reveal(cmd: list[str]) -> int:
     return subprocess.run(cmd, check=False).returncode
 
 
-def review(person: str) -> int:
-    """Page through the latest preview's masks, one session with masks at a time."""
+def review(person: str, each: bool = False) -> int:
+    """Show the latest preview's masks: each distinct value once across all sessions, or with
+    `each`, every mask, one session at a time."""
     target = state_path(person)
     if not target.exists():
         print(f"no preview recorded for {person}; run: backfill.py {person}", file=sys.stderr)
@@ -334,6 +336,24 @@ def review(person: str) -> int:
     if not todo:
         print(f"the latest preview for {person} masks nothing; nothing to review. To load what "
               f"was previewed:\n  {state['load_command']}")
+        return 0
+    if not each:
+        # Each distinct value once, with a count, so hundreds of repeats of one `.env` read
+        # don't bury the few values that need a decision
+        # (https://github.com/beril-doe/langfuse-retro-load/issues/77).
+        cmd = [sys.executable, str(HERE / "reveal.py"), "--plan", state["plan"], "--distinct",
+               "--show-values"]
+        for session in todo:
+            cmd += ["--transcript", session["transcript"]]
+        try:
+            code = run_reveal(cmd)
+        except (KeyboardInterrupt, EOFError):
+            print(f"\nstopped. The load command is:\n  {state['load_command']}")
+            return 130
+        if code != 0:
+            return code
+        print(f"\nTo see every mask, one session at a time: backfill.py {person} --review --each"
+              f"\nTo load what was previewed:\n  {state['load_command']}")
         return 0
     try:
         for n, session in enumerate(todo, 1):
@@ -380,8 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--people", type=Path, default=None,
                     help=f"the roster; default {DEFAULT_ROSTER}, which must then exist")
     ap.add_argument("--review", action="store_true",
-                    help="show, one session at a time, what the latest preview's plan masks, "
-                         "with values. Only sessions with masks are shown. Needs a terminal")
+                    help="show what the latest preview's plan masks, with values: each distinct "
+                         "value once, with how often and where it occurs. Needs a terminal")
+    ap.add_argument("--each", action="store_true",
+                    help="with --review: show every mask instead, one session at a time")
     ap.add_argument("--skip-git-check", action="store_true", help=argparse.SUPPRESS)
     return ap
 
@@ -396,11 +418,14 @@ def main() -> int:
         rp = argparse.ArgumentParser(add_help=False)
         rp.add_argument("person")
         rp.add_argument("--review", action="store_true")
+        rp.add_argument("--each", action="store_true")
         _, extra = rp.parse_known_args()
         if extra:
             ap.error(f"--review only shows the latest preview; {shlex.join(extra)} belongs to "
                      "the preview or the load")
-        return review(args.person)
+        return review(args.person, each=args.each)
+    if args.each:
+        ap.error("--each only changes --review")
     if args.people is None:
         args.people = default_roster()
     if args.load and args.plan is None:
@@ -508,7 +533,7 @@ def main() -> int:
         with_masks = write_state(args.person, plan_path, paths, command)
         if with_masks:
             print(f"\nNothing sent. {with_masks} of {len(paths)} session(s) have masks. Review "
-                  "them, one session at a time, with values:")
+                  "them, each distinct value once, with values:")
             print(f"  {shlex.join([python, str(HERE / 'backfill.py'), args.person, '--review'])}")
             print(f"Then load exactly what was previewed:\n  {command}")
         else:

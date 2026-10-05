@@ -207,27 +207,43 @@ def shown_with(target, siblings) -> list:
     return overlap_chain(target, [m for m in siblings if not m.cleared])
 
 
+def _plan_for(plan_path: Path, headers, masks, transcript: Path, data: bytes):
+    """This transcript's header and masks, or None after saying why the view would be wrong."""
+    subject = inventory._subject_for(transcript)
+    header = headers.get(subject)
+    if header is None:
+        print(f"{plan_path.name} has no entry for {subject}", file=sys.stderr)
+        return None
+    if header.transcript_sha256 != hashlib.sha256(data).hexdigest():
+        print(f"{subject} changed after its plan was built; this view would not match what a "
+              f"load does. Rebuild the plan.", file=sys.stderr)
+        return None
+    rows = masks.get(subject, [])
+    if header.masks != len(rows):
+        print(f"{plan_path.name} is incomplete for {subject}: its header lists {header.masks} "
+              f"mask(s) and {len(rows)} follow. The load refuses it; rebuild the plan.",
+              file=sys.stderr)
+        return None
+    # The loader's row check too, so the view never shows an edited plan as the one under
+    # review (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/81).
+    import plan
+    if not header.rows_sha256 or plan.rows_digest(rows) != header.rows_sha256:
+        print(f"{plan_path.name}: {subject}'s mask rows don't match the digest the plan was "
+              f"built with, so the load refuses it; rebuild the plan.", file=sys.stderr)
+        return None
+    return subject, header, rows
+
+
 def show_plan(args, records, data: bytes) -> int:
     """Print each mask the plan holds for this transcript, as the load will apply it."""
     import plan
     headers, masks = plan.read(args.plan)
-    subject = inventory._subject_for(args.transcript)
-    header = headers.get(subject)
-    if header is None:
-        print(f"{args.plan.name} has no entry for {subject}", file=sys.stderr)
+    checked = _plan_for(args.plan, headers, masks, args.transcript, data)
+    if checked is None:
         return 1
-    if header.transcript_sha256 != hashlib.sha256(data).hexdigest():
-        print(f"{subject} changed after its plan was built; this view would not match what a "
-              f"load does. Rebuild the plan.", file=sys.stderr)
-        return 1
-    if header.masks != len(masks.get(subject, [])):
-        print(f"{args.plan.name} is incomplete for {subject}: its header lists {header.masks} "
-              f"mask(s) and {len(masks.get(subject, []))} follow. The load refuses it; rebuild "
-              f"the plan.", file=sys.stderr)
-        return 1
+    subject, header, subject_masks = checked
     print(f"{subject}: plan from {', '.join(header.detectors)}, {header.records} records")
     shown = unplaceable = 0
-    subject_masks = masks.get(subject, [])
     for mask in subject_masks:
         if args.record and mask.record not in args.record:
             continue
@@ -266,10 +282,97 @@ def show_plan(args, records, data: bytes) -> int:
     return 0
 
 
+#: How many places to list for one distinct value before summarising the rest.
+PLACES = 5
+
+
+def show_distinct(args, transcripts: list[Path]) -> int:
+    """Each distinct planned value once, across every transcript given, most urgent first.
+
+    A preview with hundreds of masks is mostly the same few values repeating: one `.env` read
+    several times, the same command output in every session. Paging through each occurrence
+    buries the handful that need a decision
+    (https://github.com/beril-doe/langfuse-retro-load/issues/77). Values are grouped by pattern
+    and text, secrets before personal details, then by how often they occur. Each group shows
+    one occurrence in context and lists where the others are. The plan and the load are
+    unchanged; this only changes what is printed.
+    """
+    import plan
+    import retro_load
+    subjects = [inventory._subject_for(t) for t in transcripts]
+    repeated = sorted({s for s in subjects if subjects.count(s) > 1})
+    if repeated:
+        # A plan names each transcript by session id, so a repeat would count twice
+        # (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/81).
+        print(f"more than one --transcript has session id {', '.join(repeated)}",
+              file=sys.stderr)
+        return 2
+    headers, masks = plan.read(args.plan)
+    groups: dict[tuple[str, str, str], dict] = {}
+    unplaceable = cleared = 0
+    for transcript in transcripts:
+        data = transcript.read_bytes()
+        checked = _plan_for(args.plan, headers, masks, transcript, data)
+        if checked is None:
+            return 1
+        subject, _, subject_masks = checked
+        records = None
+        for mask in subject_masks:
+            if mask.cleared:
+                cleared += 1
+                continue
+            if mask.pointer is None:
+                unplaceable += 1
+                continue
+            if records is None:
+                records = retro_load.parse_jsonl(data)
+            leaf = resolve(records[mask.record], mask.pointer)
+            key = (mask.category, mask.pattern, leaf[mask.start:mask.end])
+            group = groups.get(key)
+            if group is None:
+                # Every other span in the field, cleared ones included: without --show-values a
+                # cleared gitleaks-only value can't be found again by a rescan, so it has to be
+                # hidden here. shown_with drops cleared spans for --show-values, as show_plan
+                # does (Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/81).
+                siblings = [m for m in subject_masks if m is not mask
+                            and m.record == mask.record and m.pointer == mask.pointer]
+                if args.show_values:
+                    siblings = shown_with(mask, siblings)
+                shown_leaf, start, end = hide_others(leaf, mask, siblings)
+                group = groups[key] = {
+                    "detectors": set(), "places": [], "sessions": set(),
+                    "context": context_for(shown_leaf, start, end, show_values=args.show_values,
+                                           raw_context=args.show_values)}
+            group["detectors"].add(mask.detector)
+            group["sessions"].add(subject)
+            group["places"].append(f"{subject[:8]} record {mask.record}")
+    order = sorted(groups.items(), key=lambda kv: (kv[0][0] != redaction.SECRET,
+                                                   -len(kv[1]["places"]), kv[0][1]))
+    total = sum(len(g["places"]) for g in groups.values())
+    print(f"{total} planned mask(s) in {len(transcripts)} session(s), "
+          f"{len(groups)} distinct value(s)\n")
+    for n, ((category, pattern, _), group) in enumerate(order, 1):
+        places = group["places"]
+        more = f", and {len(places) - PLACES} more" if len(places) > PLACES else ""
+        print(f"[{n}] {category} {pattern} ({', '.join(sorted(group['detectors']))}): "
+              f"{len(places)} time(s) in {len(group['sessions'])} session(s)")
+        print(f"    {group['context']}")
+        print(f"    at {'; '.join(places[:PLACES])}{more}")
+    if cleared:
+        print(f"\n{cleared} cleared mask(s) not shown; the load leaves them unmasked")
+    if unplaceable:
+        print(f"\n{unplaceable} mask(s) not pinned to a field; the load will refuse this plan "
+              f"until they are cleared or fixed")
+    if not args.show_values:
+        print("\nNo value was printed; pass --show-values in a terminal to see the text itself.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--transcript", type=Path, required=True)
+    ap.add_argument("--transcript", type=Path, action="append", required=True,
+                    help="the session's .jsonl; repeat for several with --distinct")
     ap.add_argument("--turn", type=int, action="append", default=[],
                     help="turn number, as the Langfuse trace name gives it (repeatable)")
     ap.add_argument("--record", type=int, action="append", default=[],
@@ -285,6 +388,9 @@ def main() -> int:
     ap.add_argument("--plan", type=Path, default=None,
                     help="show what this redaction plan will mask, in context, instead of "
                          "scanning. The same spans the load will rewrite")
+    ap.add_argument("--distinct", action="store_true",
+                    help="with --plan: show each distinct planned value once, with a count, "
+                         "across every --transcript given")
     ap.add_argument("--show-values", action="store_true",
                     help="print the raw matched text. Refuses when output is not a terminal")
     args = ap.parse_args()
@@ -293,6 +399,20 @@ def main() -> int:
         print("--show-values refuses to run when output is not a terminal: this tool writes "
               "no files and a redirect is a file.", file=sys.stderr)
         return 2
+
+    if args.distinct:
+        if not args.plan:
+            print("--distinct shows a plan; give --plan", file=sys.stderr)
+            return 2
+        if args.turn or args.record or args.pointer or args.pattern:
+            print("--distinct shows the whole plan; it takes no --turn, --record, --pointer "
+                  "or --pattern", file=sys.stderr)
+            return 2
+        return show_distinct(args, args.transcript)
+    if len(args.transcript) > 1:
+        print("several --transcript values need --distinct", file=sys.stderr)
+        return 2
+    args.transcript = args.transcript[0]
 
     import retro_load
     if args.plan:
