@@ -15,9 +15,13 @@ the load command the preview prints. `<person>` is the account name in the roste
 
 ## 1. Decide who is next (Mark)
 
-A consenter is loaded only under an ORCID with strong evidence: the iD appears in the
-person's own transcripts, and the account is tied to the person by their registration
-form and by their KBase display name.
+A consenter is loaded only under an ORCID with strong evidence, and only when the account
+is tied to the person by their registration form and by their KBase display name. The
+ORCID counts as strong evidence when either:
+
+- the iD appears in the person's own transcripts, or
+- the iD is listed for that person on the workshop preprint,
+  https://zenodo.org/records/20595967 (accepted by Mark, 2026-10-06).
 
 ## 2. Add them to the private roster
 

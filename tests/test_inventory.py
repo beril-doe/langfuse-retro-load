@@ -389,6 +389,27 @@ def test_biosample_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
 
 
 @pytest.mark.real_gitleaks_version
+def test_genome_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
+    """Two consenters' previews on 2026-10-06 masked genome assembly accessions as generic API
+    keys: GTDB-style `WHERE accession = 'RS_GCF_...'` and unversioned `{'accession': 'GCF_...'}`."""
+    from conftest import require_gitleaks
+    require_gitleaks()
+    key = "x8Kq2Lm9" + "Pz4Rt7Vw1Yb5Nc3Hd6Jf0Gs"  # split so this file's own scan stays clean
+    f = tmp_path / "t.txt"
+    f.write_text("WHERE accession = 'RS_GCF_019384726.1'\n"
+                 "   OR accession = 'GB_GCA_028157493.1'\n"
+                 "{'accession': 'GCF_027594318', 'genus': 'g__Escherichia'}\n"
+                 "{'accession': 'GCA_018273946.1'}\n"
+                 f"api_key = '{key}'\n"
+                 "access_key = 'GCF_027594318" + "x9Kq2Lm9Pz4Rt7'\n")
+    secrets = {x["Secret"] for x in inventory.gitleaks_findings(f)}
+    assert not secrets & {"RS_GCF_019384726.1", "GB_GCA_028157493.1", "GCF_027594318",
+                          "GCA_018273946.1"}
+    assert key in secrets
+    assert any(s.startswith("GCF_027594318x9") for s in secrets), "anchored: a longer value is still a key"
+
+
+@pytest.mark.real_gitleaks_version
 @pytest.mark.parametrize("version", [(8, 19, 9), None])
 def test_every_scan_refuses_an_old_gitleaks(monkeypatch, tmp_path, version):
     """Review of https://github.com/beril-doe/langfuse-retro-load/pull/57: the version check
