@@ -11,8 +11,9 @@ procedure for loading someone is in [backfill-runbook.md](backfill-runbook.md).
 ## Rules in force
 
 - A consenter is loaded only under an ORCID with strong evidence: the iD appears in the
-  person's own transcripts, and the account is tied to the person by their registration form
-  and their KBase display name.
+  person's own transcripts, or is listed for that person on the workshop preprint
+  (https://zenodo.org/records/20595967, accepted 2026-10-06). The account must also be tied to
+  the person by their registration form and their KBase display name.
 - Consenters are loaded for the workshop day only, 2026-05-07 in UTC. That means
   `backfill.py --workshop-day-only` and `artifacts.py --only-day 2026-05-07` (Mark,
   2026-09-29). All of the BERIL developer's own traces stay, whatever their day.

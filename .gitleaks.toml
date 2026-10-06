@@ -7,6 +7,12 @@ useDefault = true
 description = "Public identifiers that gitleaks' generic-api-key rule mistakes for keys"
 # INSDC BioSample accessions (NCBI SAMN, EBI SAMEA, DDBJ SAMD). In SQL such as
 # `WHERE accession = 'SAMN12345678'` the "access" in "accession" reads as a key name.
+# Genome assembly accessions (NCBI GCF_/GCA_), with or without the version suffix and with
+# GTDB's prefix (RS_ only with GCF_, GB_ only with GCA_), as in
+# `{'accession': 'GCF_000005845'}` or `WHERE accession = 'RS_GCF_000005845.2'`.
 # Anchored, so only a value that is entirely an accession is allowed.
 regexTarget = "secret"
-regexes = ['''^SAM(N|EA|D)[0-9]{5,12}$''']
+regexes = [
+  '''^SAM(N|EA|D)[0-9]{5,12}$''',
+  '''^(RS_GCF|GB_GCA|GCF|GCA)_[0-9]{9}(\.[0-9]+)?$''',
+]
