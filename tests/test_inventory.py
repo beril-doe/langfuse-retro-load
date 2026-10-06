@@ -401,12 +401,15 @@ def test_genome_accessions_are_not_keys_but_real_keys_still_are(tmp_path):
                  "{'accession': 'GCF_027594318', 'genus': 'g__Escherichia'}\n"
                  "{'accession': 'GCA_018273946.1'}\n"
                  f"api_key = '{key}'\n"
-                 "access_key = 'GCF_027594318" + "x9Kq2Lm9Pz4Rt7'\n")
+                 "access_key = 'GCF_027594318" + "x9Kq2Lm9Pz4Rt7'\n"
+                 "WHERE accession = 'RS_GCA_" + "028157493.1'\n"
+                 "WHERE accession = 'GB_GCF_" + "019384726.1'\n")
     secrets = {x["Secret"] for x in inventory.gitleaks_findings(f)}
     assert not secrets & {"RS_GCF_019384726.1", "GB_GCA_028157493.1", "GCF_027594318",
                           "GCA_018273946.1"}
     assert key in secrets
     assert any(s.startswith("GCF_027594318x9") for s in secrets), "anchored: a longer value is still a key"
+    assert {"RS_GCA_" + "028157493.1", "GB_GCF_" + "019384726.1"} <= secrets, "GTDB pairs RS_ with GCF_ and GB_ with GCA_ only"
 
 
 @pytest.mark.real_gitleaks_version
