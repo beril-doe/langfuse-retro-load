@@ -2,7 +2,7 @@
 
 What exists in the BERIL workshop corpus, what has been loaded into the Langfuse project
 beril-usage, and every deletion made from the BERIL Langfuse organization. Corpus counts measured on
-2026-09-29; loaded counts and the deletion log are current to 2026-10-02.
+2026-09-29; loaded counts and the deletion log are current to 2026-10-07.
 
 This repository is public, so this page gives counts only. It doesn't name who consented,
 their account names or their ORCIDs; that per-person table is kept privately by Mark. The
@@ -43,10 +43,10 @@ procedure for loading someone is in [backfill-runbook.md](backfill-runbook.md).
 
 | status | people | turns on the workshop day | snapshots on the workshop day |
 |---|---|---|---|
-| loaded | 16 (the BERIL developer, who also consented, and 15 others) | 634 | 23 |
-| strong evidence, not yet loaded | 1, on hold at Mark's request | 40 | 1 |
-| good evidence: one matching registry record, but the iD isn't in the transcripts | 11 | 363 | 14 |
-| unresolved: no single matching registry record | 4 | 56 | 0 |
+| loaded | 29 (the BERIL developer, who also consented, and 28 others) | 1,001 | 36 |
+| previewed, waiting for Mark's review | 1 | 50 | 1 |
+| on hold at Mark's request | 1 | 40 | 1 |
+| workshop account doesn't match the username on the invite list | 1 | 2 | 0 |
 | no account in the corpus | 1 | 0 | 0 |
 
 The rows add up to the corpus totals: 1,093 workshop-day turns and 38 snapshots.
@@ -55,10 +55,10 @@ The rows add up to the corpus totals: 1,093 workshop-day turns and 38 snapshots.
 
 | | on 2026-05-07 | other days |
 |---|---|---|
-| turn traces | 634 | 60, all the BERIL developer's, kept by decision |
-| artifact spans | 23 | 0 |
+| turn traces | 1,001 | 60, all the BERIL developer's, kept by decision |
+| artifact spans | 36 | 0 |
 
-That's 717 traces, counted 2026-10-02. Ten strong-evidence consenters were added on 2026-10-01 and 2026-10-02 (370 workshop-day turns and 11 snapshots), each after Mark reviewed their redaction plan. The project also holds the developer's live-hook and smoke-test traces,
+That's 1,097 traces, counted 2026-10-07. Ten consenters were added on 2026-10-01 and 2026-10-02 (370 workshop-day turns and 11 snapshots) and 13 more on 2026-10-06 (367 turns and 13 snapshots), each after Mark reviewed their redaction plan. Each person's count matches the corpus scan. A scan of the 2026-10-06 turn traces in Langfuse with the current patterns found no unmasked secrets. The project also holds the developer's live-hook and smoke-test traces,
 which carry no `retro-load` tag.
 
 ## Deletion log
