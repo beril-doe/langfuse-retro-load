@@ -58,7 +58,8 @@ ADVISORY = "advisory"
 #: hand-kept lists drifted apart and let `SECRET_KEY=` through both. See
 #: https://github.com/beril-doe/langfuse-retro-load/issues/69.
 CREDENTIAL_NAMES = ("token", "secret", "secret_key", "secret_access_key", "private_key",
-                    "access_key", "password", "passwd", "api_key", "credential")
+                    "access_key", "password", "passwd", "api_key", "credential",
+                    "client_key")
 
 
 def _names_pattern(names: tuple[str, ...], separator: str) -> str:
@@ -78,9 +79,13 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # client sending "bearer" lowercase was passing through unredacted.
     "bearer_header": re.compile(r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
     "openai_style": re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}"),
-    "github_pat": re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}"),
+    # Classic tokens (ghp_ and siblings) and fine-grained ones (github_pat_).
+    "github_pat": re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}"
+                             r"|github_pat_[A-Za-z0-9_]{40,})"),
     "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
-    "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_-]{20,}"),
+    # The dot is in the class because service-account access tokens start `ya29.c.`;
+    # without it the match failed one character in and the whole token went through.
+    "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9._-]{20,}"),
     "google_api_key": re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
     # Detection only. The marker is all a pattern can reliably find; where the key ends is
     # decided by _span_for below, not here. An earlier version tried to match the body and
@@ -126,6 +131,17 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # Only a URI that actually carries credentials. A bare mongodb://host:port is a
     # hostname, and source code building one from an f-string is neither.
     "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"'/{}$<>]+:[^\s\"'/{}$<>@]+@"),
+    # The same shape for every other scheme (postgresql+asyncpg://, redis://, amqp://), with
+    # only the password rewritten so the host stays readable. mongodb is left to mongo_uri.
+    "uri_password": re.compile(
+        r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]{1,30}://"
+        r"[^\s\"'/{}$<>@:]+:(?P<value>[^\s\"'/{}$<>@]+)@"),
+    # `mc alias set NAME URL ACCESS_KEY SECRET_KEY`: both keys are bare positional
+    # arguments, so no name sits beside them for keyed_value to find.
+    "mc_alias_access_key": re.compile(
+        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+(?P<value>[^\s\"'`;|&)]{3,})"),
+    "mc_alias_secret_key": re.compile(
+        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+\S+\s+(?P<value>[^\s\"'`;|&)]{3,})"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -358,6 +374,7 @@ CATEGORY: dict[str, str] = {
     "aws_access_key_id": SECRET, "google_oauth": SECRET, "google_api_key": SECRET,
     "private_key_block": SECRET, "jwt": SECRET, "slack_token": SECRET,
     "keyed_value": SECRET, "auth_header": SECRET, "mongo_uri": SECRET,
+    "uri_password": SECRET, "mc_alias_access_key": SECRET, "mc_alias_secret_key": SECRET,
     "email_personal": PERSON, "email_institutional": PERSON,
     "name_beside_email": PERSON, "phone_us": PERSON,
     # Public by design. Reported so a reader knows the turn names someone, never
@@ -519,6 +536,10 @@ class _Boundaries:
             if i < len(self.pem_markers) and self.pem_markers[i] <= value_end:
                 return start, self.pem_markers[i]
             return start, value_end
+        if pattern == "uri_password":
+            # The password ends at the "@" the pattern already found; widening would take
+            # the host and path with it.
+            return start, end
         return start, self._first_at_or_after(self.value_ends, end)
 
 

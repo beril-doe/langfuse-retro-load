@@ -52,6 +52,9 @@ SAMPLES = {
     "slack_token": "xoxb-0000000000-abcdefghijkl",
     "keyed_value": 'JUPYTERHUB_API_TOKEN=abcdef0123456789abcdef0123456789',
     "mongo_uri": "mongodb://someuser:somepassword@localhost:27017",
+    "uri_password": "postgresql+asyncpg://someuser:notarealpw123@localhost:5432/db",
+    "mc_alias_access_key": "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
+    "mc_alias_secret_key": "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
     "email_personal": "someone.else@gmail.com",
     "email_institutional": "someone@lbl.gov",
     "name_beside_email": '{"display_name": "A Person", "email": "x"}',
@@ -732,3 +735,56 @@ def test_many_page_ranges_in_one_doi_stay_linear():
     found = redaction.detect(text)
     assert time.perf_counter() - started < 1.0
     assert sum(f.pattern == "phone_us" for f in found) == 3199
+
+
+# Shapes added after llm-evals found Google service-account tokens in NMDC Langfuse on
+# 2026-10-14 that this module passed. Values are synthetic.
+SERVICE_ACCOUNT_TOKEN = "ya29.c." + "NotARealServiceAccountToken_0123456789-" * 8
+
+
+@pytest.mark.parametrize("text", [
+    SERVICE_ACCOUNT_TOKEN,
+    '{"token": "' + SERVICE_ACCOUNT_TOKEN + '"}',
+    "ya29.a0" + "NotARealUserToken" * 4,
+])
+def test_google_service_account_token_is_masked_whole(text):
+    clean, _ = redaction.redact(text, key=KEY)
+    assert "NotAReal" not in clean
+
+
+def test_fine_grained_github_token():
+    token = "github_pat_" + "NotARealFineGrainedToken0123_" * 3
+    clean, _ = redaction.redact(f"export GH_TOKEN={token}", key=KEY)
+    assert "NotAReal" not in clean
+
+
+def test_client_key_name():
+    clean, _ = redaction.redact("CLIENT_KEY=notarealclientkey0123456789", key=KEY)
+    assert "notarealclientkey" not in clean
+
+
+def test_uri_password_keeps_user_and_host():
+    clean, _ = redaction.redact(SAMPLES["uri_password"] + " ok", key=KEY)
+    assert "notarealpw123" not in clean
+    assert clean.startswith("postgresql+asyncpg://someuser:[REDACTED:uri_password:")
+    assert clean.endswith("]@localhost:5432/db ok")
+
+
+def test_mc_alias_masks_both_keys():
+    clean, _ = redaction.redact(SAMPLES["mc_alias_secret_key"] + " --api S3v4", key=KEY)
+    assert "NOTAREALACCESSKEY0" not in clean and "notarealsecretkey" not in clean
+    assert clean.startswith("mc alias set berdl https://minio.example [REDACTED:")
+    assert clean.endswith("] --api S3v4")
+
+
+@pytest.mark.parametrize("text", [
+    'mc alias set berdl https://minio.example "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"',
+    "mc alias set local http://localhost:9000 YOUR-ACCESS-KEY-HERE YOUR-SECRET-KEY-HERE",
+    "run mc alias set to add a host",
+    "postgres://user:${PGPASSWORD}@db:5432/x",
+    'f"postgresql://{user}:{pw}@{host}/db"',
+    "see http://localhost:8080/path",
+])
+def test_new_shapes_leave_references_and_prose_alone(text):
+    assert not [f for f in redaction.detect(text, key=KEY)
+                if f.pattern in ("uri_password", "mc_alias_access_key", "mc_alias_secret_key")]
