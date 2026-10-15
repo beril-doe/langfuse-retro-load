@@ -153,9 +153,11 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # `<password>` never match because braces and angle brackets are excluded. The one gap:
     # a literal `"` in a password. It is never valid there, and it is the string delimiter
     # at every JSON depth, so a password holding one cannot be told from the end of the value.
+    # The authority ends at `?` or `#` (RFC 3986 section 3.2), so neither class crosses them:
+    # `https://host:8080?contact=a@b` has no userinfo at all.
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]*://"
-        r"[^\s\"/{}<>:]*:(?P<value>[^\s\"/{}<>]+)@"),
+        r"[^\s\"/{}<>:?#]*:(?P<value>[^\s\"/{}<>?#]+)@"),
     # `mc [options] alias set [options] NAME URL ACCESS_KEY SECRET_KEY [flags]`: both keys
     # are bare positional arguments, so no name sits beside them for keyed_value to find.
     # The whole logical line is masked, from its start (detect() widens the match back to it)
@@ -171,7 +173,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # since the lookbehind only sees the last backslash. No URL is required: a URL held in a
     # variable left literal keys unmasked. The cost is accepted and stated: the alias name,
     # URL, options, chained commands and reference-only keys go too, and so does a line of
-    # prose that names the command, which the record then says.
+    # prose that names the command, which the record then says. A line left open by an
+    # unclosed bracket or an odd quote masks the rest of the value instead (_left_open).
     "mc_alias_keys": re.compile(
         r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt])|(?<=\\u00[0-9a-fA-F]{2}))"
         r"(?:alias(?:\\(?:[nrt]|u00[0-9a-fA-F]{2})|[^A-Za-z0-9])+set"
@@ -388,13 +391,17 @@ def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | No
     return spans
 
 
-def is_reference(value: str) -> bool:
+def is_reference(value: str, *, strip_quotes: bool = True) -> bool:
     """True when the whole value, quotes and whitespace aside, names another value.
 
     A variable or template reference, or a words-only placeholder that nothing in PATTERNS
-    recognises as a secret.
+    recognises as a secret. `strip_quotes=False` is for an exact capture such as a URI
+    password, where a quote is a character of the value rather than a delimiter around it:
+    `postgres://u:'$Pw123'@db` holds the literal password `'$Pw123'`.
     """
-    bare = value.strip().strip("\"'")
+    bare = value.strip()
+    if strip_quotes:
+        bare = bare.strip("\"'")
     if REFERENCE_RE.fullmatch(bare):
         return True
     if bare.lower() in PLACEHOLDER_VALUES:
@@ -718,7 +725,25 @@ def _mc_command_span(text: str, match: re.Match[str],
     begin = logical[bisect.bisect_right(starts, match.start()) - 1]
     if _MC_WORD.search(text, begin, match.end()) is None:
         return None
+    if _left_open(text[begin:match.end()]):
+        return begin, len(text)
     return begin, match.end()
+
+
+def _left_open(line: str) -> bool:
+    """Whether a command line ends inside something that continues on the next line.
+
+    A shell `"$(` substitution and a wrapped Python argument list both carry the keys past
+    the newline without a backslash (ninth Copilot round on
+    https://github.com/beril-doe/langfuse-retro-load/pull/85). Telling where such a command
+    ends means parsing shell and Python, which every earlier round showed is where the
+    boundaries go wrong, so nothing is parsed: more openers than closers, or an odd number of
+    any quote character, and the rest of the value is masked. Counting ignores quoting and
+    escapes, so a stray quote or bracket in the line masks too much, never too little.
+    """
+    if sum(map(line.count, "([{")) > sum(map(line.count, ")]}")):
+        return True
+    return any(line.count(q) % 2 for q in "\"'`")
 
 
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
@@ -730,12 +755,15 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     boundaries = _Boundaries(text)
     dois = None  # found on the first phone-shaped match only
     line_starts = None  # found on the first `alias set` match only
+    mc_to_end = False  # an open `alias set` line already masks the rest of the text
 
     candidates = []
     for name, pattern in PATTERNS.items():
         category = CATEGORY[name]
         has_value = "value" in pattern.groupindex
         for match in pattern.finditer(text):
+            if mc_to_end and name == "mc_alias_keys":
+                break
             span = match.span("value") if has_value else (match.start(), match.end())
             if span[0] == span[1] or _inside(span, protected):
                 continue
@@ -753,7 +781,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 if _closes_doi(text, dois, *span):
                     continue
             value = text[span[0]:span[1]]
-            if has_value and is_reference(value):
+            if has_value and is_reference(value, strip_quotes=name not in EXACT_SPAN):
                 continue
             if name == "mc_alias_keys":
                 if line_starts is None:
@@ -762,6 +790,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 if widened is None:
                     continue
                 span = widened
+                mc_to_end = span[1] == len(text)
                 value = text[span[0]:span[1]]
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])
@@ -797,7 +826,9 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
         findings.append(Finding(pattern=name, category=CATEGORY[name], start=span[0],
                                 end=span[1], length=span[1] - span[0],
                                 fingerprint=fingerprint(value, key),
-                                masked=CATEGORY[name] is SECRET and is_masked(value)))
+                                masked=(CATEGORY[name] is SECRET
+                                        and bool(MASKED_RE.search(value))
+                                        and is_masked(value))))
     findings.sort(key=lambda f: f.start)
     return findings
 

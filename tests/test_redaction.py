@@ -850,6 +850,37 @@ def test_uri_password_whole_variable_is_left_alone():
     assert redaction.redact(text, key=KEY)[0] == text
 
 
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("text", ["https://example.org:8080?contact=reader@example.net",
+                                  "https://example.org:8080#reader@example.net",
+                                  "https://example.org/x?a=b:c@d"])
+def test_uri_query_or_fragment_is_not_userinfo(text, encode):
+    """Ninth Copilot round: the authority ends at `?` or `#`."""
+    assert not [f for f in redaction.detect(encode(text), key=KEY) if f.pattern == "uri_password"]
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_uri_password_before_a_query_keeps_the_host(encode):
+    text = "postgres://u:notarealpw@db?contact=reader@example.net"
+    clean, _ = redaction.redact(encode(text), key=KEY)
+    assert "notarealpw" not in clean
+    assert "@db?contact=reader@example.net" in clean
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_uri_password_apostrophes_are_part_of_the_password(encode):
+    """Ninth Copilot round: the apostrophes are inside the capture, so the value is a
+    literal, not a `$VAR` reference."""
+    text = "postgres://u:'$NotARealPass123'@db/x"
+    assert "NotARealPass123" not in redaction.redact(encode(text), key=KEY)[0]
+
+
+@pytest.mark.parametrize("text", ["redis://:hunter2@localhost:6379/0", "postgres://u:shortpw@db/x"])
+def test_a_short_uri_password_is_not_flagged_as_already_masked(text):
+    """Ninth Copilot round: under eight characters is not a mask without a mask marker."""
+    assert [f.masked for f in redaction.detect(text, key=KEY)] == [False]
+
+
 def test_uri_password_a_quote_in_a_password_is_the_stated_gap():
     """A `"` is never valid in userinfo and is the string delimiter at every JSON depth, so a
     password holding one cannot be told from the end of a value. Stated in the pattern's
@@ -973,6 +1004,28 @@ def test_mc_alias_prose_naming_the_command_is_masked_as_the_stated_cost(text, ke
     assert clean == findings[0].placeholder + kept
 
 
+@pytest.mark.parametrize("encode", ENCODINGS[:1])
+@pytest.mark.parametrize("cmd", [
+    'subprocess.run(["mc", "alias", "set", "b", "https://m.x",\n'
+    '    "NOTAREALACCESSKEY0", "notarealsecretkey0123456789"])',
+    'mc alias set b https://m.x "$(\n  printf NOTAREALAK0\n)" notarealsecret0123456789',
+    "mc alias set b https://m.x 'NOTAREALAK0\nnotarealsecret0123456789'",
+])
+def test_mc_alias_line_left_open_masks_the_rest_of_the_value(cmd, encode):
+    """Ninth Copilot round: a wrapped argument list or a `$(` substitution carries the keys
+    past the newline with no backslash. The line is left open, so the rest is masked."""
+    clean, _ = redaction.redact("before\n" + cmd, key=KEY)
+    assert "notareal" not in clean.lower()
+    assert clean.startswith("before\n[REDACTED:mc_alias_keys:")
+    assert "notareal" not in json.dumps(redaction.redact_tree({"x": cmd}, key=KEY)[0]).lower()
+
+
+def test_mc_alias_a_closed_line_still_ends_at_the_newline():
+    text = 'subprocess.run(["mc", "alias", "set", "b", "u", "AK0", "SK0"])\nnext line stays'
+    clean, _ = redaction.redact(text, key=KEY)
+    assert clean.endswith("]\nnext line stays")
+
+
 # Each adversarial shape is timed on its own, so a regression names the shape rather than a
 # batch. `measured` is the best of three local runs of redact() on 2026-10-15 (Python 3.13,
 # a 2026 laptop); each budget is at least five times that, and the test checks the ratio so a
@@ -983,6 +1036,7 @@ TIMING_CASES = [
      lambda: "mc alias set b https://m.x $AK $SK; " * 20_000, 0.20, 1.5),
     ("20k commands with no URL on one line", lambda: "mc alias set x; " * 20_000, 0.09, 1.0),
     ("60k mc words", lambda: "mc " * 60_000, 0.05, 1.0),
+    ("20k open command lines", lambda: "mc alias set b u ( A B\n" * 20_000, 0.12, 1.0),
     ("20k mc words then alias set", lambda: "mc foo " * 20_000 + "alias set", 0.04, 1.0),
     ("100k LF lines before the command",
      lambda: "x\n" * 100_000 + "mc alias set b https://m.x A B", 0.07, 1.0),
