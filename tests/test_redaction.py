@@ -54,8 +54,7 @@ SAMPLES = {
     "keyed_value": 'JUPYTERHUB_API_TOKEN=abcdef0123456789abcdef0123456789',
     "mongo_uri": "mongodb://someuser:somepassword@localhost:27017",
     "uri_password": "postgresql+asyncpg://someuser:notarealpw123@localhost:5432/db",
-    "mc_alias_access_key": "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
-    "mc_alias_secret_key": "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
+    "mc_alias_keys": "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
     "email_personal": "someone.else@gmail.com",
     "email_institutional": "someone@lbl.gov",
     "name_beside_email": '{"display_name": "A Person", "email": "x"}',
@@ -771,13 +770,6 @@ def test_uri_password_keeps_user_and_host():
     assert clean.endswith("]@localhost:5432/db ok")
 
 
-def test_mc_alias_masks_both_keys():
-    clean, _ = redaction.redact(SAMPLES["mc_alias_secret_key"] + " --api S3v4", key=KEY)
-    assert "NOTAREALACCESSKEY0" not in clean and "notarealsecretkey" not in clean
-    assert clean.startswith("mc alias set berdl https://minio.example [REDACTED:")
-    assert clean.endswith("] --api S3v4")
-
-
 @pytest.mark.parametrize("text", [
     'mc alias set berdl https://minio.example "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"',
     "mc alias set local http://localhost:9000 YOUR-ACCESS-KEY-HERE YOUR-SECRET-KEY-HERE",
@@ -788,7 +780,7 @@ def test_mc_alias_masks_both_keys():
 ])
 def test_new_shapes_leave_references_and_prose_alone(text):
     assert not [f for f in redaction.detect(text, key=KEY)
-                if f.pattern in ("uri_password", "mc_alias_access_key", "mc_alias_secret_key")]
+                if f.pattern in ("uri_password", "mc_alias_keys")]
 
 
 # From the Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/85.
@@ -807,69 +799,65 @@ def test_uri_password_whole_variable_is_left_alone():
     assert redaction.redact(text, key=KEY)[0] == text
 
 
-@pytest.mark.parametrize("access,secret", [
-    ("'NOTAREALACCESSKEY0'", "'notarealsecretkey0123456789'"),
-    ('"NOTAREALACCESSKEY0"', '"notarealsecretkey0123456789"'),
-    ('"NOTAREAL ACCESS KEY"', "notarealsecretkey0123456789"),
-    ("NOTAREALACCESSKEY0", '"notareal secret key 0123"'),
-])
-def test_mc_alias_quoted_keys(access, secret):
-    text = f"mc alias set berdl https://minio.example {access} {secret} --api S3v4"
-    clean, _ = redaction.redact(text, key=KEY)
-    assert "NOTAREAL" not in clean and "notareal" not in clean
-    assert clean.endswith(" --api S3v4")
-
-
-def test_mc_alias_quoted_variables_are_left_alone():
-    text = "mc alias set berdl https://minio.example '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY'"
-    assert redaction.redact(text, key=KEY)[0] == text
-
-
-# Second Copilot round on https://github.com/beril-doe/langfuse-retro-load/pull/85: escaped
-# quotes inside a key, and commands serialized into JSON once or twice.
-MC_CMD = 'mc alias set berdl https://minio.example "NOTAREALACCESSKEY0" "notarealsecretkey0123456789"'
-
-
-@pytest.mark.parametrize("text", [
-    'mc alias set berdl https://minio.example "NOTAREAL\\"ACCESS KEY" "notarealsecretkey0123456789"',
-    json.dumps({"command": MC_CMD}),
-    json.dumps({"out": json.dumps({"command": MC_CMD})}),
-])
-def test_mc_alias_escaped_quotes(text):
-    clean, _ = redaction.redact(text, key=KEY)
-    assert "notareal" not in clean.lower()
-    if text.startswith("{"):
-        json.loads(clean)  # the rewrite keeps the JSON valid
-
-
-def test_mc_alias_json_string_leaf_in_tree():
-    clean = redaction.redact_tree({"x": json.dumps({"command": MC_CMD})})[0]
-    assert "notareal" not in json.dumps(clean).lower()
-
-
-def test_mc_alias_escaped_variables_are_left_alone():
-    text = json.dumps({"command": 'mc alias set b https://m.x "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"'})
-    assert redaction.redact(text, key=KEY)[0] == text
-
-
-def test_mc_alias_unclosed_quote_is_linear():
-    start = time.perf_counter()
-    redaction.redact('mc alias set b https://m.x "' + "a" * 200_000)
-    assert time.perf_counter() - start < 2
-
-
-# Third Copilot round on https://github.com/beril-doe/langfuse-retro-load/pull/85.
-@pytest.mark.parametrize("encode", [lambda c: c, lambda c: json.dumps({"command": c}),
-                                    lambda c: json.dumps({"o": json.dumps({"command": c})})])
-def test_mc_alias_escaped_quote_before_space(encode):
-    cmd = 'mc alias set b https://m.x "NOTAREAL\\" ACCESS KEY" "notarealsecretkey0123456789"'
-    clean, _ = redaction.redact(encode(cmd), key=KEY)
-    assert "notareal" not in clean.lower()
-
-
 @pytest.mark.parametrize("text,secret", [
     ("postgresql://user:NotAReal'Pass123@db:5432/x", "NotAReal'Pass123"),
     ("postgresql://us'er:notarealpw99@db/x", "notarealpw99"),
 ])
 def test_uri_password_apostrophes(text, secret):
     assert secret not in redaction.redact(text, key=KEY)[0]
+
+
+def test_uri_password_dollar_in_user():
+    assert "NotARealPw123" not in redaction.redact("postgresql://svc$reader:NotARealPw123@db/x")[0]
+
+
+# `mc alias set`: everything after the URL is masked to the end of the line. These are the
+# quoting forms four Copilot rounds on https://github.com/beril-doe/langfuse-retro-load/pull/85
+# found splitting a key under the earlier per-argument rules.
+MC_COMMANDS = [
+    "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
+    "mc alias set b https://minio.example 'NOTAREALAK0' 'notarealsecretkey0123456789'",
+    'mc alias set b https://minio.example "NOTAREAL\\" ACCESS KEY" "notarealsecretkey0123456789"',
+    'mc alias set b https://minio.example "NOTAREALACCESS"KEY0 "notarealsecretkey0123456789"',
+    "mc alias set b https://minio.example NOTAREALAK 'notareal'\"'\"'secretkey0123456789'",
+    'mc alias set b https://minio.example "NOTAREALACCESSKEY0\\\\" "notarealsecretkey0123456789"',
+    "mc alias set b https://minio.example NOTAREAL\\ ACCESS\\ KEY notareal\\!secretkey0123456789",
+    "mc alias set b 'https://minio.example' 'NOTAREAL AK' 'notareal sk 0123' --api S3v4",
+]
+ENCODINGS = [lambda c: c, lambda c: json.dumps({"command": c}),
+             lambda c: json.dumps({"o": json.dumps({"command": c})})]
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("cmd", MC_COMMANDS)
+def test_mc_alias_keys_are_masked_however_quoted(cmd, encode):
+    clean, _ = redaction.redact(encode(cmd), key=KEY)
+    assert "notareal" not in clean.lower()
+
+
+def test_mc_alias_masks_to_the_end_of_the_line_only():
+    clean, _ = redaction.redact(MC_COMMANDS[0] + " --api S3v4\nnext line stays", key=KEY)
+    assert clean.startswith("mc alias set berdl https://minio.example [REDACTED:mc_alias_keys:")
+    assert clean.endswith("]\nnext line stays")
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("cmd", [
+    'mc alias set b https://m.x "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"',
+    "mc alias set b https://m.x $AK $SK",
+    "mc alias set local http://localhost:9000 YOUR-ACCESS-KEY-HERE YOUR-SECRET-KEY-HERE --api S3v4",
+])
+def test_mc_alias_references_and_placeholders_are_left_alone(cmd, encode):
+    assert redaction.redact(encode(cmd), key=KEY)[0] == encode(cmd)
+
+
+def test_mc_alias_json_string_leaf_in_tree():
+    clean = redaction.redact_tree({"x": json.dumps({"command": MC_COMMANDS[1]})})[0]
+    assert "notareal" not in json.dumps(clean).lower()
+
+
+def test_mc_alias_many_commands_is_linear():
+    start = time.perf_counter()
+    redaction.redact("mc alias set b https://m.x $AK $SK; " * 20_000)
+    redaction.redact('mc alias set b https://m.x "' + "a" * 200_000)
+    assert time.perf_counter() - start < 2

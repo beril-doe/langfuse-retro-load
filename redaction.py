@@ -75,96 +75,11 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #: `(?<![A-Za-z0-9])` rather than `\b`: a token embedded in a filename sits behind an
 #: underscore, and `\b` does not treat that as a boundary at all.
 #: Patterns whose match already ends where the secret ends, so detect() does not widen it:
-#: a URI password ends at its "@" (widening took the host with it), and an `mc alias set`
-#: key ends at its own closing quote (widening ate the escaped quote in JSON).
-EXACT_SPAN = frozenset({"uri_password", "mc_alias_access_key", "mc_alias_secret_key"})
+#: a URI password ends at its "@" (widening took the host with it), and `mc alias set` keys
+#: end at the end of the line.
+EXACT_SPAN = frozenset({"uri_password", "mc_alias_keys"})
 
-_MC_PREFIX = re.compile(r"\bmc\s+alias\s+set\s+")
-_MC_BARE_STOP = re.compile(r"[\s\"'`;|&)\\]")
-
-
-class _MatchSpan:
-    """The part of re.Match that detect() and is_reference() use."""
-
-    __slots__ = ("_whole", "_value")
-
-    def __init__(self, whole: tuple[int, int], value: tuple[int, int]):
-        self._whole, self._value = whole, value
-
-    def span(self, group: int | str = 0) -> tuple[int, int]:
-        return self._value if group in (1, "value") else self._whole
-
-    def start(self) -> int:
-        return self._whole[0]
-
-    def end(self) -> int:
-        return self._whole[1]
-
-
-class _McAliasKey:
-    """A key in `mc alias set NAME URL ACCESS_KEY SECRET_KEY`, read argument by argument.
-
-    Both keys are bare positional arguments, so no name sits beside them for keyed_value to
-    find, and a regex kept missing quoting cases in review (three Copilot rounds on
-    https://github.com/beril-doe/langfuse-retro-load/pull/85). The rule is the one
-    _through_closing_quote uses: an argument that opens with k backslashes before its quote
-    closes at the next same quote with exactly k backslashes before it. That covers a raw
-    shell command, one serialized into JSON once or twice, and a shell-escaped quote inside a
-    key, which at any level carries a different number of backslashes from the closing one.
-    Behaves enough like a compiled pattern for detect() and is_reference().
-    """
-
-    groupindex = {"value": 1}
-
-    def __init__(self, position: int):
-        self.position = position  # 2 for the access key, 3 for the secret key
-
-    @staticmethod
-    def _argument(text: str, i: int) -> tuple[tuple[int, int], tuple[int, int]] | None:
-        """(whole, inside quotes) of the argument starting at i, or None at a command end."""
-        j = i
-        while j < len(text) and text[j] == "\\":
-            j += 1
-        if j < len(text) and text[j] in "\"'":
-            quote, level = text[j], j - i
-            k = j + 1
-            while True:
-                k = text.find(quote, k)
-                if k == -1:
-                    return (i, len(text)), (j + 1, len(text))
-                if _backslashes_before(text, k) == level:
-                    return (i, k + 1), (j + 1, k - level)
-                k += 1
-        if j > i:  # backslashes not followed by a quote, such as a JSON "\n"
-            return None
-        m = _MC_BARE_STOP.search(text, i)
-        stop = m.start() if m else len(text)
-        return ((i, stop), (i, stop)) if stop > i else None
-
-    def finditer(self, text: str):
-        for prefix in _MC_PREFIX.finditer(text):
-            i, spans = prefix.end(), []
-            while len(spans) <= self.position:
-                arg = self._argument(text, i)
-                if arg is None:
-                    break
-                spans.append(arg)
-                gap = re.match(r"[ \t]+", text[arg[0][1]:])
-                if gap is None:
-                    break
-                i = arg[0][1] + gap.end()
-            if len(spans) <= self.position:
-                continue
-            url = text[slice(*spans[1][1])]
-            value = spans[self.position][1]
-            if url.startswith(("http://", "https://")) and value[1] - value[0] >= 3:
-                yield _MatchSpan((prefix.start(), spans[self.position][0][1]), value)
-
-    def search(self, text: str):
-        return next(self.finditer(text), None)
-
-
-PATTERNS: dict[str, re.Pattern[str] | _McAliasKey] = {
+PATTERNS: dict[str, re.Pattern[str]] = {
     # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
     # client sending "bearer" lowercase was passing through unredacted.
     "bearer_header": re.compile(r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -223,14 +138,22 @@ PATTERNS: dict[str, re.Pattern[str] | _McAliasKey] = {
     "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"'/{}$<>]+:[^\s\"'/{}$<>@]+@"),
     # The same shape for every other scheme (postgresql+asyncpg://, redis://, amqp://), with
     # only the password rewritten so the host stays readable. mongodb is left to mongo_uri.
-    # The user may be empty (redis://:pw@host), and the password may hold `'` or `$`: a whole
+    # The user may be empty (redis://:pw@host), and both parts may hold `'` or `$`: a whole
     # `$VAR` is still left alone by is_reference(), and `${VAR}` and f-string `{pw}` never
     # match because braces are excluded.
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]{1,30}://"
-        r"[^\s\"/{}$<>@:]*:(?P<value>[^\s\"/{}<>@]+)@"),
-    "mc_alias_access_key": _McAliasKey(2),
-    "mc_alias_secret_key": _McAliasKey(3),
+        r"[^\s\"/{}<>@:]*:(?P<value>[^\s\"/{}<>@]+)@"),
+    # `mc alias set NAME URL ACCESS_KEY SECRET_KEY [flags]`: both keys are bare positional
+    # arguments, so no name sits beside them for keyed_value to find. Everything after the
+    # URL is masked to the end of the line (a real newline, or an escaped one inside JSON),
+    # flags included. Four Copilot rounds on
+    # https://github.com/beril-doe/langfuse-retro-load/pull/85 each found another shell or
+    # JSON quoting form that split a key, and over-masking a flag cannot leak one. detect()
+    # skips the match when both keys are variable references or placeholders.
+    "mc_alias_keys": re.compile(
+        r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,7}[\"'])?https?://[^\s\"'\\]+(?:\\{0,7}[\"'])?"
+        r"[ \t]+(?P<value>[^\n\r]+?)(?=\\+[nr]|[\n\r]|$)"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -463,7 +386,7 @@ CATEGORY: dict[str, str] = {
     "aws_access_key_id": SECRET, "google_oauth": SECRET, "google_api_key": SECRET,
     "private_key_block": SECRET, "jwt": SECRET, "slack_token": SECRET,
     "keyed_value": SECRET, "auth_header": SECRET, "mongo_uri": SECRET,
-    "uri_password": SECRET, "mc_alias_access_key": SECRET, "mc_alias_secret_key": SECRET,
+    "uri_password": SECRET, "mc_alias_keys": SECRET,
     "email_personal": PERSON, "email_institutional": PERSON,
     "name_beside_email": PERSON, "phone_us": PERSON,
     # Public by design. Reported so a reader knows the turn names someone, never
@@ -704,6 +627,15 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
 
 
+def _mc_keys_are_references(value: str) -> bool:
+    """True when the first two arguments after the URL are both references or placeholders,
+    such as "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY", quoted or JSON-escaped."""
+    keys = value.split(None, 2)[:2]
+    # Backslashes are JSON escaping; a trailing `"}` or `"]` closes the JSON string around it.
+    return len(keys) == 2 and all(is_reference(k.replace("\\", "").strip("\"'}],"))
+                                  for k in keys)
+
+
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     """Every non-overlapping finding, in order of position. Pure, and never raises."""
     if not isinstance(text, str) or not text:
@@ -736,6 +668,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
+                continue
+            if name == "mc_alias_keys" and _mc_keys_are_references(value):
                 continue
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])
