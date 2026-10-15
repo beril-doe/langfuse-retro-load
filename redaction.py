@@ -74,6 +74,13 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #:
 #: `(?<![A-Za-z0-9])` rather than `\b`: a token embedded in a filename sits behind an
 #: underscore, and `\b` does not treat that as a boundary at all.
+#: One `mc alias set` argument: a quoted string taken whole, or a bare word.
+_MC_ARG = r"(?:\"[^\"\n]*\"|'[^'\n]*'|\S+)"
+#: The key inside such an argument. A quoted key may contain spaces; detect() reads one
+#: `value` group, so the quotes sit in lookarounds rather than in separate groups.
+_MC_KEY = (r"[\"']?(?P<value>(?<=\")[^\"\n]{3,}(?=\")|(?<=')[^'\n]{3,}(?=')"
+           r"|[^\s\"'`;|&)]{3,})")
+
 PATTERNS: dict[str, re.Pattern[str]] = {
     # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
     # client sending "bearer" lowercase was passing through unredacted.
@@ -133,15 +140,19 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"'/{}$<>]+:[^\s\"'/{}$<>@]+@"),
     # The same shape for every other scheme (postgresql+asyncpg://, redis://, amqp://), with
     # only the password rewritten so the host stays readable. mongodb is left to mongo_uri.
+    # The user may be empty (redis://:pw@host) and the password may hold a `$`: a whole
+    # `$VAR` is still left alone by is_reference(), and `${VAR}` and f-string `{pw}` never
+    # match because braces are excluded.
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]{1,30}://"
-        r"[^\s\"'/{}$<>@:]+:(?P<value>[^\s\"'/{}$<>@]+)@"),
+        r"[^\s\"'/{}$<>@:]*:(?P<value>[^\s\"'/{}<>@]+)@"),
     # `mc alias set NAME URL ACCESS_KEY SECRET_KEY`: both keys are bare positional
-    # arguments, so no name sits beside them for keyed_value to find.
+    # arguments, so no name sits beside them for keyed_value to find. Either key may be
+    # quoted, and a quoted one may hold spaces, so a quoted argument is taken whole.
     "mc_alias_access_key": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+(?P<value>[^\s\"'`;|&)]{3,})"),
+        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+" + _MC_KEY),
     "mc_alias_secret_key": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+\S+\s+(?P<value>[^\s\"'`;|&)]{3,})"),
+        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+" + _MC_ARG + r"\s+" + _MC_KEY),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
