@@ -155,7 +155,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # quoting, escaping, option or chaining form that defeated narrower rules. The cost is
     # accepted: a line whose keys are only `$VAR` references or placeholders is masked too,
     # and inside a JSON string the mask runs to the end of the physical line.
-    "mc_alias_keys": re.compile(r"\balias\s+set\b[ \t]*(?P<value>(?:\\\r?\n|[^\n\r])+)"),
+    "mc_alias_keys": re.compile(
+        r"(?:\b|(?<=\\[nr]))alias(?:\s|\\+[nr]|\\(?=\r?\n))+set\b[ \t]*(?P<value>(?:\\\r?\n|[^\n\r])+)"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -629,16 +630,29 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
 
 
-_MC_WORD = re.compile(r"\bmc\b")
+#: A JSON-escaped line break (a backslash, then n or r) before a word is not a \b boundary.
+_MC_WORD = re.compile(r"(?:\b|(?<=\\[nr]))mc\b")
+_LINE_BREAK = re.compile(r"\r\n?|\n")
 
 
-def _is_mc_alias_set(text: str, start: int, value: str) -> bool:
-    """An `alias set` match belongs to `mc` with a URL when `mc` is on its line and an
-    http(s) URL is in what follows. Each match runs to the end of its line, so these scans
-    cover each line once."""
-    line_start = max(text.rfind("\n", 0, start), text.rfind("\r", 0, start)) + 1
-    return ("http://" in value or "https://" in value) and bool(
-        _MC_WORD.search(text, line_start, start) or _MC_WORD.search(value))
+def _is_mc_alias_set(text: str, start: int, value: str, line_starts: list[int]) -> bool:
+    """An `alias set` match belongs to `mc` with a URL when an http(s) URL is in what follows
+    and `mc` is earlier in the same command: on this line, or on lines before it that end in a
+    backslash continuation. `line_starts` is computed once per text, so each check reads only
+    the command's own lines."""
+    if "http://" not in value and "https://" not in value:
+        return False
+    i = bisect.bisect_right(line_starts, start) - 1
+    begin = line_starts[i]
+    while i > 0:
+        j = line_starts[i] - 1
+        while j >= 0 and text[j] in "\r\n":
+            j -= 1
+        if j < 0 or text[j] != "\\":
+            break
+        i -= 1
+        begin = line_starts[i]
+    return bool(_MC_WORD.search(text, begin, start) or _MC_WORD.search(value))
 
 
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
@@ -649,6 +663,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     protected = _protected(text)
     boundaries = _Boundaries(text)
     dois = None  # found on the first phone-shaped match only
+    line_starts = None  # found on the first `alias set` match only
 
     candidates = []
     for name, pattern in PATTERNS.items():
@@ -674,8 +689,11 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
                 continue
-            if name == "mc_alias_keys" and not _is_mc_alias_set(text, match.start(), value):
-                continue
+            if name == "mc_alias_keys":
+                if line_starts is None:
+                    line_starts = [0] + [m.end() for m in _LINE_BREAK.finditer(text)]
+                if not _is_mc_alias_set(text, match.start(), value, line_starts):
+                    continue
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])
                 if literals is not None:

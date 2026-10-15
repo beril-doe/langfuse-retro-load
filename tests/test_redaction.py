@@ -835,6 +835,10 @@ MC_COMMANDS = [
     "mc alias set --api S3v4 b https://minio.example NOTAREALAK0 notarealsecret0123456789",
     "mc alias set b \\\n  https://minio.example NOTAREALAK0 \\\n  notarealsecret0123456789",
     "/usr/local/bin/mc alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
+    # Seventh round: continuations after `mc` and after `alias`, and after an earlier line.
+    "mc \\\nalias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
+    "mc alias \\\nset b https://minio.example NOTAREALAK0 notarealsecret0123456789",
+    "echo hi\nmc \\\n  --insecure \\\n  alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
 ]
 ENCODINGS = [lambda c: c, lambda c: json.dumps({"command": c}),
              lambda c: json.dumps({"o": json.dumps({"command": c})})]
@@ -880,5 +884,9 @@ def test_mc_alias_many_commands_is_linear():
     redaction.redact("mc alias set x; " * 20_000)  # no URL: the check must not rescan the line
     redaction.redact("mc " * 60_000)
     redaction.redact("mc foo " * 20_000 + "alias set")
+    redaction.redact("x\n" * 100_000 + "mc alias set b https://m.x A B")  # LF-only lines
+    redaction.redact("y\r" * 100_000 + "mc alias set b https://m.x A B")  # CR-only lines
+    redaction.redact("mc alias set b https://m.x A B\n" * 30_000)
+    redaction.redact("a \\\n" * 50_000 + "mc alias set b https://m.x A B")
     redaction.redact('mc alias set b https://m.x "' + "a" * 200_000)
     assert time.perf_counter() - start < 2
