@@ -146,14 +146,15 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"[^\s\"/{}<>@:]*:(?P<value>[^\s\"/{}<>@]+)@"),
     # `mc alias set NAME URL ACCESS_KEY SECRET_KEY [flags]`: both keys are bare positional
     # arguments, so no name sits beside them for keyed_value to find. Everything after the
-    # URL is masked to the end of the line (a real newline, or an escaped one inside JSON),
-    # flags included. Four Copilot rounds on
-    # https://github.com/beril-doe/langfuse-retro-load/pull/85 each found another shell or
-    # JSON quoting form that split a key, and over-masking a flag cannot leak one. detect()
-    # skips the match when both keys are variable references or placeholders.
+    # URL is masked to the end of the line, flags included, with no exceptions. Five Copilot
+    # rounds on https://github.com/beril-doe/langfuse-retro-load/pull/85 each found another
+    # quoting, escaping or chaining form that defeated per-argument parsing, an escaped-newline
+    # stop or a variable-reference exemption. The cost is accepted: a line whose keys are only
+    # `$VAR` references or placeholders is masked too, and inside JSON the mask runs to the
+    # end of the physical line.
     "mc_alias_keys": re.compile(
         r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,7}[\"'])?https?://[^\s\"'\\]+(?:\\{0,7}[\"'])?"
-        r"[ \t]+(?P<value>[^\n\r]+?)(?=\\+[nr]|[\n\r]|$)"),
+        r"[ \t]+(?P<value>[^\n\r]+)"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -627,15 +628,6 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
 
 
-def _mc_keys_are_references(value: str) -> bool:
-    """True when the first two arguments after the URL are both references or placeholders,
-    such as "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY", quoted or JSON-escaped."""
-    keys = value.split(None, 2)[:2]
-    # Backslashes are JSON escaping; a trailing `"}` or `"]` closes the JSON string around it.
-    return len(keys) == 2 and all(is_reference(k.replace("\\", "").strip("\"'}],"))
-                                  for k in keys)
-
-
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     """Every non-overlapping finding, in order of position. Pure, and never raises."""
     if not isinstance(text, str) or not text:
@@ -668,8 +660,6 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
-                continue
-            if name == "mc_alias_keys" and _mc_keys_are_references(value):
                 continue
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])

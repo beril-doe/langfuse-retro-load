@@ -771,8 +771,6 @@ def test_uri_password_keeps_user_and_host():
 
 
 @pytest.mark.parametrize("text", [
-    'mc alias set berdl https://minio.example "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"',
-    "mc alias set local http://localhost:9000 YOUR-ACCESS-KEY-HERE YOUR-SECRET-KEY-HERE",
     "run mc alias set to add a host",
     "postgres://user:${PGPASSWORD}@db:5432/x",
     'f"postgresql://{user}:{pw}@{host}/db"',
@@ -823,6 +821,14 @@ MC_COMMANDS = [
     'mc alias set b https://minio.example "NOTAREALACCESSKEY0\\\\" "notarealsecretkey0123456789"',
     "mc alias set b https://minio.example NOTAREAL\\ ACCESS\\ KEY notareal\\!secretkey0123456789",
     "mc alias set b 'https://minio.example' 'NOTAREAL AK' 'notareal sk 0123' --api S3v4",
+    # Fifth round: shell escapes that look like serialized line breaks, a quoted argument with
+    # a space between two references, escaped dollar signs, a chained command after a
+    # reference-only one, and braced references.
+    "mc alias set b https://m.x NOTAREAL\\name notarealsecret0123456789",
+    "mc alias set b https://m.x NOTAREAL\\rest notarealsecret0123456789",
+    'mc alias set b https://m.x "$AK $SUFFIX" notarealsecret0123456789',
+    "mc alias set b https://m.x \\$NOTAREALACCESSKEY0 \\$notarealsecret0123456789",
+    'mc alias set a https://m.x "$AK" "$SK" && mc alias set b https://m.x NOTAREALAK0 notarealsecret0123456789',
 ]
 ENCODINGS = [lambda c: c, lambda c: json.dumps({"command": c}),
              lambda c: json.dumps({"o": json.dumps({"command": c})})]
@@ -842,13 +848,11 @@ def test_mc_alias_masks_to_the_end_of_the_line_only():
 
 
 @pytest.mark.parametrize("encode", ENCODINGS)
-@pytest.mark.parametrize("cmd", [
-    'mc alias set b https://m.x "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"',
-    "mc alias set b https://m.x $AK $SK",
-    "mc alias set local http://localhost:9000 YOUR-ACCESS-KEY-HERE YOUR-SECRET-KEY-HERE --api S3v4",
-])
-def test_mc_alias_references_and_placeholders_are_left_alone(cmd, encode):
-    assert redaction.redact(encode(cmd), key=KEY)[0] == encode(cmd)
+def test_mc_alias_masks_references_too(encode):
+    """Accepted cost of masking with no exceptions: a line whose keys are only references is
+    masked as well. Every exemption tried in review let a literal key through."""
+    cmd = 'mc alias set b https://m.x "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"'
+    assert redaction.redact(encode(cmd), key=KEY)[0] != encode(cmd)
 
 
 def test_mc_alias_json_string_leaf_in_tree():
