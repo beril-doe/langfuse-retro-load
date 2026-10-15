@@ -54,7 +54,6 @@ SAMPLES = {
     "keyed_value": 'JUPYTERHUB_API_TOKEN=abcdef0123456789abcdef0123456789',
     "mongo_uri": "mongodb://someuser:somepassword@localhost:27017",
     "uri_password": "postgresql+asyncpg://someuser:notarealpw123@localhost:5432/db",
-    "mc_alias_keys": "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
     "email_personal": "someone.else@gmail.com",
     "email_institutional": "someone@lbl.gov",
     "name_beside_email": '{"display_name": "A Person", "email": "x"}',
@@ -65,8 +64,7 @@ SAMPLES = {
 
 
 def joined_samples() -> str:
-    """Every sample on its own line. Joined with spaces, the `mc alias set` sample's rule takes
-    the whole line, and a test over the result is a test of one finding."""
+    """Every sample on its own line."""
     return "\n".join(SAMPLES.values())
 
 
@@ -162,19 +160,6 @@ def test_findings_do_not_overlap():
     assert len(findings) > 1
     for a, b in zip(findings, findings[1:], strict=False):
         assert a.end <= b.start
-
-
-def test_a_secret_that_loses_an_overlap_in_part_keeps_its_rest():
-    """A private key whose END line also holds an `mc alias set` command loses to that line's
-    longer span. Dropped whole, its BEGIN line and body went through, and a second pass found
-    the BEGIN marker again and masked past the first pass's placeholder (test_idempotent,
-    2026-10-15). The uncovered part is now a finding of its own."""
-    text = ("-----BEGIN RSA PRIVATE KEY-----\n" + FAKE_KEY_BODY  # gitleaks:allow
-            + "\n-----END RSA PRIVATE KEY----- && " + SAMPLES["mc_alias_keys"])  # gitleaks:allow
-    clean, findings = redaction.redact(text, key=KEY)
-    assert [f.pattern for f in findings] == ["private_key_block", "mc_alias_keys"]
-    assert FAKE_KEY_BODY not in clean and "BEGIN" not in clean and "notareal" not in clean
-    assert redaction.redact(clean, key=KEY)[0] == clean
 
 
 def test_an_already_masked_value_is_flagged_and_still_redacted():
@@ -757,8 +742,15 @@ def test_many_page_ranges_in_one_doi_stay_linear():
     assert sum(f.pattern == "phone_us" for f in found) == 3199
 
 
-# Shapes added after llm-evals found Google service-account tokens in NMDC Langfuse on
-# 2026-10-14 that this module passed. Values are synthetic.
+# Google service-account access tokens start `ya29.c.`, and the google_oauth class had no
+# `.`, so they passed unmasked. Values are synthetic.
+#
+# Scope of these additions, kept to what real traces held: `ya29.` tokens with dots,
+# fine-grained `github_pat_` tokens, `client_key` names, and passwords in URI userinfo.
+# Known gaps, accepted: a literal `"` inside a URI password, and the keys in an
+# `mc alias set` command, which carry no name for keyed_value to find. A scan of 17,816
+# BERIL Langfuse observations on 2026-10-14 for the one-line form found only variable
+# references and prose, no literal keys.
 SERVICE_ACCOUNT_TOKEN = "ya29.c." + "NotARealServiceAccountToken_0123456789-" * 8
 
 
@@ -791,7 +783,6 @@ def test_uri_password_keeps_user_and_host():
 
 
 @pytest.mark.parametrize("text", [
-    "mc alias list",
     "postgres://user:${PGPASSWORD}@db:5432/x",
     'f"postgresql://{user}:{pw}@{host}/db"',
     "see http://localhost:8080/path",
@@ -801,7 +792,7 @@ def test_uri_password_keeps_user_and_host():
 ])
 def test_new_shapes_leave_references_and_prose_alone(text):
     assert not [f for f in redaction.detect(text, key=KEY)
-                if f.pattern in ("uri_password", "mc_alias_keys")]
+                if f.pattern == "uri_password"]
 
 
 # From the Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/85. Every
@@ -889,179 +880,12 @@ def test_uri_password_a_quote_in_a_password_is_the_stated_gap():
     assert [f.pattern for f in redaction.detect(text, key=KEY)] == []
 
 
-# `mc alias set`: the whole logical line is masked, whatever quoting, escaping or
-# serialization is around the keys. These are the forms eight Copilot rounds on
-# https://github.com/beril-doe/langfuse-retro-load/pull/85 found splitting a key under the
-# earlier per-argument rules, plus the ones the line rule was designed against.
-MC_COMMANDS = [
-    "mc alias set berdl https://minio.example NOTAREALACCESSKEY0 notarealsecretkey0123456789",
-    "mc alias set b https://minio.example 'NOTAREALAK0' 'notarealsecretkey0123456789'",
-    'mc alias set b https://minio.example "NOTAREAL\\"ACCESS KEY" "notarealsecretkey0123456789"',
-    'mc alias set b https://minio.example "NOTAREAL\\" ACCESS KEY" "notarealsecretkey0123456789"',
-    'mc alias set b https://minio.example "NOTAREALACCESS"KEY0 "notarealsecretkey0123456789"',
-    "mc alias set b https://minio.example NOTAREALAK 'notareal'\"'\"'secretkey0123456789'",
-    'mc alias set b https://minio.example "NOTAREALACCESSKEY0\\\\" "notarealsecretkey0123456789"',
-    "mc alias set b https://minio.example NOTAREAL\\ ACCESS\\ KEY notareal\\!secretkey0123456789",
-    "mc alias set b 'https://minio.example' 'NOTAREAL AK' 'notareal sk 0123' --api S3v4",
-    # Fifth round: shell escapes that look like serialized line breaks, a quoted argument with
-    # a space between two references, escaped dollar signs, a chained command after a
-    # reference-only one, and braced references.
-    "mc alias set b https://m.x NOTAREAL\\name notarealsecret0123456789",
-    "mc alias set b https://m.x NOTAREAL\\rest notarealsecret0123456789",
-    'mc alias set b https://m.x "$AK $SUFFIX" notarealsecret0123456789',
-    "mc alias set b https://m.x \\$NOTAREALACCESSKEY0 \\$notarealsecret0123456789",
-    'mc alias set a https://m.x "$AK" "$SK" && mc alias set b https://m.x NOTAREALAK0 notarealsecret0123456789',
-    # Sixth round: options before or after `alias set`, a continuation before the URL, and a
-    # full path to the binary.
-    "mc --insecure alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
-    "mc alias set --api S3v4 b https://minio.example NOTAREALAK0 notarealsecret0123456789",
-    "mc alias set b \\\n  https://minio.example NOTAREALAK0 \\\n  notarealsecret0123456789",
-    "/usr/local/bin/mc alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
-    # Seventh round: continuations after `mc` and after `alias`, and after an earlier line.
-    "mc \\\nalias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
-    "mc alias \\\nset b https://minio.example NOTAREALAK0 notarealsecret0123456789",
-    "echo hi\nmc \\\n  --insecure \\\n  alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
-    # Eighth round: tabs between the words, which json.dumps writes as the two characters
-    # backslash-t.
-    "mc\talias\tset\tb\thttps://m.x\tNOTAREALAK0\tnotarealsecret0123456789",
-    "mc alias\tset b https://m.x NOTAREALAK0 notarealsecret0123456789",
-    # The line rule: no URL needed, keys before the command, other spellings of the binary,
-    # the earlier spelling of the command, a newline inside a quoted argument, CR line endings.
-    "mc alias set b $MINIO_URL NOTAREALAK0 notarealsecret0123456789",
-    'subprocess.run(["mc", "alias", "set", name, endpoint, "NOTAREALAK0", "notarealsecret0123456789"])',
-    'AK=NOTAREALAK0 SK=notarealsecret0123456789 mc alias set b https://m.x "$AK" "$SK"',
-    "echo NOTAREALAK0 notarealsecret0123456789 | xargs mc alias set b https://m.x",
-    "mcli alias set b https://m.x NOTAREALAK0 notarealsecret0123456789",
-    "mc.exe alias set b https://m.x NOTAREALAK0 notarealsecret0123456789",
-    "docker run minio/mc alias set b https://m.x NOTAREALAK0 notarealsecret0123456789",
-    "$MINIO_CLIENT alias set b https://m.x NOTAREALAK0 notarealsecret0123456789",
-    "mc config host add b https://m.x NOTAREALAK0 notarealsecret0123456789",
-    'bash -c "mc alias\nset b https://m.x NOTAREALAK0 notarealsecret0123456789"',
-    "mc alias set b https://m.x NOTAREALAK0 \\\r\n notarealsecret0123456789",
-    "mc alias set b https://m.x NOTAREALAK0 \\\r notarealsecret0123456789",
-]
-
-
-@pytest.mark.parametrize("encode", ENCODINGS)
-@pytest.mark.parametrize("cmd", MC_COMMANDS)
-def test_mc_alias_keys_are_masked_however_quoted(cmd, encode):
-    clean, findings = redaction.redact(encode(cmd), key=KEY)
-    assert "notareal" not in clean.lower()
-    assert "mc_alias_keys" in {f.pattern for f in findings}
-
-
-@pytest.mark.parametrize("encode", ENCODINGS)
-@pytest.mark.parametrize("cmd", MC_COMMANDS)
-def test_mc_alias_json_string_leaf_in_tree(cmd, encode):
-    clean = redaction.redact_tree({"x": encode(cmd)}, key=KEY)[0]
-    assert "notareal" not in json.dumps(clean).lower()
-
-
-def test_mc_alias_masks_the_whole_logical_line_and_nothing_else():
-    text = "before\n" + MC_COMMANDS[0] + " --api S3v4 \\\n  --path auto\nnext line stays"
-    clean, findings = redaction.redact(text, key=KEY)
-    assert clean == "before\n" + findings[0].placeholder + "\nnext line stays"
-    assert clean.startswith("before\n[REDACTED:mc_alias_keys:")
-
-
-def test_mc_alias_tab_separated_serialized_command_is_masked():
-    """Eighth Copilot round: `alias\\tset` inside a JSON string is `alias\\\\tset` in the
-    text, and the `t` of the escape is a letter."""
-    text = json.dumps({"command": "mc\talias\tset\tb\thttps://m.x\tNOTAREALAK0\tnotarealsk0123"})
-    clean, _ = redaction.redact(text, key=KEY)
-    assert "notareal" not in clean.lower()
-    assert "notareal" not in redaction.redact(json.dumps({"o": text}), key=KEY)[0].lower()
-
-
-@pytest.mark.parametrize("encode", ENCODINGS)
-@pytest.mark.parametrize("cmd", [
-    'mc alias set b https://m.x "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"',
-    'mc alias set b https://m.x "${AK}" "${SK}"',
-    "mc alias set b https://m.x ${AK} ${SK}",
-])
-def test_mc_alias_masks_references_too(cmd, encode):
-    """Accepted cost of masking with no exceptions: a line whose keys are only references is
-    masked as well. Every exemption tried in review let a literal key through, and a braced
-    reference was the last one (fifth Copilot round)."""
-    assert redaction.redact(encode(cmd), key=KEY)[0] != encode(cmd)
-
-
-@pytest.mark.parametrize("text", ["mc alias list", "mc alias remove b", "an alias set up for that",
-                                  "mc is installed\nalias set x", "aliases set by mc"])
-def test_mc_alias_text_without_the_command_on_one_line_is_left_alone(text):
-    assert redaction.redact(text, key=KEY)[0] == text
-
-
-@pytest.mark.parametrize("text,kept", [
-    ("run mc alias set to add a host", ""),
-    ("the mc alias set command adds a host\nhttps://min.io/docs", "\nhttps://min.io/docs"),
-])
-def test_mc_alias_prose_naming_the_command_is_masked_as_the_stated_cost(text, kept):
-    """A URL used to be required, and a URL held in a variable then left literal keys
-    unmasked. Without it, a line of prose that names the command is masked too, and the
-    record says so. Chosen over the exemption on 2026-10-15."""
-    clean, findings = redaction.redact(text, key=KEY)
-    assert clean == findings[0].placeholder + kept
-
-
-@pytest.mark.parametrize("encode", ENCODINGS[:1])
-@pytest.mark.parametrize("cmd", [
-    'subprocess.run(["mc", "alias", "set", "b", "https://m.x",\n'
-    '    "NOTAREALACCESSKEY0", "notarealsecretkey0123456789"])',
-    'mc alias set b https://m.x "$(\n  printf NOTAREALAK0\n)" notarealsecret0123456789',
-    "mc alias set b https://m.x 'NOTAREALAK0\nnotarealsecret0123456789'",
-])
-def test_mc_alias_line_left_open_masks_the_rest_of_the_value(cmd, encode):
-    """Ninth Copilot round: a wrapped argument list or a `$(` substitution carries the keys
-    past the newline with no backslash. The line is left open, so the rest is masked."""
-    clean, _ = redaction.redact("before\n" + cmd, key=KEY)
-    assert "notareal" not in clean.lower()
-    assert clean.startswith("before\n[REDACTED:mc_alias_keys:")
-    assert "notareal" not in json.dumps(redaction.redact_tree({"x": cmd}, key=KEY)[0]).lower()
-
-
-def test_mc_alias_a_closed_line_still_ends_at_the_newline():
-    text = 'subprocess.run(["mc", "alias", "set", "b", "u", "AK0", "SK0"])\nnext line stays'
-    clean, _ = redaction.redact(text, key=KEY)
-    assert clean.endswith("]\nnext line stays")
-
-
 # Each adversarial shape is timed on its own, so a regression names the shape rather than a
 # batch. `measured` is the best of three local runs of redact() on 2026-10-15 (Python 3.13,
 # a 2026 laptop); each budget is at least five times that, and the test checks the ratio so a
 # budget cannot be quietly tightened. CI runs about 1.3 times slower: the batched version of
 # this test took 0.93s here and 2.48s there against a 2s budget.
 TIMING_CASES = [
-    ("20k reference-only commands on one line",
-     lambda: "mc alias set b https://m.x $AK $SK; " * 20_000, 0.20, 1.5),
-    ("20k commands with no URL on one line", lambda: "mc alias set x; " * 20_000, 0.09, 1.0),
-    ("60k mc words", lambda: "mc " * 60_000, 0.05, 1.0),
-    ("20k open command lines", lambda: "mc alias set b u ( A B\n" * 20_000, 0.12, 1.0),
-    ("20k mc words then alias set", lambda: "mc foo " * 20_000 + "alias set", 0.04, 1.0),
-    ("100k LF lines before the command",
-     lambda: "x\n" * 100_000 + "mc alias set b https://m.x A B", 0.07, 1.0),
-    ("100k CR lines before the command",
-     lambda: "y\r" * 100_000 + "mc alias set b https://m.x A B", 0.07, 1.0),
-    ("30k command lines", lambda: "mc alias set b https://m.x A B\n" * 30_000, 0.36, 2.5),
-    ("50k continued lines before the command",
-     lambda: "a \\\n" * 50_000 + "mc alias set b https://m.x A B", 0.07, 1.0),
-    ("50k continued command lines",
-     lambda: "mc alias set b https://m.x A B \\\n" * 50_000, 0.49, 3.0),
-    ("200k characters after an open quote",
-     lambda: 'mc alias set b https://m.x "' + "a" * 200_000, 0.05, 1.0),
-    # Eighth Copilot round: the walk back over line breaks before each continued line was
-    # quadratic across a run of blank lines. 4.3s on 20,000 of them before the fix.
-    ("100k blank lines after a continuation",
-     lambda: "a \\" + "\n" * 100_000 + "mc alias set b https://m.x A B", 0.05, 1.0),
-    ("100k serialized tabs before the command",
-     lambda: "\\t" * 100_000 + "mc\\talias\\tset b A B", 0.06, 1.0),
-    ("100k serialized tabs between alias and set",
-     lambda: "mc alias" + "\\t" * 100_000 + "set b A B", 0.06, 1.0),
-    ("50k alias words each followed by a serialized tab", lambda: "alias \\t" * 50_000, 0.11, 1.0),
-    ("100k newlines between alias and set",
-     lambda: "mc alias" + "\n" * 100_000 + "set b A B", 0.05, 1.0),
-    ("50k alias words", lambda: "alias " * 50_000, 0.08, 1.0),
-    ("50k config host words", lambda: "config host " * 50_000, 0.16, 1.0),
     ("uri: 200k password characters with no @", lambda: "x://y:" + "z" * 200_000, 0.05, 1.0),
     ("uri: 50k @ in one authority", lambda: "x://u:" + "p@" * 50_000 + "h", 0.04, 1.0),
     ("uri: 30k short credentials", lambda: "x://y:z@" * 30_000, 0.16, 1.0),

@@ -41,7 +41,6 @@ because the right answer is different at each of the three points.
 from __future__ import annotations
 
 import bisect
-import heapq
 import hmac
 import os
 import re
@@ -76,10 +75,8 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #: `(?<![A-Za-z0-9])` rather than `\b`: a token embedded in a filename sits behind an
 #: underscore, and `\b` does not treat that as a boundary at all.
 #: Patterns whose match already ends where the secret ends, so detect() does not widen it:
-#: a URI password ends at its "@" (widening took the host with it), and an `mc alias set`
-#: match ends at the end of its logical line. The latter is widened the other way, back to
-#: the start of that line, by detect() itself.
-EXACT_SPAN = frozenset({"uri_password", "mc_alias_keys"})
+#: a URI password ends at its "@" (widening took the host with it).
+EXACT_SPAN = frozenset({"uri_password"})
 
 PATTERNS: dict[str, re.Pattern[str]] = {
     # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
@@ -158,29 +155,6 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]*://"
         r"[^\s\"/{}<>:?#]*:(?P<value>[^\s\"/{}<>?#]+)@"),
-    # `mc [options] alias set [options] NAME URL ACCESS_KEY SECRET_KEY [flags]`: both keys
-    # are bare positional arguments, so no name sits beside them for keyed_value to find.
-    # The whole logical line is masked, from its start (detect() widens the match back to it)
-    # to the end of the last backslash-continued physical line: the keys are arguments of the
-    # command, so whatever quoting, escaping or serialization wraps them, they are on the
-    # command's line, and inside a JSON string there is no physical newline at all. Nothing is
-    # read per argument, so no quote, backslash, tab or option can shift a boundary; eight
-    # Copilot rounds on https://github.com/beril-doe/langfuse-retro-load/pull/85 each found a
-    # form that moved one. The trigger is `alias set` (or `config host add`, the earlier
-    # spelling of the same command) with an `mc` or `minio` word on the same logical line
-    # (_MC_WORD).
-    # Word boundaries count a serialized `\n`, `\r`, `\t` or `\u00XX` at any backslash depth,
-    # since the lookbehind only sees the last backslash. No URL is required: a URL held in a
-    # variable left literal keys unmasked. The cost is accepted and stated: the alias name,
-    # URL, options, chained commands and reference-only keys go too, and so does a line of
-    # prose that names the command, which the record then says. A line left open by an
-    # unclosed bracket or an odd quote masks the rest of the value instead (_left_open).
-    "mc_alias_keys": re.compile(
-        r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt])|(?<=\\u00[0-9a-fA-F]{2}))"
-        r"(?:alias(?:\\(?:[nrt]|u00[0-9a-fA-F]{2})|[^A-Za-z0-9])+set"
-        r"|config(?:\\(?:[nrt]|u00[0-9a-fA-F]{2})|[^A-Za-z0-9])+host"
-        r"(?:\\(?:[nrt]|u00[0-9a-fA-F]{2})|[^A-Za-z0-9])+add)(?![A-Za-z0-9])"
-        r"(?:\\(?:\r\n|\r|\n)|[^\r\n])*"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -417,7 +391,7 @@ CATEGORY: dict[str, str] = {
     "aws_access_key_id": SECRET, "google_oauth": SECRET, "google_api_key": SECRET,
     "private_key_block": SECRET, "jwt": SECRET, "slack_token": SECRET,
     "keyed_value": SECRET, "auth_header": SECRET, "mongo_uri": SECRET,
-    "uri_password": SECRET, "mc_alias_keys": SECRET,
+    "uri_password": SECRET,
     "email_personal": PERSON, "email_institutional": PERSON,
     "name_beside_email": PERSON, "phone_us": PERSON,
     # Public by design. Reported so a reader knows the turn names someone, never
@@ -651,99 +625,11 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
                for a, b in regions[max(0, i - 1):i + 1])
 
 
-def _uncovered(span: tuple[int, int], starts: list[int],
-               regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """The parts of `span` that no accepted region covers.
-
-    For a secret that lost an overlap only in part. Dropping it whole left the rest of the
-    credential in the output: a private key whose END line also held an `mc alias set`
-    command lost to that line's longer span, and its BEGIN line and body went through
-    (found by test_idempotent on 2026-10-15, when the mc rule started masking whole lines).
-
-    Linear overall: accepted regions are processed longest first, so a region inside a
-    losing span would have to be shorter than it and cannot have been accepted yet. At most
-    one region crosses each end of the span and one contains it, so the walk below touches
-    at most three regions per loser.
-    """
-    lo, hi = span
-    cursor, parts = lo, []
-    i = max(0, bisect.bisect_left(starts, lo) - 1)
-    while i < len(regions) and regions[i][0] < hi:
-        a, b = regions[i]
-        if b > cursor:
-            if a > cursor:
-                parts.append((cursor, a))
-            cursor = max(cursor, b)
-        i += 1
-    if cursor < hi:
-        parts.append((cursor, hi))
-    return parts
-
-
 #: Which finding wins when two overlap. A secret must never lose to a person pattern:
 #: `name_beside_email` and `keyed_value` both match a directory dump that also holds a
 #: token, and rewriting only the name would leave the token in place while the record
 #: said the turn had been redacted.
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
-
-
-#: The MinIO client on the command's line: `mc`, `mcli` (the name some distributions give
-#: the binary, since `mc` is Midnight Commander), `mc.exe`, `/usr/local/bin/mc`, `minio/mc`
-#: or `$MINIO_CLIENT`. A word start is a non-alphanumeric or a serialized line break, tab or
-#: `\u00XX`, as in the pattern above.
-_MC_WORD = re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt])|(?<=\\u00[0-9a-fA-F]{2}))(?i:mc|minio)")
-_LINE_BREAK = re.compile(r"\r\n?|\n")
-
-
-def _logical_line_starts(text: str) -> tuple[list[int], list[int]]:
-    """Where each physical line starts, and where the logical line holding it starts: a line
-    whose predecessor ends in a backslash continues that predecessor's logical line.
-
-    One pass over the text, so each `alias set` match then costs one binary search. The
-    earlier version walked back from the match over every line-break character before it and
-    repeated the walk for each continued line, which was quadratic across a run of blank lines
-    after a continuation: 4.3s on 20,000 of them, measured 2026-10-15 before this change
-    (eighth Copilot round on https://github.com/beril-doe/langfuse-retro-load/pull/85).
-    """
-    starts, logical = [0], [0]
-    for m in _LINE_BREAK.finditer(text):
-        starts.append(m.end())
-        continued = m.start() > 0 and text[m.start() - 1] == "\\"
-        logical.append(logical[-1] if continued else m.end())
-    return starts, logical
-
-
-def _mc_command_span(text: str, match: re.Match[str],
-                     lines: tuple[list[int], list[int]]) -> tuple[int, int] | None:
-    """The whole logical line of an `alias set` match, or None when no `mc` word is on it.
-
-    The match already runs to the end of the logical line; this widens it back to the start.
-    Successive matches never share a logical line, since each consumes the rest of its own,
-    so the `mc` search over the span stays linear in the text.
-    """
-    starts, logical = lines
-    begin = logical[bisect.bisect_right(starts, match.start()) - 1]
-    if _MC_WORD.search(text, begin, match.end()) is None:
-        return None
-    if _left_open(text[begin:match.end()]):
-        return begin, len(text)
-    return begin, match.end()
-
-
-def _left_open(line: str) -> bool:
-    """Whether a command line ends inside something that continues on the next line.
-
-    A shell `"$(` substitution and a wrapped Python argument list both carry the keys past
-    the newline without a backslash (ninth Copilot round on
-    https://github.com/beril-doe/langfuse-retro-load/pull/85). Telling where such a command
-    ends means parsing shell and Python, which every earlier round showed is where the
-    boundaries go wrong, so nothing is parsed: more openers than closers, or an odd number of
-    any quote character, and the rest of the value is masked. Counting ignores quoting and
-    escapes, so a stray quote or bracket in the line masks too much, never too little.
-    """
-    if sum(map(line.count, "([{")) > sum(map(line.count, ")]}")):
-        return True
-    return any(line.count(q) % 2 for q in "\"'`")
 
 
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
@@ -754,16 +640,12 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     protected = _protected(text)
     boundaries = _Boundaries(text)
     dois = None  # found on the first phone-shaped match only
-    line_starts = None  # found on the first `alias set` match only
-    mc_to_end = False  # an open `alias set` line already masks the rest of the text
 
     candidates = []
     for name, pattern in PATTERNS.items():
         category = CATEGORY[name]
         has_value = "value" in pattern.groupindex
         for match in pattern.finditer(text):
-            if mc_to_end and name == "mc_alias_keys":
-                break
             span = match.span("value") if has_value else (match.start(), match.end())
             if span[0] == span[1] or _inside(span, protected):
                 continue
@@ -783,15 +665,6 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             value = text[span[0]:span[1]]
             if has_value and is_reference(value, strip_quotes=name not in EXACT_SPAN):
                 continue
-            if name == "mc_alias_keys":
-                if line_starts is None:
-                    line_starts = _logical_line_starts(text)
-                widened = _mc_command_span(text, match, line_starts)
-                if widened is None:
-                    continue
-                span = widened
-                mc_to_end = span[1] == len(text)
-                value = text[span[0]:span[1]]
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])
                 if literals is not None:
@@ -803,22 +676,16 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
-    # earliest, then the name, so the result does not depend on dict iteration order. A
-    # heap rather than a sorted list, because a secret that loses an overlap only in part
-    # puts the uncovered rest of itself back as a new, shorter candidate (_uncovered).
-    heapq.heapify(candidates)
+    # earliest, then the name, so the result does not depend on dict iteration order.
+    candidates.sort()
     # Accepted spans never overlap, so kept sorted by start, a new span can only collide
     # with its neighbours. Checking every accepted span made many small findings quadratic.
     taken_starts: list[int] = []
     taken: list[tuple[int, int]] = []
     findings = []
-    while candidates:
-        rank, neg_len, start, name, value = heapq.heappop(candidates)
+    for _rank, neg_len, start, name, value in candidates:
         span = (start, start - neg_len)
         if _overlaps_sorted(span, taken_starts, taken):
-            if rank == _RANK[SECRET]:
-                for lo, hi in _uncovered(span, taken_starts, taken):
-                    heapq.heappush(candidates, (rank, -(hi - lo), lo, name, text[lo:hi]))
             continue
         position = bisect.bisect_left(taken_starts, span[0])
         taken_starts.insert(position, span[0])
