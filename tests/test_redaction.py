@@ -7,6 +7,7 @@ more than one filter point, so a second pass must not redact the first pass's wo
 the records it returns are meant to be read by a person before a load is sent, so they
 must not contain what the load was trying not to send.
 """
+import json
 import random
 import string
 import sys
@@ -822,3 +823,36 @@ def test_mc_alias_quoted_keys(access, secret):
 def test_mc_alias_quoted_variables_are_left_alone():
     text = "mc alias set berdl https://minio.example '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY'"
     assert redaction.redact(text, key=KEY)[0] == text
+
+
+# Second Copilot round on https://github.com/beril-doe/langfuse-retro-load/pull/85: escaped
+# quotes inside a key, and commands serialized into JSON once or twice.
+MC_CMD = 'mc alias set berdl https://minio.example "NOTAREALACCESSKEY0" "notarealsecretkey0123456789"'
+
+
+@pytest.mark.parametrize("text", [
+    'mc alias set berdl https://minio.example "NOTAREAL\\"ACCESS KEY" "notarealsecretkey0123456789"',
+    json.dumps({"command": MC_CMD}),
+    json.dumps({"out": json.dumps({"command": MC_CMD})}),
+])
+def test_mc_alias_escaped_quotes(text):
+    clean, _ = redaction.redact(text, key=KEY)
+    assert "notareal" not in clean.lower()
+    if text.startswith("{"):
+        json.loads(clean)  # the rewrite keeps the JSON valid
+
+
+def test_mc_alias_json_string_leaf_in_tree():
+    clean = redaction.redact_tree({"x": json.dumps({"command": MC_CMD})})[0]
+    assert "notareal" not in json.dumps(clean).lower()
+
+
+def test_mc_alias_escaped_variables_are_left_alone():
+    text = json.dumps({"command": 'mc alias set b https://m.x "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"'})
+    assert redaction.redact(text, key=KEY)[0] == text
+
+
+def test_mc_alias_unclosed_quote_is_linear():
+    start = time.perf_counter()
+    redaction.redact('mc alias set b https://m.x "' + "a" * 200_000)
+    assert time.perf_counter() - start < 2

@@ -74,12 +74,26 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #:
 #: `(?<![A-Za-z0-9])` rather than `\b`: a token embedded in a filename sits behind an
 #: underscore, and `\b` does not treat that as a boundary at all.
-#: One `mc alias set` argument: a quoted string taken whole, or a bare word.
-_MC_ARG = r"(?:\"[^\"\n]*\"|'[^'\n]*'|\S+)"
-#: The key inside such an argument. A quoted key may contain spaces; detect() reads one
-#: `value` group, so the quotes sit in lookarounds rather than in separate groups.
-_MC_KEY = (r"[\"']?(?P<value>(?<=\")[^\"\n]{3,}(?=\")|(?<=')[^'\n]{3,}(?=')"
-           r"|[^\s\"'`;|&)]{3,})")
+#: Patterns whose match already ends where the secret ends, so detect() does not widen it:
+#: a URI password ends at its "@" (widening took the host with it), and an `mc alias set`
+#: key ends at its own closing quote (widening ate the escaped quote in JSON).
+EXACT_SPAN = frozenset({"uri_password", "mc_alias_access_key", "mc_alias_secret_key"})
+
+#: `mc alias set` arguments, quoted or bare, as they appear raw in a shell command, inside a
+#: JSON string (`\"KEY\"`) or inside JSON in a JSON string (`\\\"KEY\\\"`). A quote closes an
+#: argument only when whitespace, the end, a JSON delimiter, a quote or a backslash follows it,
+#: so a shell-escaped quote inside a key (`"AB\"CD EF"`) stays part of that key.
+_MC_DQ_END = r"\\{0,3}\"(?=\s|$|[,;}\]\"']|\\)"
+_MC_SQ_END = r"\\{0,3}'(?=\s|$|[,;}\]\"']|\\)"
+#: One argument, skipped whole.
+_MC_ARG = (r"(?:\\{0,3}\"(?:(?!" + _MC_DQ_END + r").)*" + _MC_DQ_END
+           + r"|\\{0,3}'(?:(?!" + _MC_SQ_END + r").)*" + _MC_SQ_END + r"|\S+)")
+#: The key inside one argument. detect() reads a single `value` group, so the opening quote
+#: is matched outside it and found again by a one-character lookbehind.
+_MC_KEY = (r"(?:\\{0,3}[\"'])?(?P<value>"
+           r"(?<=\")(?:(?!" + _MC_DQ_END + r").){3,}?(?=" + _MC_DQ_END + r")"
+           r"|(?<=')(?:(?!" + _MC_SQ_END + r").){3,}?(?=" + _MC_SQ_END + r")"
+           r"|[^\s\"'`;|&)\\]{3,})")
 
 PATTERNS: dict[str, re.Pattern[str]] = {
     # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
@@ -150,9 +164,11 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # arguments, so no name sits beside them for keyed_value to find. Either key may be
     # quoted, and a quoted one may hold spaces, so a quoted argument is taken whole.
     "mc_alias_access_key": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+" + _MC_KEY),
+        r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,3}[\"'])?https?://[^\s\"'\\]+(?:\\{0,3}[\"'])?\s+"
+        + _MC_KEY),
     "mc_alias_secret_key": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+[\"']?https?://\S+\s+" + _MC_ARG + r"\s+" + _MC_KEY),
+        r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,3}[\"'])?https?://[^\s\"'\\]+(?:\\{0,3}[\"'])?\s+"
+        + _MC_ARG + r"\s+" + _MC_KEY),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -547,9 +563,7 @@ class _Boundaries:
             if i < len(self.pem_markers) and self.pem_markers[i] <= value_end:
                 return start, self.pem_markers[i]
             return start, value_end
-        if pattern == "uri_password":
-            # The password ends at the "@" the pattern already found; widening would take
-            # the host and path with it.
+        if pattern in EXACT_SPAN:
             return start, end
         return start, self._first_at_or_after(self.value_ends, end)
 
@@ -647,7 +661,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 continue
             if category is SECRET:
                 span = boundaries.span_for(name, span[0], span[1])
-                if has_value:
+                if has_value and name not in EXACT_SPAN:
                     span = _through_closing_quote(text, span)
                 if _inside(span, protected):
                     continue
