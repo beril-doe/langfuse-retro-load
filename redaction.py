@@ -76,7 +76,7 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #: underscore, and `\b` does not treat that as a boundary at all.
 #: Patterns whose match already ends where the secret ends, so detect() does not widen it:
 #: a URI password ends at its "@" (widening took the host with it), and `mc alias set` keys
-#: end at the end of the line.
+#: end at the end of the command.
 EXACT_SPAN = frozenset({"uri_password", "mc_alias_keys"})
 
 PATTERNS: dict[str, re.Pattern[str]] = {
@@ -144,17 +144,18 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]{1,30}://"
         r"[^\s\"/{}<>@:]*:(?P<value>[^\s\"/{}<>@]+)@"),
-    # `mc alias set NAME URL ACCESS_KEY SECRET_KEY [flags]`: both keys are bare positional
-    # arguments, so no name sits beside them for keyed_value to find. Everything after the
-    # URL is masked to the end of the line, flags included, with no exceptions. Five Copilot
+    # `mc [options] alias set [options] NAME URL ACCESS_KEY SECRET_KEY [flags]`: both keys
+    # are bare positional arguments, so no name sits beside them for keyed_value to find.
+    # Everything after `alias set` is masked to the end of the command, the alias name and
+    # URL included, following backslash-newline continuations. detect() keeps the match only
+    # when `mc` and an http(s) URL are on the same line (_is_mc_alias_set), so prose that
+    # mentions the command is left alone; checking that inside the regex was quadratic on
+    # long lines. Six Copilot
     # rounds on https://github.com/beril-doe/langfuse-retro-load/pull/85 each found another
-    # quoting, escaping or chaining form that defeated per-argument parsing, an escaped-newline
-    # stop or a variable-reference exemption. The cost is accepted: a line whose keys are only
-    # `$VAR` references or placeholders is masked too, and inside JSON the mask runs to the
-    # end of the physical line.
-    "mc_alias_keys": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,7}[\"'])?https?://[^\s\"'\\]+(?:\\{0,7}[\"'])?"
-        r"[ \t]+(?P<value>[^\n\r]+)"),
+    # quoting, escaping, option or chaining form that defeated narrower rules. The cost is
+    # accepted: a line whose keys are only `$VAR` references or placeholders is masked too,
+    # and inside a JSON string the mask runs to the end of the physical line.
+    "mc_alias_keys": re.compile(r"\balias\s+set\b[ \t]*(?P<value>(?:\\\r?\n|[^\n\r])+)"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -628,6 +629,18 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
 
 
+_MC_WORD = re.compile(r"\bmc\b")
+
+
+def _is_mc_alias_set(text: str, start: int, value: str) -> bool:
+    """An `alias set` match belongs to `mc` with a URL when `mc` is on its line and an
+    http(s) URL is in what follows. Each match runs to the end of its line, so these scans
+    cover each line once."""
+    line_start = max(text.rfind("\n", 0, start), text.rfind("\r", 0, start)) + 1
+    return ("http://" in value or "https://" in value) and bool(
+        _MC_WORD.search(text, line_start, start) or _MC_WORD.search(value))
+
+
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     """Every non-overlapping finding, in order of position. Pure, and never raises."""
     if not isinstance(text, str) or not text:
@@ -660,6 +673,8 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             value = text[span[0]:span[1]]
             if has_value and is_reference(value):
+                continue
+            if name == "mc_alias_keys" and not _is_mc_alias_set(text, match.start(), value):
                 continue
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])

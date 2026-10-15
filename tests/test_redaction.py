@@ -829,6 +829,12 @@ MC_COMMANDS = [
     'mc alias set b https://m.x "$AK $SUFFIX" notarealsecret0123456789',
     "mc alias set b https://m.x \\$NOTAREALACCESSKEY0 \\$notarealsecret0123456789",
     'mc alias set a https://m.x "$AK" "$SK" && mc alias set b https://m.x NOTAREALAK0 notarealsecret0123456789',
+    # Sixth round: options before or after `alias set`, a continuation before the URL, and a
+    # full path to the binary.
+    "mc --insecure alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
+    "mc alias set --api S3v4 b https://minio.example NOTAREALAK0 notarealsecret0123456789",
+    "mc alias set b \\\n  https://minio.example NOTAREALAK0 \\\n  notarealsecret0123456789",
+    "/usr/local/bin/mc alias set b https://minio.example NOTAREALAK0 notarealsecret0123456789",
 ]
 ENCODINGS = [lambda c: c, lambda c: json.dumps({"command": c}),
              lambda c: json.dumps({"o": json.dumps({"command": c})})]
@@ -843,7 +849,7 @@ def test_mc_alias_keys_are_masked_however_quoted(cmd, encode):
 
 def test_mc_alias_masks_to_the_end_of_the_line_only():
     clean, _ = redaction.redact(MC_COMMANDS[0] + " --api S3v4\nnext line stays", key=KEY)
-    assert clean.startswith("mc alias set berdl https://minio.example [REDACTED:mc_alias_keys:")
+    assert clean.startswith("mc alias set [REDACTED:mc_alias_keys:")
     assert clean.endswith("]\nnext line stays")
 
 
@@ -855,13 +861,24 @@ def test_mc_alias_masks_references_too(encode):
     assert redaction.redact(encode(cmd), key=KEY)[0] != encode(cmd)
 
 
-def test_mc_alias_json_string_leaf_in_tree():
-    clean = redaction.redact_tree({"x": json.dumps({"command": MC_COMMANDS[1]})})[0]
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("cmd", MC_COMMANDS)
+def test_mc_alias_json_string_leaf_in_tree(cmd, encode):
+    clean = redaction.redact_tree({"x": encode(cmd)})[0]
     assert "notareal" not in json.dumps(clean).lower()
+
+
+@pytest.mark.parametrize("text", ["run mc alias set to add a host", "mc alias list",
+                                  "the mc alias set command adds a host\nhttps://min.io/docs"])
+def test_mc_alias_prose_without_a_url_on_the_line_is_left_alone(text):
+    assert redaction.redact(text, key=KEY)[0] == text
 
 
 def test_mc_alias_many_commands_is_linear():
     start = time.perf_counter()
     redaction.redact("mc alias set b https://m.x $AK $SK; " * 20_000)
+    redaction.redact("mc alias set x; " * 20_000)  # no URL: the check must not rescan the line
+    redaction.redact("mc " * 60_000)
+    redaction.redact("mc foo " * 20_000 + "alias set")
     redaction.redact('mc alias set b https://m.x "' + "a" * 200_000)
     assert time.perf_counter() - start < 2
