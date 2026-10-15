@@ -856,3 +856,20 @@ def test_mc_alias_unclosed_quote_is_linear():
     start = time.perf_counter()
     redaction.redact('mc alias set b https://m.x "' + "a" * 200_000)
     assert time.perf_counter() - start < 2
+
+
+# Third Copilot round on https://github.com/beril-doe/langfuse-retro-load/pull/85.
+@pytest.mark.parametrize("encode", [lambda c: c, lambda c: json.dumps({"command": c}),
+                                    lambda c: json.dumps({"o": json.dumps({"command": c})})])
+def test_mc_alias_escaped_quote_before_space(encode):
+    cmd = 'mc alias set b https://m.x "NOTAREAL\\" ACCESS KEY" "notarealsecretkey0123456789"'
+    clean, _ = redaction.redact(encode(cmd), key=KEY)
+    assert "notareal" not in clean.lower()
+
+
+@pytest.mark.parametrize("text,secret", [
+    ("postgresql://user:NotAReal'Pass123@db:5432/x", "NotAReal'Pass123"),
+    ("postgresql://us'er:notarealpw99@db/x", "notarealpw99"),
+])
+def test_uri_password_apostrophes(text, secret):
+    assert secret not in redaction.redact(text, key=KEY)[0]

@@ -79,23 +79,92 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #: key ends at its own closing quote (widening ate the escaped quote in JSON).
 EXACT_SPAN = frozenset({"uri_password", "mc_alias_access_key", "mc_alias_secret_key"})
 
-#: `mc alias set` arguments, quoted or bare, as they appear raw in a shell command, inside a
-#: JSON string (`\"KEY\"`) or inside JSON in a JSON string (`\\\"KEY\\\"`). A quote closes an
-#: argument only when whitespace, the end, a JSON delimiter, a quote or a backslash follows it,
-#: so a shell-escaped quote inside a key (`"AB\"CD EF"`) stays part of that key.
-_MC_DQ_END = r"\\{0,3}\"(?=\s|$|[,;}\]\"']|\\)"
-_MC_SQ_END = r"\\{0,3}'(?=\s|$|[,;}\]\"']|\\)"
-#: One argument, skipped whole.
-_MC_ARG = (r"(?:\\{0,3}\"(?:(?!" + _MC_DQ_END + r").)*" + _MC_DQ_END
-           + r"|\\{0,3}'(?:(?!" + _MC_SQ_END + r").)*" + _MC_SQ_END + r"|\S+)")
-#: The key inside one argument. detect() reads a single `value` group, so the opening quote
-#: is matched outside it and found again by a one-character lookbehind.
-_MC_KEY = (r"(?:\\{0,3}[\"'])?(?P<value>"
-           r"(?<=\")(?:(?!" + _MC_DQ_END + r").){3,}?(?=" + _MC_DQ_END + r")"
-           r"|(?<=')(?:(?!" + _MC_SQ_END + r").){3,}?(?=" + _MC_SQ_END + r")"
-           r"|[^\s\"'`;|&)\\]{3,})")
+_MC_PREFIX = re.compile(r"\bmc\s+alias\s+set\s+")
+_MC_BARE_STOP = re.compile(r"[\s\"'`;|&)\\]")
 
-PATTERNS: dict[str, re.Pattern[str]] = {
+
+class _MatchSpan:
+    """The part of re.Match that detect() and is_reference() use."""
+
+    __slots__ = ("_whole", "_value")
+
+    def __init__(self, whole: tuple[int, int], value: tuple[int, int]):
+        self._whole, self._value = whole, value
+
+    def span(self, group: int | str = 0) -> tuple[int, int]:
+        return self._value if group in (1, "value") else self._whole
+
+    def start(self) -> int:
+        return self._whole[0]
+
+    def end(self) -> int:
+        return self._whole[1]
+
+
+class _McAliasKey:
+    """A key in `mc alias set NAME URL ACCESS_KEY SECRET_KEY`, read argument by argument.
+
+    Both keys are bare positional arguments, so no name sits beside them for keyed_value to
+    find, and a regex kept missing quoting cases in review (three Copilot rounds on
+    https://github.com/beril-doe/langfuse-retro-load/pull/85). The rule is the one
+    _through_closing_quote uses: an argument that opens with k backslashes before its quote
+    closes at the next same quote with exactly k backslashes before it. That covers a raw
+    shell command, one serialized into JSON once or twice, and a shell-escaped quote inside a
+    key, which at any level carries a different number of backslashes from the closing one.
+    Behaves enough like a compiled pattern for detect() and is_reference().
+    """
+
+    groupindex = {"value": 1}
+
+    def __init__(self, position: int):
+        self.position = position  # 2 for the access key, 3 for the secret key
+
+    @staticmethod
+    def _argument(text: str, i: int) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        """(whole, inside quotes) of the argument starting at i, or None at a command end."""
+        j = i
+        while j < len(text) and text[j] == "\\":
+            j += 1
+        if j < len(text) and text[j] in "\"'":
+            quote, level = text[j], j - i
+            k = j + 1
+            while True:
+                k = text.find(quote, k)
+                if k == -1:
+                    return (i, len(text)), (j + 1, len(text))
+                if _backslashes_before(text, k) == level:
+                    return (i, k + 1), (j + 1, k - level)
+                k += 1
+        if j > i:  # backslashes not followed by a quote, such as a JSON "\n"
+            return None
+        m = _MC_BARE_STOP.search(text, i)
+        stop = m.start() if m else len(text)
+        return ((i, stop), (i, stop)) if stop > i else None
+
+    def finditer(self, text: str):
+        for prefix in _MC_PREFIX.finditer(text):
+            i, spans = prefix.end(), []
+            while len(spans) <= self.position:
+                arg = self._argument(text, i)
+                if arg is None:
+                    break
+                spans.append(arg)
+                gap = re.match(r"[ \t]+", text[arg[0][1]:])
+                if gap is None:
+                    break
+                i = arg[0][1] + gap.end()
+            if len(spans) <= self.position:
+                continue
+            url = text[slice(*spans[1][1])]
+            value = spans[self.position][1]
+            if url.startswith(("http://", "https://")) and value[1] - value[0] >= 3:
+                yield _MatchSpan((prefix.start(), spans[self.position][0][1]), value)
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+PATTERNS: dict[str, re.Pattern[str] | _McAliasKey] = {
     # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
     # client sending "bearer" lowercase was passing through unredacted.
     "bearer_header": re.compile(r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -154,21 +223,14 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"'/{}$<>]+:[^\s\"'/{}$<>@]+@"),
     # The same shape for every other scheme (postgresql+asyncpg://, redis://, amqp://), with
     # only the password rewritten so the host stays readable. mongodb is left to mongo_uri.
-    # The user may be empty (redis://:pw@host) and the password may hold a `$`: a whole
+    # The user may be empty (redis://:pw@host), and the password may hold `'` or `$`: a whole
     # `$VAR` is still left alone by is_reference(), and `${VAR}` and f-string `{pw}` never
     # match because braces are excluded.
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]{1,30}://"
-        r"[^\s\"'/{}$<>@:]*:(?P<value>[^\s\"'/{}<>@]+)@"),
-    # `mc alias set NAME URL ACCESS_KEY SECRET_KEY`: both keys are bare positional
-    # arguments, so no name sits beside them for keyed_value to find. Either key may be
-    # quoted, and a quoted one may hold spaces, so a quoted argument is taken whole.
-    "mc_alias_access_key": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,3}[\"'])?https?://[^\s\"'\\]+(?:\\{0,3}[\"'])?\s+"
-        + _MC_KEY),
-    "mc_alias_secret_key": re.compile(
-        r"\bmc\s+alias\s+set\s+\S+\s+(?:\\{0,3}[\"'])?https?://[^\s\"'\\]+(?:\\{0,3}[\"'])?\s+"
-        + _MC_ARG + r"\s+" + _MC_KEY),
+        r"[^\s\"/{}$<>@:]*:(?P<value>[^\s\"/{}<>@]+)@"),
+    "mc_alias_access_key": _McAliasKey(2),
+    "mc_alias_secret_key": _McAliasKey(3),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
