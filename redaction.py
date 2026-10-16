@@ -58,7 +58,8 @@ ADVISORY = "advisory"
 #: hand-kept lists drifted apart and let `SECRET_KEY=` through both. See
 #: https://github.com/beril-doe/langfuse-retro-load/issues/69.
 CREDENTIAL_NAMES = ("token", "secret", "secret_key", "secret_access_key", "private_key",
-                    "access_key", "password", "passwd", "api_key", "credential")
+                    "access_key", "password", "passwd", "api_key", "credential",
+                    "client_key")
 
 
 def _names_pattern(names: tuple[str, ...], separator: str) -> str:
@@ -73,14 +74,22 @@ def _names_pattern(names: tuple[str, ...], separator: str) -> str:
 #:
 #: `(?<![A-Za-z0-9])` rather than `\b`: a token embedded in a filename sits behind an
 #: underscore, and `\b` does not treat that as a boundary at all.
+#: Patterns whose match already ends where the secret ends, so detect() does not widen it:
+#: a URI password ends at its "@" (widening took the host with it).
+EXACT_SPAN = frozenset({"uri_password"})
+
 PATTERNS: dict[str, re.Pattern[str]] = {
     # Case-insensitive: the HTTP Authorization scheme token is, per RFC 9110, and a
     # client sending "bearer" lowercase was passing through unredacted.
     "bearer_header": re.compile(r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
     "openai_style": re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}"),
-    "github_pat": re.compile(r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,}"),
+    # Classic tokens (ghp_ and siblings) and fine-grained ones (github_pat_).
+    "github_pat": re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}"
+                             r"|github_pat_[A-Za-z0-9_]{40,})"),
     "aws_access_key_id": re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
-    "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9_-]{20,}"),
+    # The dot is in the class because service-account access tokens start `ya29.c.`;
+    # without it the match failed one character in and the whole token went through.
+    "google_oauth": re.compile(r"(?<![A-Za-z0-9])ya29\.[A-Za-z0-9._-]{20,}"),
     "google_api_key": re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
     # Detection only. The marker is all a pattern can reliably find; where the key ends is
     # decided by _span_for below, not here. An earlier version tried to match the body and
@@ -126,6 +135,30 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # Only a URI that actually carries credentials. A bare mongodb://host:port is a
     # hostname, and source code building one from an f-string is neither.
     "mongo_uri": re.compile(r"mongodb(?:\+srv)?://[^\s\"'/{}$<>]+:[^\s\"'/{}$<>@]+@"),
+    # The same shape for every other scheme (postgresql+asyncpg://, redis://, amqp://), with
+    # only the password rewritten so the host stays readable. mongodb is left to mongo_uri.
+    #
+    # The authority of a URI is one run with no whitespace, no `/` and no `"`, and a quote
+    # around the URI at any JSON depth (`"`, `\"`, `\\"`) sits outside that run. The user is
+    # the run up to its first `:` and the password is the rest of the run up to its last `@`,
+    # so every character RFC 3986 allows in userinfo is inside: `'`, `$`, `%`, `;`, `,`, and
+    # also `@` itself, which is not allowed but is what people write for an Azure-style
+    # `user@server` username or a password with an `@` in it. Three Copilot rounds on
+    # https://github.com/beril-doe/langfuse-retro-load/pull/85 each named one more allowed
+    # character that a narrower class left out. The user may be empty (redis://:pw@host). A
+    # whole `$VAR` is still left alone by is_reference(), and `${VAR}`, f-string `{pw}` and
+    # `<password>` never match because braces and angle brackets are excluded. The one gap:
+    # a literal `"` in a password. It is never valid there, and it is the string delimiter
+    # at every JSON depth, so a password holding one cannot be told from the end of the value.
+    # The authority ends at `?` or `#` (RFC 3986 section 3.2), so neither class crosses them:
+    # `https://host:8080?contact=a@b` has no userinfo at all. A user this module has already
+    # replaced is read as one unit, so the `:` inside `[REDACTED:phone_us:...]` is not taken
+    # for the separator on a second pass; `[` is not allowed in userinfo anyway. Only the exact
+    # placeholder shape is read that way: a looser class ran to the end of the input at
+    # every scheme on `a://[REDACTED:` repeated, which was quadratic.
+    "uri_password": re.compile(
+        r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]*://"
+        r"(?:\[REDACTED:[A-Za-z0-9_]{1,40}:[0-9a-f]{8}\]|[^\s\"/{}<>:?#\[])*:(?P<value>[^\s\"/{}<>?#]+)@"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -336,13 +369,17 @@ def code_literals(text: str, start: int, end: int) -> list[tuple[int, int]] | No
     return spans
 
 
-def is_reference(value: str) -> bool:
+def is_reference(value: str, *, strip_quotes: bool = True) -> bool:
     """True when the whole value, quotes and whitespace aside, names another value.
 
     A variable or template reference, or a words-only placeholder that nothing in PATTERNS
-    recognises as a secret.
+    recognises as a secret. `strip_quotes=False` is for an exact capture such as a URI
+    password, where a quote is a character of the value rather than a delimiter around it:
+    `postgres://u:'$Pw123'@db` holds the literal password `'$Pw123'`.
     """
-    bare = value.strip().strip("\"'")
+    bare = value.strip()
+    if strip_quotes:
+        bare = bare.strip("\"'")
     if REFERENCE_RE.fullmatch(bare):
         return True
     if bare.lower() in PLACEHOLDER_VALUES:
@@ -358,6 +395,7 @@ CATEGORY: dict[str, str] = {
     "aws_access_key_id": SECRET, "google_oauth": SECRET, "google_api_key": SECRET,
     "private_key_block": SECRET, "jwt": SECRET, "slack_token": SECRET,
     "keyed_value": SECRET, "auth_header": SECRET, "mongo_uri": SECRET,
+    "uri_password": SECRET,
     "email_personal": PERSON, "email_institutional": PERSON,
     "name_beside_email": PERSON, "phone_us": PERSON,
     # Public by design. Reported so a reader knows the turn names someone, never
@@ -519,6 +557,8 @@ class _Boundaries:
             if i < len(self.pem_markers) and self.pem_markers[i] <= value_end:
                 return start, self.pem_markers[i]
             return start, value_end
+        if pattern in EXACT_SPAN:
+            return start, end
         return start, self._first_at_or_after(self.value_ends, end)
 
 
@@ -596,6 +636,36 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
 
 
+def _merge_partial_secrets(text: str, candidates: list[tuple]) -> list[tuple]:
+    """Join secret candidates that partly overlap into one candidate covering both.
+
+    Overlaps are otherwise resolved by dropping the shorter match, which is right when one
+    lies inside the other and wrong when they only share a few characters: in
+    `https://ghp_...:abc,...@github.com` the token's span runs to the comma and the URI
+    password's starts after the colon, so dropping the token left it in the output. The
+    joined candidate keeps the name of the one that would have won.
+    """
+    secrets = sorted((c for c in candidates if c[0] == _RANK[SECRET]), key=lambda c: c[2])
+    if len(secrets) < 2:
+        return candidates
+    merged, group = [], [secrets[0]]
+    end = secrets[0][2] - secrets[0][1]
+    for c in secrets[1:]:
+        if c[2] < end:
+            group.append(c)
+            end = max(end, c[2] - c[1])
+        else:
+            merged.append((group, end))
+            group, end = [c], c[2] - c[1]
+    merged.append((group, end))
+    out = [c for c in candidates if c[0] != _RANK[SECRET]]
+    for group, end in merged:
+        start = group[0][2]
+        name = min(group)[3]
+        out.append((_RANK[SECRET], -(end - start), start, name, text[start:end]))
+    return out
+
+
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     """Every non-overlapping finding, in order of position. Pure, and never raises."""
     if not isinstance(text, str) or not text:
@@ -615,7 +685,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 continue
             if category is SECRET:
                 span = boundaries.span_for(name, span[0], span[1])
-                if has_value:
+                if has_value and name not in EXACT_SPAN:
                     span = _through_closing_quote(text, span)
                 if _inside(span, protected):
                     continue
@@ -627,7 +697,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 if _closes_doi(text, dois, *span):
                     continue
             value = text[span[0]:span[1]]
-            if has_value and is_reference(value):
+            if has_value and is_reference(value, strip_quotes=name not in EXACT_SPAN):
                 continue
             if name == "keyed_value":
                 literals = code_literals(text, span[0], span[1])
@@ -639,6 +709,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
+    candidates = _merge_partial_secrets(text, candidates)
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
     # earliest, then the name, so the result does not depend on dict iteration order.
     candidates.sort()
@@ -657,7 +728,9 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
         findings.append(Finding(pattern=name, category=CATEGORY[name], start=span[0],
                                 end=span[1], length=span[1] - span[0],
                                 fingerprint=fingerprint(value, key),
-                                masked=CATEGORY[name] is SECRET and is_masked(value)))
+                                masked=(CATEGORY[name] is SECRET
+                                        and bool(MASKED_RE.search(value))
+                                        and is_masked(value))))
     findings.sort(key=lambda f: f.start)
     return findings
 
