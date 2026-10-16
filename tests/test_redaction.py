@@ -859,6 +859,30 @@ def test_uri_password_before_a_query_keeps_the_host(encode):
 
 
 @pytest.mark.parametrize("encode", ENCODINGS)
+def test_a_token_as_uri_user_survives_a_partly_overlapping_password(encode):
+    """Codex review: the token's span runs to the comma inside the password, so it only
+    partly overlaps the longer password span, and dropping it left the token in the output.
+    Values are synthetic."""
+    token = "ghp_" + "A1b2" * 9
+    text = "https://" + token + ":abc," + "cD3f4" * 12 + "@github.com"
+    clean, _ = redaction.redact(encode(text), key=KEY)
+    assert token not in clean
+    assert "cD3f4" not in clean
+    assert "@github.com" in clean
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_a_masked_uri_user_is_one_unit_on_a_second_pass(encode):
+    """Codex review: the first pass masks the phone-shaped user, and the second took the `:`
+    inside that placeholder for the user:password separator, so redact was not idempotent."""
+    once, _ = redaction.redact(encode("postgres://212-555-1234:notarealpw123@db/x"), key=KEY)
+    twice, findings = redaction.redact(once, key=KEY)
+    assert "notarealpw123" not in once
+    assert twice == once
+    assert findings == []
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
 def test_uri_password_apostrophes_are_part_of_the_password(encode):
     """Ninth Copilot round: the apostrophes are inside the capture, so the value is a
     literal, not a `$VAR` reference."""

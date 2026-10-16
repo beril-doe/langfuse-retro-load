@@ -151,10 +151,12 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # a literal `"` in a password. It is never valid there, and it is the string delimiter
     # at every JSON depth, so a password holding one cannot be told from the end of the value.
     # The authority ends at `?` or `#` (RFC 3986 section 3.2), so neither class crosses them:
-    # `https://host:8080?contact=a@b` has no userinfo at all.
+    # `https://host:8080?contact=a@b` has no userinfo at all. A user this module has already
+    # replaced is read as one unit, so the `:` inside `[REDACTED:phone_us:...]` is not taken
+    # for the separator on a second pass; `[` is not allowed in userinfo anyway.
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]*://"
-        r"[^\s\"/{}<>:?#]*:(?P<value>[^\s\"/{}<>?#]+)@"),
+        r"(?:\[REDACTED:[^\]\s]*\]|[^\s\"/{}<>:?#\[])*:(?P<value>[^\s\"/{}<>?#]+)@"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(
@@ -632,6 +634,36 @@ def _overlaps_sorted(span: tuple[int, int], starts: list[int],
 _RANK = {SECRET: 0, PERSON: 1, ADVISORY: 2}
 
 
+def _merge_partial_secrets(text: str, candidates: list[tuple]) -> list[tuple]:
+    """Join secret candidates that partly overlap into one candidate covering both.
+
+    Overlaps are otherwise resolved by dropping the shorter match, which is right when one
+    lies inside the other and wrong when they only share a few characters: in
+    `https://ghp_...:abc,...@github.com` the token's span runs to the comma and the URI
+    password's starts after the colon, so dropping the token left it in the output. The
+    joined candidate keeps the name of the one that would have won.
+    """
+    secrets = sorted((c for c in candidates if c[0] == _RANK[SECRET]), key=lambda c: c[2])
+    if len(secrets) < 2:
+        return candidates
+    merged, group = [], [secrets[0]]
+    end = secrets[0][2] - secrets[0][1]
+    for c in secrets[1:]:
+        if c[2] < end:
+            group.append(c)
+            end = max(end, c[2] - c[1])
+        else:
+            merged.append((group, end))
+            group, end = [c], c[2] - c[1]
+    merged.append((group, end))
+    out = [c for c in candidates if c[0] != _RANK[SECRET]]
+    for group, end in merged:
+        start = group[0][2]
+        name = min(group)[3]
+        out.append((_RANK[SECRET], -(end - start), start, name, text[start:end]))
+    return out
+
+
 def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
     """Every non-overlapping finding, in order of position. Pure, and never raises."""
     if not isinstance(text, str) or not text:
@@ -675,6 +707,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                     continue
             candidates.append((_RANK[category], -(span[1] - span[0]), span[0], name, value))
 
+    candidates = _merge_partial_secrets(text, candidates)
     # Resolve overlaps: highest-ranked category first, then the longest match, then the
     # earliest, then the name, so the result does not depend on dict iteration order.
     candidates.sort()
