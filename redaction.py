@@ -153,10 +153,12 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # The authority ends at `?` or `#` (RFC 3986 section 3.2), so neither class crosses them:
     # `https://host:8080?contact=a@b` has no userinfo at all. A user this module has already
     # replaced is read as one unit, so the `:` inside `[REDACTED:phone_us:...]` is not taken
-    # for the separator on a second pass; `[` is not allowed in userinfo anyway.
+    # for the separator on a second pass; `[` is not allowed in userinfo anyway. Only the exact
+    # placeholder shape is read that way: a looser class ran to the end of the input at
+    # every scheme on `a://[REDACTED:` repeated, which was quadratic.
     "uri_password": re.compile(
         r"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://)[A-Za-z][A-Za-z0-9+.-]*://"
-        r"(?:\[REDACTED:[^\]\s]*\]|[^\s\"/{}<>:?#\[])*:(?P<value>[^\s\"/{}<>?#]+)@"),
+        r"(?:\[REDACTED:[A-Za-z0-9_]{1,40}:[0-9a-f]{8}\]|[^\s\"/{}<>:?#\[])*:(?P<value>[^\s\"/{}<>?#]+)@"),
     "email_personal": None,        # filled in below, they need PERSONAL_DOMAINS
     "email_institutional": None,
     "name_beside_email": re.compile(

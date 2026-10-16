@@ -916,6 +916,7 @@ TIMING_CASES = [
     ("uri: 50k authorities with no @", lambda: "a://b:c" * 50_000, 0.09, 1.0),
     ("uri: 200k scheme characters", lambda: "a" * 200_000 + "://", 0.05, 1.0),
     ("uri: 30k schemes with no authority", lambda: "a://" * 30_000, 0.03, 1.0),
+    ("uri: 8k unclosed placeholder users", lambda: "a://[REDACTED:" * 8_000, 0.024, 1.0),
 ]
 
 
