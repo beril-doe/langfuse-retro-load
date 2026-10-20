@@ -612,8 +612,13 @@ def _protected(text: str) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in PLACEHOLDER_RE.finditer(text)]
 
 
-def _inside(span: tuple[int, int], regions: list[tuple[int, int]]) -> bool:
-    return any(a <= span[0] and span[1] <= b for a, b in regions)
+def _inside(span: tuple[int, int], starts: list[int], regions: list[tuple[int, int]]) -> bool:
+    """Whether a placeholder contains ``span``. Placeholders never overlap and come sorted by
+    start, so only the last one starting at or before ``span`` can contain it. Scanning every
+    placeholder made a second pass over masked text quadratic: over masked URI passwords it
+    took 0.054s for 1,200 and 0.183s for 2,400 (2026-10-20)."""
+    i = bisect.bisect_right(starts, span[0]) - 1
+    return i >= 0 and span[1] <= regions[i][1]
 
 
 def _overlaps(span: tuple[int, int], regions: list[tuple[int, int]]) -> bool:
@@ -672,6 +677,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
         return []
     key = new_key() if key is None else key
     protected = _protected(text)
+    protected_starts = [a for a, _ in protected]
     boundaries = _Boundaries(text)
     dois = None  # found on the first phone-shaped match only
 
@@ -681,13 +687,13 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
         has_value = "value" in pattern.groupindex
         for match in pattern.finditer(text):
             span = match.span("value") if has_value else (match.start(), match.end())
-            if span[0] == span[1] or _inside(span, protected):
+            if span[0] == span[1] or _inside(span, protected_starts, protected):
                 continue
             if category is SECRET:
                 span = boundaries.span_for(name, span[0], span[1])
                 if has_value and name not in EXACT_SPAN:
                     span = _through_closing_quote(text, span)
-                if _inside(span, protected):
+                if _inside(span, protected_starts, protected):
                     continue
             if name in ("email_institutional", "email_personal") and _is_role_address(text, *span):
                 continue
@@ -703,7 +709,7 @@ def detect(text: str, *, key: bytes | None = None) -> list[Finding]:
                 literals = code_literals(text, span[0], span[1])
                 if literals is not None:
                     for lo, hi in literals:
-                        if not _inside((lo, hi), protected):
+                        if not _inside((lo, hi), protected_starts, protected):
                             candidates.append((_RANK[category], -(hi - lo), lo, name,
                                                text[lo:hi]))
                     continue

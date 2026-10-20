@@ -362,6 +362,11 @@ def test_a_lowercase_bearer_scheme_is_still_a_credential():
      lambda n: ";".join(f"token=abcdefgh{i:06d}" for i in range(n))),
     ("unterminated private-key markers",
      lambda n: " ".join("BEGIN RSA PRIVATE KEY body%d" % i for i in range(n))),  # gitleaks:allow
+    # A second pass over text this module already masked. Every masked URI password still
+    # matches uri_password, and each match was checked against every placeholder.
+    ("already-masked URI passwords",
+     lambda n: redaction.redact("\n".join(f"postgresql://u{i}:notarealpw{i:06d}@db{i}:5432/x"
+                                          for i in range(n)), key=KEY)[0]),
 ])
 def test_many_matches_do_not_cost_quadratic_time(shape, build):
     """Many matches, not one long string, which is what the other performance test misses.
@@ -765,9 +770,12 @@ def test_google_service_account_token_is_masked_whole(text):
 
 
 def test_fine_grained_github_token():
+    # A bare token, not `GH_TOKEN=<token>`: keyed_value masks the assignment whatever the
+    # value looks like, so that form passed with the old github_pat pattern too.
     token = "github_pat_" + "NotARealFineGrainedToken0123_" * 3
-    clean, _ = redaction.redact(f"export GH_TOKEN={token}", key=KEY)
+    clean, findings = redaction.redact(f"token is {token} for the API", key=KEY)
     assert "NotAReal" not in clean
+    assert [f.pattern for f in findings] == ["github_pat"]
 
 
 def test_client_key_name():
