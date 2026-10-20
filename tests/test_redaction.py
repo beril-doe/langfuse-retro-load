@@ -7,6 +7,7 @@ more than one filter point, so a second pass must not redact the first pass's wo
 the records it returns are meant to be read by a person before a load is sent, so they
 must not contain what the load was trying not to send.
 """
+import json
 import random
 import string
 import sys
@@ -52,6 +53,7 @@ SAMPLES = {
     "slack_token": "xoxb-0000000000-abcdefghijkl",
     "keyed_value": 'JUPYTERHUB_API_TOKEN=abcdef0123456789abcdef0123456789',
     "mongo_uri": "mongodb://someuser:somepassword@localhost:27017",
+    "uri_password": "postgresql+asyncpg://someuser:notarealpw123@localhost:5432/db",
     "email_personal": "someone.else@gmail.com",
     "email_institutional": "someone@lbl.gov",
     "name_beside_email": '{"display_name": "A Person", "email": "x"}',
@@ -59,6 +61,11 @@ SAMPLES = {
     "orcid": "0000-0002-1825-0097",
     "account_path": "reading /home/someuser/projects/notes.md",
 }
+
+
+def joined_samples() -> str:
+    """Every sample on its own line."""
+    return "\n".join(SAMPLES.values())
 
 
 def test_every_pattern_has_a_category_and_a_sample():
@@ -94,7 +101,7 @@ def test_redact_replaces_secrets_and_leaves_advisory_alone():
 def test_findings_never_carry_the_matched_text():
     """The reason a record exists is so a person can review a load before it is sent.
     A review artifact that quotes the secrets is the problem it was avoiding."""
-    text = " ".join(SAMPLES.values())
+    text = joined_samples()
     _, findings = redaction.redact(text, key=KEY)
     blob = " ".join(repr(f) for f in findings)
     for name, sample in SAMPLES.items():
@@ -106,7 +113,7 @@ def test_findings_never_carry_the_matched_text():
 def test_idempotent():
     """A turn can pass more than one filter point. A second pass must not turn the
     first pass's placeholders into placeholders of placeholders."""
-    text = " ".join(SAMPLES.values())
+    text = joined_samples()
     once, _ = redaction.redact(text, key=KEY)
     twice, second_findings = redaction.redact(once, key=KEY)
     assert twice == once
@@ -148,8 +155,9 @@ def test_non_overlapping_matches_of_different_kinds_are_all_reported():
 
 
 def test_findings_do_not_overlap():
-    text = " ".join(SAMPLES.values())
+    text = joined_samples()
     findings = redaction.detect(text, key=KEY)
+    assert len(findings) > 1
     for a, b in zip(findings, findings[1:], strict=False):
         assert a.end <= b.start
 
@@ -354,6 +362,11 @@ def test_a_lowercase_bearer_scheme_is_still_a_credential():
      lambda n: ";".join(f"token=abcdefgh{i:06d}" for i in range(n))),
     ("unterminated private-key markers",
      lambda n: " ".join("BEGIN RSA PRIVATE KEY body%d" % i for i in range(n))),  # gitleaks:allow
+    # A second pass over text this module already masked. Every masked URI password still
+    # matches uri_password, and each match was checked against every placeholder.
+    ("already-masked URI passwords",
+     lambda n: redaction.redact("\n".join(f"postgresql://u{i}:notarealpw{i:06d}@db{i}:5432/x"
+                                          for i in range(n)), key=KEY)[0]),
 ])
 def test_many_matches_do_not_cost_quadratic_time(shape, build):
     """Many matches, not one long string, which is what the other performance test misses.
@@ -732,3 +745,195 @@ def test_many_page_ranges_in_one_doi_stay_linear():
     found = redaction.detect(text)
     assert time.perf_counter() - started < 1.0
     assert sum(f.pattern == "phone_us" for f in found) == 3199
+
+
+# Google service-account access tokens start `ya29.c.`, and the google_oauth class had no
+# `.`, so they passed unmasked. Values are synthetic.
+#
+# Scope of these additions, kept to what real traces held: `ya29.` tokens with dots,
+# fine-grained `github_pat_` tokens, `client_key` names, and passwords in URI userinfo.
+# Known gaps, accepted: a literal `"` inside a URI password, and the keys in an
+# `mc alias set` command, which carry no name for keyed_value to find. A scan of 17,816
+# BERIL Langfuse observations on 2026-10-14 for the one-line form found only variable
+# references and prose, no literal keys.
+SERVICE_ACCOUNT_TOKEN = "ya29.c." + "NotARealServiceAccountToken_0123456789-" * 8
+
+
+@pytest.mark.parametrize("text", [
+    SERVICE_ACCOUNT_TOKEN,
+    '{"token": "' + SERVICE_ACCOUNT_TOKEN + '"}',
+    "ya29.a0" + "NotARealUserToken" * 4,
+])
+def test_google_service_account_token_is_masked_whole(text):
+    clean, _ = redaction.redact(text, key=KEY)
+    assert "NotAReal" not in clean
+
+
+def test_fine_grained_github_token():
+    # A bare token, not `GH_TOKEN=<token>`: keyed_value masks the assignment whatever the
+    # value looks like, so that form passed with the old github_pat pattern too.
+    token = "github_pat_" + "NotARealFineGrainedToken0123_" * 3
+    clean, findings = redaction.redact(f"token is {token} for the API", key=KEY)
+    assert "NotAReal" not in clean
+    assert [f.pattern for f in findings] == ["github_pat"]
+
+
+def test_client_key_name():
+    clean, _ = redaction.redact("CLIENT_KEY=notarealclientkey0123456789", key=KEY)
+    assert "notarealclientkey" not in clean
+
+
+def test_uri_password_keeps_user_and_host():
+    clean, _ = redaction.redact(SAMPLES["uri_password"] + " ok", key=KEY)
+    assert "notarealpw123" not in clean
+    assert clean.startswith("postgresql+asyncpg://someuser:[REDACTED:uri_password:")
+    assert clean.endswith("]@localhost:5432/db ok")
+
+
+@pytest.mark.parametrize("text", [
+    "postgres://user:${PGPASSWORD}@db:5432/x",
+    'f"postgresql://{user}:{pw}@{host}/db"',
+    "see http://localhost:8080/path",
+    "ssh://git@github.com:owner/repo",
+    "https://someone@lbl.gov:8080/x",
+    "postgres://localhost:5432/db",
+])
+def test_new_shapes_leave_references_and_prose_alone(text):
+    assert not [f for f in redaction.detect(text, key=KEY)
+                if f.pattern == "uri_password"]
+
+
+# From the Copilot review of https://github.com/beril-doe/langfuse-retro-load/pull/85. Every
+# command and URI below is checked raw, inside one json.dumps, and inside two, through both
+# redact() and redact_tree(), since a transcript is JSONL and a tool result inside it is JSON
+# again.
+ENCODINGS = [lambda c: c, lambda c: json.dumps({"command": c}),
+             lambda c: json.dumps({"o": json.dumps({"command": c})})]
+
+# A URI password is the run after the first `:` of the authority up to its last `@`: every
+# character RFC 3986 allows there, an empty user, and the `@` people write unencoded.
+URI_CASES = [
+    ("redis://:notarealpw123@localhost:6379/0", "notarealpw123"),
+    ("postgres://user:NotAReal$Pass123@db:5432/x", "NotAReal$Pass123"),
+    ("postgresql://user:NotAReal'Pass123@db:5432/x", "NotAReal'Pass123"),
+    ("postgresql://us'er:notarealpw99@db/x", "notarealpw99"),
+    ("postgresql://svc$reader:NotARealPw123@db/x", "NotARealPw123"),
+    ("amqp://guest:notareal%40pw%3A1@broker:5672/vhost", "notareal%40pw%3A1"),
+    # Not valid in a URI, but written: an `@` inside the password, and an Azure-style
+    # `user@server` username. The password runs to the last `@`.
+    ("postgres://u:notareal@pw@db/x", "notareal@pw"),
+    ("postgres://myuser@myserver:notarealpw@myserver.postgres.database.azure.com/x", "notarealpw"),
+    ("a-scheme-with-a-long-name-well-over-thirty-characters://u:notarealpw@h", "notarealpw"),
+    ("DATABASE_URL='postgres://u:notarealpw@h:5432/d'", "notarealpw"),
+]
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("text,secret", URI_CASES)
+def test_uri_password_is_masked_and_the_host_is_kept(text, secret, encode):
+    clean, findings = redaction.redact(encode(text), key=KEY)
+    assert secret not in clean
+    assert [f.pattern for f in findings] == ["uri_password"]
+    assert "@" + text.split("@")[-1] in clean, "the host after the last @ stays readable"
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("text,secret", URI_CASES)
+def test_uri_password_in_a_tree_leaf(text, secret, encode):
+    clean = redaction.redact_tree({"x": encode(text)}, key=KEY)[0]
+    assert secret not in json.dumps(clean)
+
+
+def test_uri_password_whole_variable_is_left_alone():
+    text = "postgres://user:$PGPASSWORD@db:5432/x"
+    assert redaction.redact(text, key=KEY)[0] == text
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+@pytest.mark.parametrize("text", ["https://example.org:8080?contact=reader@example.net",
+                                  "https://example.org:8080#reader@example.net",
+                                  "https://example.org/x?a=b:c@d"])
+def test_uri_query_or_fragment_is_not_userinfo(text, encode):
+    """Ninth Copilot round: the authority ends at `?` or `#`."""
+    assert not [f for f in redaction.detect(encode(text), key=KEY) if f.pattern == "uri_password"]
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_uri_password_before_a_query_keeps_the_host(encode):
+    text = "postgres://u:notarealpw@db?contact=reader@example.net"
+    clean, _ = redaction.redact(encode(text), key=KEY)
+    assert "notarealpw" not in clean
+    assert "@db?contact=reader@example.net" in clean
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_a_token_as_uri_user_survives_a_partly_overlapping_password(encode):
+    """Codex review: the token's span runs to the comma inside the password, so it only
+    partly overlaps the longer password span, and dropping it left the token in the output.
+    Values are synthetic."""
+    token = "ghp_" + "A1b2" * 9
+    text = "https://" + token + ":abc," + "cD3f4" * 12 + "@github.com"
+    clean, _ = redaction.redact(encode(text), key=KEY)
+    assert token not in clean
+    assert "cD3f4" not in clean
+    assert "@github.com" in clean
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_a_masked_uri_user_is_one_unit_on_a_second_pass(encode):
+    """Codex review: the first pass masks the phone-shaped user, and the second took the `:`
+    inside that placeholder for the user:password separator, so redact was not idempotent."""
+    once, _ = redaction.redact(encode("postgres://212-555-1234:notarealpw123@db/x"), key=KEY)
+    twice, findings = redaction.redact(once, key=KEY)
+    assert "notarealpw123" not in once
+    assert twice == once
+    assert findings == []
+
+
+@pytest.mark.parametrize("encode", ENCODINGS)
+def test_uri_password_apostrophes_are_part_of_the_password(encode):
+    """Ninth Copilot round: the apostrophes are inside the capture, so the value is a
+    literal, not a `$VAR` reference."""
+    text = "postgres://u:'$NotARealPass123'@db/x"
+    assert "NotARealPass123" not in redaction.redact(encode(text), key=KEY)[0]
+
+
+@pytest.mark.parametrize("text", ["redis://:hunter2@localhost:6379/0", "postgres://u:shortpw@db/x"])
+def test_a_short_uri_password_is_not_flagged_as_already_masked(text):
+    """Ninth Copilot round: under eight characters is not a mask without a mask marker."""
+    assert [f.masked for f in redaction.detect(text, key=KEY)] == [False]
+
+
+def test_uri_password_a_quote_in_a_password_is_the_stated_gap():
+    """A `"` is never valid in userinfo and is the string delimiter at every JSON depth, so a
+    password holding one cannot be told from the end of a value. Stated in the pattern's
+    comment; this pins the behaviour so a change to it is deliberate."""
+    text = 'postgres://u:not"areal@h'
+    assert [f.pattern for f in redaction.detect(text, key=KEY)] == []
+
+
+# Each adversarial shape is timed on its own, so a regression names the shape rather than a
+# batch. `measured` is the best of three local runs of redact() on 2026-10-15 (Python 3.13,
+# a 2026 laptop); each budget is at least five times that, and the test checks the ratio so a
+# budget cannot be quietly tightened. CI runs about 1.3 times slower: the batched version of
+# this test took 0.93s here and 2.48s there against a 2s budget.
+TIMING_CASES = [
+    ("uri: 200k password characters with no @", lambda: "x://y:" + "z" * 200_000, 0.05, 1.0),
+    ("uri: 50k @ in one authority", lambda: "x://u:" + "p@" * 50_000 + "h", 0.04, 1.0),
+    ("uri: 30k short credentials", lambda: "x://y:z@" * 30_000, 0.16, 1.0),
+    ("uri: 50k authorities with no @", lambda: "a://b:c" * 50_000, 0.09, 1.0),
+    ("uri: 200k scheme characters", lambda: "a" * 200_000 + "://", 0.05, 1.0),
+    ("uri: 30k schemes with no authority", lambda: "a://" * 30_000, 0.03, 1.0),
+    ("uri: 8k unclosed placeholder users", lambda: "a://[REDACTED:" * 8_000, 0.024, 1.0),
+]
+
+
+@pytest.mark.parametrize("shape,build,measured,budget", TIMING_CASES,
+                         ids=[case[0] for case in TIMING_CASES])
+def test_each_adversarial_shape_stays_within_its_budget(shape, build, measured, budget):
+    assert budget >= 5 * measured, f"{shape}: the budget has to leave five times the local cost"
+    text = build()
+    start = time.perf_counter()
+    redaction.redact(text, key=KEY)
+    elapsed = time.perf_counter() - start
+    assert elapsed < budget, f"{shape}: {elapsed:.2f}s on {len(text):,} characters"
