@@ -18,13 +18,16 @@ Anything an agent session reads is sent to the model provider, and deleting the 
 - **Run the tools that print counts, lengths and shapes, and read their output:**
   - `backfill.py <person>` without `--review` (the preview): the account name and user id, session and turn counts, mask counts by category and pattern, the plan path and the load command.
   - `plan.py build`: mask counts per transcript.
-  - `retro_load.py --dry-run`: the turn count and each turn's timestamp.
+  - `retro_load.py --dry-run` without `--plan`: the turn count and each turn's timestamp.
   - `langfuse_admin.py count`: totals per object type.
 
 ## What a person does, not an agent
 
+A JSON pointer is built from the record's own key names, including the keys inside a tool call's arguments, so any output that shows one counts as transcript text, and a person reads it.
+
 - **`reveal.py`.** It prints the text around each finding even without `--show-values` (`context_for`). An agent session does not run it, and its output is not pasted into one.
-- **`inventory.py` on a real transcript.** Its report lists a JSON pointer for every secret finding, and a pointer is built from the record's own key names, including the keys inside a tool call's arguments, so it can carry transcript text. An agent session runs it only on made-up fixtures.
+- **`inventory.py` on a real transcript.** Its report lists a JSON pointer for every secret finding. An agent session runs it only on made-up fixtures.
+- **`retro_load.py` with `--plan`, including `--dry-run`.** When the plan missed a finding, or a mask does not fit its record, the message names the JSON pointer.
 - **`backfill.py <person> --review`.** It shows values. It refuses to run unless stdin and stdout are terminals, but an agent driving a terminal, for example through a browser tab, still reads what the terminal shows. A person runs `--review`.
 - **Reading a trace in the Langfuse web UI**, for the same reason.
 - **Langfuse API keys.** A person creates them in the Langfuse web UI and sets them up in a pod terminal. An agent does not create them, and they are never pasted into a chat session (README, "Running it", step 3).
