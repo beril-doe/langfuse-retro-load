@@ -44,7 +44,7 @@ directly from wherever it runs; it never needs to move a transcript
 anywhere. Push these files to the pod (`labctl pod put`, or however you
 transfer files there) and run everything from a pod terminal.
 
-Text from traces and transcripts is read by a person, by gitleaks, or by a local Ollama model, never by a hosted model or an agent session that runs on one. Which tools here an agent session can run is in [docs/who-reads-trace-content.md](docs/who-reads-trace-content.md).
+Text from traces and transcripts is read by a person, by gitleaks, or by a local Ollama model, and not by a hosted model or an agent session that runs on one. Which tools here an agent session can run is in [docs/who-reads-trace-content.md](docs/who-reads-trace-content.md).
 
 ## The pieces
 

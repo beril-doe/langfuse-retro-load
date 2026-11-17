@@ -3,10 +3,10 @@
 Text from Langfuse traces, and from the transcripts they are built from (the pod's `~/.claude` and the frozen corpus), goes to three places only:
 
 - **gitleaks**, run locally, as `inventory.py` and `plan.py build` run it.
-- **A local Ollama model**, if a semantic pass is ever wanted. The model runs on my M5 or on another contributor's computer with enough capacity, never on a hosted service. This repository has no such pass today.
+- **A local Ollama model**, if a semantic pass is wanted later. The model would run on my M5 or on another contributor's computer with enough capacity, not on a hosted service. This repository has no such pass today.
 - **A person**, reading it in a pod terminal or in the Langfuse web UI.
 
-It never goes to a hosted model, whether Claude, Codex, Copilot, CBORG or any other, and never through an agent session that runs on one.
+Hosted models (Claude, Codex, Copilot, CBORG and others) are not on that list, and neither are agent sessions that run on one.
 
 ## Why
 
@@ -30,4 +30,4 @@ A JSON pointer is built from the record's own key names, including the keys insi
 - **`retro_load.py` with `--plan`, including `--dry-run`.** When the plan missed a finding, or a mask does not fit its record, the message names the JSON pointer.
 - **`backfill.py <person> --review`.** It shows values. It refuses to run unless stdin and stdout are terminals, but an agent driving a terminal, for example through a browser tab, still reads what the terminal shows. A person runs `--review`.
 - **Reading a trace in the Langfuse web UI**, for the same reason.
-- **Langfuse API keys.** A person creates them in the Langfuse web UI and sets them up in a pod terminal. An agent does not create them, and they are never pasted into a chat session (README, "Running it", step 3).
+- **Langfuse API keys.** A person creates them in the Langfuse web UI and sets them up in a pod terminal. An agent does not create them, and they stay out of chat sessions (README, "Running it", step 3).
